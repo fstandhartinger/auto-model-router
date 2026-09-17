@@ -1,0 +1,56 @@
+# Example provider configuration. Copy it, keep your copy out of version control
+# (*.local.yaml is git-ignored) and point AUTO_ROUTER_CONFIG at it.
+# API keys are referenced by environment variable name only.
+
+providers:
+  openrouter:
+    base_url: https://openrouter.ai/api/v1
+    api_key_env: OPENROUTER_API_KEY
+    cache: openai
+  some-free-host:
+    base_url: https://llm.example.com/v1
+    api_key_env: EXAMPLE_API_KEY
+    cache: generic
+
+subscriptions:
+  # Flat-rate plan used through its official client (Claude Code via the shim).
+  claude:
+    budget_file: ~/.agent-budget.json   # {"claude": {"week_percent": .., "session_percent": .., "week_resets_at": ..}}
+    weekly_reserve: 0.65
+    hard_stop: 0.80
+
+policy:
+  name: F_expected
+  escalate_after_tool_errors: 3
+
+models:
+  - name: small-free
+    provider: some-free-host
+    upstream_id: vendor/small-model
+    bench_id: small-model::default
+    free: true
+    cache: {ttl_seconds: 300, hit_rate: 0.5}   # measure this
+
+  - name: mid
+    provider: openrouter
+    upstream_id: vendor/mid-model
+    bench_id: mid-model::high
+    bench_offer: {platform: OpenRouter}
+    cache: {hit_rate: 0.9}
+
+  - name: frontier
+    provider: openrouter
+    upstream_id: anthropic/claude-opus-5
+    bench_id: claude-opus-5::high
+    bench_offer: {platform: OpenRouter, provider: Anthropic}
+    cache_family: anthropic
+    vision: true
+
+  - name: frontier-subscription
+    provider: anthropic
+    upstream_id: claude-opus-5
+    bench_id: claude-opus-5::high
+    subscription: claude
+    list_price_model: frontier            # shadow price reference when quota gets tight
+    cache_family: anthropic
+    vision: true
