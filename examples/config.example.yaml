@@ -22,6 +22,10 @@ subscriptions:
 policy:
   name: F_expected
   escalate_after_tool_errors: 3
+  # Jev reports difficulty on a compressed scale; map it back to 0..1 (measured on our task set)
+  jev_difficulty_calibration: [0.27, 0.51]
+  success:
+    table: examples/success.measured.json   # measured rates beat benchmark-derived curves
 
 models:
   - name: small-free

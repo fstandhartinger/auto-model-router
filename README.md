@@ -5,8 +5,40 @@ OpenAI-compatible providers (and, optionally, a flat-rate Claude subscription
 through Claude Code) and picks a model per user turn so that tasks get solved
 at the lowest expected cost.
 
-Status: experimental. Measurements and the policy comparison are in
-[`EXPERIMENTS.md`](EXPERIMENTS.md).
+Status: experimental, measured. Full method and numbers: [`EXPERIMENTS.md`](EXPERIMENTS.md).
+
+## Results in short
+
+Eight models on 78 graded tasks, a replay of one week of real coding-agent traffic
+(1,638 sessions, 57,696 calls, 8.7B input tokens, 96 % of them cache reads), and a live run
+of the router server. Cross-validated replay, public list prices, no subscription:
+
+| policy | tasks solved | cost / week | cost per solved turn |
+|---|---:|---:|---:|
+| A: Claude Opus 5 for everything | 92.8 % | $12,917 | $6.42 |
+| B: cheapest model predicted to succeed | 88.7 % | $5,472 | $2.85 |
+| C: B + expected-value downgrade rule | 88.7 % | $5,478 | $2.85 |
+| D: start cheap, escalate on failure, downgrade on cache expiry | 87.7 % | $2,995 | $1.58 |
+| **F: minimise expected cost (default)** | **89.0 %** | **$1,341** | **$0.70** |
+| F with higher stakes (10× turn cost) | 90.0 % | $2,236 | — |
+
+With free-tier models and a Claude plan that may only serve Claude Code's own sessions, F
+kept success at today's level (91.0 % vs 91.6 %) while cutting simulated plan use from 127 % to
+24 % of the weekly quota for $485/week of API spend, or to 31 % for $0 with free models only.
+
+The four things that mattered most:
+
+1. **Measured success rates.** Capability read from benchmark headlines mis-ranks specific
+   models and effort levels; with those beliefs F loses 3 points and triples spend. A
+   78-task calibration run (about $20) fixes it — see `experiments/calibrate.py`.
+2. **Price failure, not just calls.** Always starting on the cheapest model and escalating
+   (D) sends hard turns through two paid attempts. F starts each turn on the model with the
+   lowest *expected* cost including the chance and price of a retry.
+3. **Route at user turns, not API calls.** Agent traffic is long tool loops over 100k+
+   cached prefixes; switching mid-loop throws away a seconds-old cache. Sessions average
+   1.3 user turns, so downgrade rules for warm conversations barely matter.
+4. **Caching is a property of the route.** Read shares ranged from 0 % to 99 % for the same
+   kind of model on different hosts, and Claude Code on a plan keeps a one-hour cache.
 
 ## The problem in one paragraph
 
@@ -32,8 +64,9 @@ router stays on the turn's model):
 3. **Price** every eligible model for this turn with its actual cache state
    (warm tokens, TTL, minimum cacheable prefix, measured hit rate).
 4. **Choose** with the configured policy (below), then escalate on failure
-   signals: upstream errors, repeated failing tool results, or a Jev adequacy
-   judgement.
+   signals: upstream errors or repeated failing tool results. A Jev adequacy judge
+   (`jev.judge`) is measured in EXPERIMENTS.md and works well for self-contained coding and
+   math answers; it is not yet wired into the server.
 
 Subscription models are priced with a shadow price from quota pacing
 ([`quota.py`](auto_router/quota.py)): free while the weekly quota is projected
@@ -49,7 +82,19 @@ closed above it or when the short session window is nearly full.
 | C | `C_ev_switch` | B's target; escalate freely, downgrade only if horizon savings beat the risk |
 | D | `D_escalate` | start cheap, escalate on failure, remember it; downgrade when the cache expired or savings beat risk |
 | E | `E_escalate_sub` | D plus the subscription tier with quota pacing |
-| F | `F_expected` | minimise expected cost: call cost + P(fail) × (retry or stakes), cache- and quota-aware, with difficulty memory |
+| F | `F_expected` | minimise expected cost: call cost + P(fail) × (retry or stakes), cache- and quota-aware, with difficulty memory (default) |
+
+### How F decides, plainly
+
+For each model that could take the turn it estimates three numbers: what the turn costs on
+that model given what is already cached there; how likely the model is to get it right
+(measured success rate for this category and difficulty); and what a failure costs — a retry
+on a stronger model if the failure would be noticed, or the stakes of a wrong answer if not.
+It picks the model with the lowest sum. Easy turns land on free or very cheap models because
+their failure chance is tiny; hard turns go straight to the model with the best success per
+dollar; a failed turn raises the conversation's difficulty memory so the next follow-up does
+not start too low. Subscription models cost nothing while the weekly quota is on pace, and
+their price rises to list price as usage approaches the reserve line.
 
 ## Running
 
@@ -59,7 +104,11 @@ cp examples/config.example.yaml my.local.yaml   # describe your providers
 export AUTO_ROUTER_CONFIG=my.local.yaml TYPESAFE_API_KEY=...
 uvicorn auto_router.server:app --host 127.0.0.1 --port 8787
 pytest -q
+python experiments/calibrate.py --matrix runs/matrix.jsonl --out success.json   # after run_matrix.py
 ```
+
+A measured success table from our run ships as `examples/success.measured.json`; point
+`policy.success.table` at it or at your own.
 
 Point OpenAI clients at `http://127.0.0.1:8787/v1`, or Claude Code at it with
 `ANTHROPIC_BASE_URL=http://127.0.0.1:8787`.
@@ -101,8 +150,14 @@ and internal experiments; a commercial deployment needs its own licensed or
 self-measured capability data.
 
 Subscription passthrough is for your own sessions on your own plan, through the
-vendor's official client and within its terms. Do not route other people's
-traffic through a personal subscription.
+vendor's official client and within its terms. Anthropic's Claude Code terms reserve plan
+OAuth for ordinary use of the unmodified Claude Code binary, forbid routing requests through
+plan credentials on behalf of others, and forbid intermediating those credentials. A local
+proxy that forwards Claude Code's own requests is a grey area under that wording: the router
+never adds traffic to a plan, only moves Claude Code's own turns off it, and passthrough is
+only active when you configure a `subscription: claude` model. Check the current terms
+before enabling it. Plans such as Codex have no API route and are out of scope for the
+proxy; choose them at the job level instead.
 
 ## Licence
 

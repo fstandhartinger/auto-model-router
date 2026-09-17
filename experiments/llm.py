@@ -39,6 +39,7 @@ class CallResult:
     reasoning_tokens: int = 0
     cost_usd: float = 0.0          # money actually charged (0 on free routes)
     list_cost_usd: float = 0.0     # what the call costs at the model's list price
+    routed_model: str | None = None
     latency_s: float = 0.0
     error: str | None = None
     raw_message: dict = field(default_factory=dict)
@@ -53,6 +54,8 @@ class Client:
         self.budget = budget_usd
         self.list_prices = list_prices or {}
         self.http = httpx.Client(timeout=httpx.Timeout(900.0, connect=30.0))
+        #: when calling a router, price each call by the model it reports in X-Router-Model
+        self.router_catalog = None
         #: per-model request extras from the config (e.g. a thinking budget)
         self.extras = {m["name"]: m["request_extra"] for m in (config.raw.get("models") or [])
                        if isinstance(m.get("request_extra"), dict)}
@@ -109,6 +112,9 @@ class Client:
             usage_raw = data.get("usage") or {}
             usage = parse_openai_usage(usage_raw)
             details = usage_raw.get("completion_tokens_details") or {}
+            routed = resp.headers.get("x-router-model")
+            if routed and self.router_catalog is not None and routed in self.router_catalog:
+                model = self.router_catalog[routed]
             ref = self.list_prices.get(model.name, model)
             list_cost = (usage.uncached_input * ref.prices.input + usage.cached_read * ref.prices.read
                          + usage.cache_write * ref.prices.write + usage.output * ref.prices.output) / 1e6
@@ -125,11 +131,11 @@ class Client:
                 finish_reason=choice.get("finish_reason"), prompt_tokens=usage.total_input,
                 cached_tokens=usage.cached_read, cache_write_tokens=usage.cache_write,
                 output_tokens=usage.output, reasoning_tokens=int(details.get("reasoning_tokens") or 0),
-                cost_usd=cost, list_cost_usd=list_cost, latency_s=result.latency_s,
+                cost_usd=cost, list_cost_usd=list_cost, latency_s=result.latency_s, routed_model=routed,
                 raw_message={k: v for k, v in message.items() if k in ("role", "content", "tool_calls")},
             )
             break
-        self._log(model, tag, result)
+        self._log(model if not result.routed_model else self.router_catalog[result.routed_model], tag, result)
         return result
 
     def _log(self, model: ModelInfo, tag: str, r: CallResult) -> None:

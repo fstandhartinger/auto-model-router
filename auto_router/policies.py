@@ -143,21 +143,23 @@ def _priced(model: ModelInfo, ctx: Context) -> ModelInfo | None:
 
 
 def candidates(req: TurnRequest, ctx: Context, *, allow_subscription: bool) -> list[ModelInfo]:
-    pool = ctx.catalog.eligible(needs_vision=req.needs_vision, needs_tools=req.needs_tools,
-                                prompt_tokens=req.prompt_tokens)
+    """Usable models for this turn: capability filters, then closed or disallowed plans removed.
+
+    If nothing claims a large enough context window, the widest remaining models are kept
+    rather than failing the request.
+    """
+    def usable(m: ModelInfo) -> bool:
+        if not m.subscription:
+            return True
+        return allow_subscription and _priced(m, ctx) is not None
+
+    pool = [m for m in ctx.catalog.eligible(needs_vision=req.needs_vision, needs_tools=req.needs_tools,
+                                            prompt_tokens=req.prompt_tokens) if usable(m)]
     if not pool:
-        # Nothing claims enough context: keep the largest windows rather than failing the request.
-        widest = max((m.context_tokens for m in ctx.catalog.all()), default=0)
-        pool = [m for m in ctx.catalog.all() if m.context_tokens == widest]
-    out = []
-    for m in pool:
-        if m.subscription:
-            if not allow_subscription:
-                continue
-            if _priced(m, ctx) is None:
-                continue
-        out.append(m)
-    return out
+        rest = [m for m in ctx.catalog.all() if usable(m)]
+        widest = max((m.context_tokens for m in rest), default=0)
+        pool = [m for m in rest if m.context_tokens == widest]
+    return pool
 
 
 def list_blended(model: ModelInfo) -> float:

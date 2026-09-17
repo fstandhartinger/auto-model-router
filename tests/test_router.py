@@ -68,3 +68,18 @@ def test_without_classifier_falls_back_to_a_cautious_middle():
     r.classifier = None
     res = r.route([{"role": "user", "content": "hello"}], None, None, now=1.0)
     assert res.request.difficulty == 0.5
+
+
+def test_measured_success_table_and_jev_calibration(tmp_path):
+    import json
+    from auto_router.router import success_model_from_config
+    table = tmp_path / "success.json"
+    table.write_text(json.dumps([["cheap", "coding", "hard", 0.1], ["frontier", "coding", "hard", 0.9]]))
+    sm = success_model_from_config({"success": {"table": str(table), "offset": 5}})
+    assert sm.p(CHEAP, "coding", 0.9) == 0.1 and sm.p(FRONTIER, "coding", 0.9) == 0.9
+    assert sm.offset == 5
+    cfg = RouterConfig(providers={}, catalog=Catalog([CHEAP, MID, FRONTIER]),
+                       policy={"jev_difficulty_calibration": [0.27, 0.51]})
+    r = Router(cfg, policy=EscalatePolicy(), quota_reader=lambda: {}, classifier=stub(difficulty=0.525))
+    res = r.route([{"role": "user", "content": "x"}], None, None, now=1.0)
+    assert abs(res.request.difficulty - 0.5) < 1e-9, "Jev's compressed scale is mapped back to 0..1"

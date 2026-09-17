@@ -20,6 +20,23 @@ from .economics import SuccessModel
 from .policies import POLICIES, Context, Conversation, Policy, TurnRequest
 from .quota import PacingRule, QuotaDecision, decide as quota_decide, from_budget_file, from_codex_rollouts
 
+def success_model_from_config(policy: dict) -> SuccessModel:
+    """Logistic curve parameters and an optional measured success table.
+
+    ``policy.success``: {offset, slope, scale, table: path}. The table is JSON
+    ``[[model, category, bucket, p], ...]`` as written by experiments/calibrate.py.
+    Measured rates beat benchmark-derived curves by a wide margin (see EXPERIMENTS.md).
+    """
+    import json
+    conf = policy.get("success") or {}
+    model = SuccessModel(**{k: conf[k] for k in ("offset", "slope", "scale") if k in conf})
+    table = conf.get("table")
+    if table:
+        with open(os.path.expanduser(table)) as fh:
+            model.measured = {(m, c, b): float(p) for m, c, b, p in json.load(fh)}
+    return model
+
+
 #: Stakes score (0..1) -> dollars an undetected wrong answer is worth.
 STAKES_USD = (0.05, 0.5, 3.0, 20.0)
 
@@ -111,7 +128,9 @@ class Router:
         self.config = config
         name = (config.policy or {}).get("name") or os.environ.get("AUTO_ROUTER_POLICY", "F_expected")
         self.policy = policy or POLICIES[name]()
-        self.success = success or SuccessModel()
+        self.success = success or success_model_from_config(config.policy or {})
+        cal = (config.policy or {}).get("jev_difficulty_calibration") or [0.0, 1.0]
+        self.jev_offset, self.jev_scale = float(cal[0]), float(cal[1]) or 1.0
         self.classifier = classifier or (jev.classify if os.environ.get("TYPESAFE_API_KEY") else None)
         self.quota_reader = quota_reader or self._read_quota
         self.conversations: dict[str, Conversation] = {}
@@ -204,9 +223,10 @@ class Router:
                                needs_tools=has_tools, stakes_usd=STAKES_USD[2], difficulty_confidence=0.0)
         stakes_idx = min(len(STAKES_USD) - 1, int(round(cls.stakes * (len(STAKES_USD) - 1))))
         agentic = has_tools and cls.needs_tools > 0.5
+        difficulty = max(0.0, min(1.0, (cls.difficulty - self.jev_offset) / self.jev_scale))
         return TurnRequest(
             category=cls.category if cls.category in self.success_categories() else "general",
-            difficulty=cls.difficulty,
+            difficulty=difficulty,
             prompt_tokens=prompt_tokens,
             output_tokens=min(max_tokens or 4000, 4000) if not agentic else 6000,
             now=now,

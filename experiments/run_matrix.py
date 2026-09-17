@@ -50,6 +50,7 @@ class Trace:
                 "list_cost_usd": round(sum(x.list_cost_usd for x in c), 6),
                 "latency_s": round(sum(x.latency_s for x in c), 1),
                 "max_prompt_tokens": max((x.prompt_tokens for x in c), default=0),
+                "routed_models": [x.routed_model for x in c if x.routed_model],
                 "errors": [x.error for x in c if not x.ok][:3]}
 
 
@@ -99,10 +100,12 @@ def tool_loop(client, model, task, trace, max_tokens, max_steps=25):
 
 
 TASK_DEADLINE_S = 480.0
+FOLLOW_UP = ""
 
 
 def agent_loop(client, model, task, trace, max_tokens, max_steps=30):
     deadline = time.time() + TASK_DEADLINE_S
+    followed = False
     with tempfile.TemporaryDirectory() as ws:
         root = Path(ws)
         for rel, content in task["files"].items():
@@ -165,6 +168,10 @@ def agent_loop(client, model, task, trace, max_tokens, max_steps=30):
                     out = f"unknown tool {name}"
                 messages.append({"role": "tool", "tool_call_id": call.get("id", ""), "content": out})
             if finished:
+                if FOLLOW_UP and not followed:
+                    followed = True
+                    messages.append({"role": "user", "content": FOLLOW_UP})
+                    continue
                 break
         code = (root / "solution.py").read_text() if (root / "solution.py").exists() else ""
         if not code:
@@ -210,12 +217,22 @@ def main():
     ap.add_argument("--time-budget", type=float, default=540, help="stop submitting after this many seconds")
     ap.add_argument("--retry-infra", action="store_true")
     ap.add_argument("--task-deadline", type=float, default=480.0, help="agent loops stop after this many seconds")
+    ap.add_argument("--router-url", help="send every call to a running router (model 'auto') instead")
+    ap.add_argument("--follow-up", default="", help="second user turn appended after the agent calls done")
     args = ap.parse_args()
 
-    global TASK_DEADLINE_S
+    global TASK_DEADLINE_S, FOLLOW_UP
     TASK_DEADLINE_S = args.task_deadline
+    FOLLOW_UP = args.follow_up
     cfg = load_config(args.config)
     client = Client(cfg, args.ledger, args.budget)
+    if args.router_url:
+        from auto_router.catalog import Catalog, ModelInfo, Prices
+        from auto_router.config import Provider
+        client.router_catalog = {m.name: m for m in cfg.catalog.all()}
+        cfg.providers["router"] = Provider("router", args.router_url.rstrip("/"))
+        auto = ModelInfo(name="auto", provider="router", upstream_id="auto", prices=Prices.free())
+        cfg.catalog = Catalog(cfg.catalog.all() + [auto])
     tasks = [json.loads(line) for line in open(args.tasks)]
     tasks = [t for t in tasks if args.filter in t["id"]]
     out = Path(args.out)

@@ -340,14 +340,17 @@ def simulate(policy_name: str, sessions, sims: dict[str, SimModel], truth: dict,
     for start, src, turns in sessions:
         conv = Conversation()
         for index, turn in enumerate(turns):
-            u_success, u_detect, u_noise = rng.random(), rng.random(), rng.gauss(0, 1)
-            available = {n: s for n, s in sims.items() if rng.random() < s.availability}
+            turn_rng = random.Random(f"{seed}:{start}:{src}:{index}")   # identical draws in every variant
+            u_success, u_noise = turn_rng.random(), turn_rng.gauss(0, 1)
+            available = {n: s for n, s in sims.items()
+                         if random.Random(f"{seed}:{start}:{index}:{n}").random() < s.availability}
             if src != "claude" or scenario == "ours-closed":
                 available = {n: s for n, s in available.items() if s.info.subscription != "claude"}
             if src != "codex" or not today:
                 available.pop("codex-luna-sub", None)
-            if not available:  # every route drawn as unavailable: fall back to the full non-plan set
-                available = {n: s for n, s in sims.items() if not s.info.subscription}
+            if not any(not s.info.subscription for s in available.values()):
+                # every non-plan route drawn as unavailable: fall back to the full non-plan set
+                available.update({n: s for n, s in sims.items() if not s.info.subscription})
             t0 = start + turn.calls[0][0]
             quota = meter.decision(t0) if src == "claude" else {}
             if not today and src == "claude" and "claude-opus-5-sub" in available and not (
@@ -386,7 +389,7 @@ def simulate(policy_name: str, sessions, sims: dict[str, SimModel], truth: dict,
                 if u_success < p:
                     solved = True
                     break
-                if attempts >= max_retries or rng.random() >= detect:
+                if attempts >= max_retries or turn_rng.random() >= detect:
                     break
                 attempts += 1
                 retry = (Choice(model, "retry") if today else
@@ -396,7 +399,7 @@ def simulate(policy_name: str, sessions, sims: dict[str, SimModel], truth: dict,
                 out.escalations += int(retry.model != model)
                 model = retry.model
                 extra += produced
-                u_success = rng.random() * 0.5 + u_success * 0.5  # retries are partially correlated
+                u_success = turn_rng.random() * 0.5 + u_success * 0.5  # retries are partially correlated
             out.turns += 1
             out.solved += int(solved)
         out.switches += conv.switches
