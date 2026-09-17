@@ -6,7 +6,8 @@ from auto_router.config import load_config
 DOC = {"model": {
     "id": "example-model::max",
     "category_scores": {"cat_coding": 60.0, "cat_agentic": 50.0, "cat_science": 55.0, "cat_long_context": 45.0},
-    "benchmarks": {"aa_math_index": 70.0, "aa_tau2": 0.8},
+    "benchmarks": {"aa_math_index": 70.0, "aa_tau2": 0.8, "aa_intelligence_index": 40.0,
+                   "aa_coding_index": 65.0},
     "aa_metadata": {"context_window_tokens": 400000},
     "offers": [
         {"platform": "Direct", "provider": "Vendor", "input_per_1m": 2.0, "output_per_1m": 8.0},
@@ -18,9 +19,9 @@ DOC = {"model": {
 
 def test_capability_mapping():
     cap = capability_from_model(DOC["model"])
-    assert cap["coding"] == 60.0 and cap["math"] == 70.0 and cap["long_context"] == 45.0
-    assert cap["tool_use"] == 65.0            # mean of tau2 (80) and agentic (50)
-    assert 50 < cap["general"] < 70
+    assert cap["coding"] == 65.0, "headline index wins over the category score"
+    assert cap["math"] == 70.0 and cap["long_context"] == 45.0 and cap["tool_use"] == 80.0
+    assert cap["general"] == 60.0 and cap["agentic"] == 50.0
 
 
 def test_offer_selection():

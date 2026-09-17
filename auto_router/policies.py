@@ -143,9 +143,14 @@ def _priced(model: ModelInfo, ctx: Context) -> ModelInfo | None:
 
 
 def candidates(req: TurnRequest, ctx: Context, *, allow_subscription: bool) -> list[ModelInfo]:
+    pool = ctx.catalog.eligible(needs_vision=req.needs_vision, needs_tools=req.needs_tools,
+                                prompt_tokens=req.prompt_tokens)
+    if not pool:
+        # Nothing claims enough context: keep the largest windows rather than failing the request.
+        widest = max((m.context_tokens for m in ctx.catalog.all()), default=0)
+        pool = [m for m in ctx.catalog.all() if m.context_tokens == widest]
     out = []
-    for m in ctx.catalog.eligible(needs_vision=req.needs_vision, needs_tools=req.needs_tools,
-                                  prompt_tokens=req.prompt_tokens):
+    for m in pool:
         if m.subscription:
             if not allow_subscription:
                 continue
@@ -214,7 +219,7 @@ class StaticPolicy(Policy):
         return Choice(strongest(pool, req.category, ctx).name, "static: strongest model")
 
     def on_failure(self, conv, req, ctx, failed, tried):
-        return None
+        return Choice(failed, "static: retry on the same model")
 
 
 class NaivePolicy(Policy):

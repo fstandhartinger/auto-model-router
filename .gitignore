@@ -5,3 +5,5 @@ __pycache__/
 .env
 *.local.yaml
 experiments/runs/
+experiments/tasks/
+experiments/runs/

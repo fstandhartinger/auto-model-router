@@ -109,9 +109,20 @@ def _pct(value: Any) -> float | None:
 
 
 def capability_from_model(model: dict) -> dict[str, float]:
-    """Map a model document onto the router's categories (0..100)."""
+    """Map a model document onto the router's categories (roughly 0..100).
+
+    Headline indexes (intelligence, coding, coding-agent, long-context
+    reasoning) are preferred over per-variant category scores: the latter can
+    rest on very few benchmarks for a given reasoning-effort variant and then
+    rank a small model above a frontier one. Category scores are only a
+    fallback. The success model is fitted per category, so the scales only need
+    to be monotone, not identical.
+    """
     cats = model.get("category_scores") or {}
     b = model.get("benchmarks") or {}
+
+    def num(v: Any) -> float | None:
+        return float(v) if isinstance(v, (int, float)) else None
 
     def first(*vals: Any) -> float | None:
         for v in vals:
@@ -119,17 +130,21 @@ def capability_from_model(model: dict) -> dict[str, float]:
                 return float(v)
         return None
 
+    ii = num(b.get("aa_intelligence_index"))
+    general = ii * 1.5 if ii is not None else None
+    tb = num(b.get("aa_terminalbench_v2_1"))
+    tau2 = _pct(b.get("aa_tau2"))
     out: dict[str, float | None] = {
-        "coding": first(cats.get("cat_coding"), b.get("aa_coding_index")),
-        "agentic": first(cats.get("cat_agentic"), b.get("aa_coding_agent_index")),
-        "math": first(b.get("aa_math_index"), cats.get("cat_science")),
-        "knowledge": first(cats.get("cat_science"), _pct(b.get("aa_gpqa"))),
-        "long_context": first(cats.get("cat_long_context"), _pct(b.get("aa_lcr"))),
+        "coding": first(b.get("aa_coding_index"), cats.get("cat_coding")),
+        "agentic": first(b.get("aa_coding_agent_index"), tb * 72 if tb is not None else None,
+                         cats.get("cat_agentic")),
+        "math": first(b.get("aa_math_index"), general, cats.get("cat_science")),
+        "knowledge": first(general, cats.get("cat_science"), _pct(b.get("aa_gpqa"))),
+        "long_context": first(_pct(b.get("aa_lcr")), cats.get("cat_long_context")),
+        "tool_use": first(tau2, general, cats.get("cat_agentic")),
     }
-    tool_parts = [v for v in (_pct(b.get("aa_tau2")), cats.get("cat_agentic")) if isinstance(v, (int, float))]
-    out["tool_use"] = sum(tool_parts) / len(tool_parts) if tool_parts else None
     known = [v for v in out.values() if v is not None]
-    out["general"] = sum(known) / len(known) if known else None
+    out["general"] = general if general is not None else (sum(known) / len(known) if known else None)
     return {k: round(v, 2) for k, v in out.items() if v is not None}
 
 
