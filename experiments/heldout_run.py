@@ -158,6 +158,8 @@ def run_live(args) -> int:
     meta = {"started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "preregistration_sha256": prereg["task_file_sha256"],
             "control_model": control.name,
+            "control_label": args.control_label,
+            "arms": args.arms,
             "control_is_metered": not control.prices.is_free,
             "control_prices_per_mtok": {"input": control.prices.input,
                                         "output": control.prices.output},
@@ -179,19 +181,23 @@ def run_live(args) -> int:
               "CANNOT measure a cash difference", file=sys.stderr)
 
     stopped = None
+    label = args.control_label
+    wanted_arms = [a.strip() for a in args.arms.split(",") if a.strip()]
     for task in tasks:
-        for arm in ("router", "control"):
-            if (task["id"], arm) in done:
+        for arm in wanted_arms:
+            recorded = label if arm == "control" else arm
+            if (task["id"], recorded) in done:
                 continue
             try:
                 outcome = _one(task, arm, router, control, client, isolation)
+                outcome.arm = recorded
             except BudgetExceeded as exc:
                 stopped = str(exc)
                 break
             with ledger.open("a") as fh:
                 fh.write(json.dumps(asdict(outcome)) + "\n")
             mark = {True: "pass", False: "FAIL", None: "skip"}[outcome.passed]
-            print(f"  {task['id']:<34} {arm:<8} {outcome.model:<18} {mark:<5} "
+            print(f"  {task['id']:<34} {recorded:<16} {outcome.model:<18} {mark:<5} "
                   f"{outcome.detail[:70]}")
         if stopped:
             break

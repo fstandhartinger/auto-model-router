@@ -11,7 +11,17 @@ Status: experimental, measured. Full method and numbers: [`EXPERIMENTS.md`](EXPE
 
 Eight models on 78 graded tasks, a replay of one week of real coding-agent traffic
 (1,638 sessions, 57,696 calls, 8.7B input tokens, 96 % of them cache reads), and a live run
-of the router server. Cross-validated replay, public list prices, no subscription:
+of the router server.
+
+> **Read the table as a simulation, because it is one.** Every dollar figure below
+> is *replay arithmetic*: real traffic and measured per-model success rates, priced at
+> public list prices. **No money was saved and none was measured.** No invoice was
+> compared, no A/B test was run against production, and the replay knows the whole week
+> in advance in a way a live router does not. The numbers rank policies against each
+> other under one set of assumptions; they are not a cash result and must not be quoted
+> as one. Live, paired, *measured* results are in [`EXPERIMENTS.md`](EXPERIMENTS.md).
+
+Cross-validated replay, public list prices, no subscription:
 
 | policy | tasks solved | cost / week | cost per solved turn |
 |---|---:|---:|---:|

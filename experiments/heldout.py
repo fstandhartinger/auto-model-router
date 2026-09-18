@@ -266,10 +266,11 @@ def report(out_dir: Path) -> dict:
             continue
         by_arm_category.setdefault((row["arm"], row["category"]), []).append(row)
 
+    arms = sorted({row["arm"] for row in rows}, key=lambda a: (a != "router", a))
     categories: dict[str, dict] = {}
     for category in CATEGORIES:
         entry: dict = {}
-        for arm in ("router", "control"):
+        for arm in arms:
             rows_ = by_arm_category.get((arm, category), [])
             if not rows_:
                 continue
@@ -311,6 +312,8 @@ def report(out_dir: Path) -> dict:
 
     small = [c for c, e in categories.items()
              if min((a["n"] for a in e.values()), default=0) < 10]
+    free_arms = sorted({a for e in categories.values() for a, v in e.items()
+                        if v["metered_cost_usd"] is None})
     out = {
         "preregistration_sha256": prereg["task_file_sha256"],
         "registered_at": prereg["registered_at"],
@@ -323,6 +326,8 @@ def report(out_dir: Path) -> dict:
         "per_category": categories,
         "categories_too_small_for_a_quality_claim": sorted(small),
         "labels_present": sorted({r.get("label", "live") for r in rows}),
+        "arms": arms,
+        "arms_with_no_measurable_cost": free_arms,
         "claims_not_made": ANALYSIS_PLAN["claims_not_made"],
     }
     (out_dir / "report.json").write_text(json.dumps(out, indent=1))
@@ -334,13 +339,14 @@ def format_report(data: dict) -> str:
              f"registered {data['registered_at']}",
              f"graded {data['graded_rows']} rows, excluded {data['excluded_rows']}",
              ""]
-    header = f"{'category':<14}{'arm':<9}{'n':>4}{'pass':>6}{'rate':>8}{'95% CI':>16}{'cost $':>10}  grader"
+    header = (f"{'category':<14}{'arm':<17}{'n':>4}{'pass':>6}{'rate':>8}{'95% CI':>16}"
+              f"{'cost $':>10}  grader")
     lines += [header, "-" * len(header)]
     for category, arms in data["per_category"].items():
         for arm, e in arms.items():
             ci = f"{e['wilson_95'][0]:.2f}-{e['wilson_95'][1]:.2f}"
             cost = "n/a" if e["metered_cost_usd"] is None else f"{e['metered_cost_usd']:.4f}"
-            lines.append(f"{category:<14}{arm:<9}{e['n']:>4}{e['passed']:>6}"
+            lines.append(f"{category:<14}{arm:<17}{e['n']:>4}{e['passed']:>6}"
                          f"{e['pass_rate']:>8.2f}{ci:>16}{cost:>10}  {e['grader_kind']}")
     if data.get("amendments"):
         lines += ["", "Harness amended after registration:"]
@@ -352,6 +358,10 @@ def format_report(data: dict) -> str:
         lines += ["", "No quality claim is made for: "
                   + ", ".join(data["categories_too_small_for_a_quality_claim"])
                   + " (fewer than 10 graded tasks)."]
+    if data.get("arms_with_no_measurable_cost"):
+        lines += ["", "No cash comparison is possible for: "
+                  + ", ".join(data["arms_with_no_measurable_cost"])
+                  + " (every route used was free or unpriced)."]
     lines += ["", "Not claimed:"] + [f"  - {c}" for c in data["claims_not_made"]]
     return "\n".join(lines)
 
@@ -371,6 +381,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--categories", default=",".join(CATEGORIES))
     parser.add_argument("--control", help="control route name; default is the highest "
                                           "general capability in the catalog")
+    parser.add_argument("--arms", default="router,control",
+                        help="which arms to run, comma separated")
+    parser.add_argument("--control-label", default="control",
+                        help="name the control arm is recorded under; use a distinct label "
+                             "when adding a second control (e.g. control-metered) so it does "
+                             "not collide with an existing one in the ledger")
     args = parser.parse_args(argv)
 
     if args.command == "preregister":
