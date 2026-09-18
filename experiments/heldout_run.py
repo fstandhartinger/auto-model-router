@@ -263,8 +263,7 @@ def _one(task: dict, arm: str, router: Router, control: ModelInfo, client: Clien
         prompt_tokens=call.prompt_tokens, cached_tokens=call.cached_tokens,
         output_tokens=call.output_tokens,
         observed_cost_usd=None if model.prices.is_free else round(call.cost_usd, 8),
-        cost_basis=("route configured as free" if model.prices.is_free
-                    else "provider-reported tokens x list price"),
+        cost_basis=call.cost_basis,
         estimated_cost_usd=(explanation.estimated.cost_usd if explanation else None),
         estimated_p_success=(explanation.estimated.p_success if explanation else None),
         cache_status=(explanation.cache.status if explanation else "n/a"),

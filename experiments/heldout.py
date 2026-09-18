@@ -104,7 +104,7 @@ def _code_digests() -> dict[str, str]:
     here = Path(__file__).resolve().parent
     return {name: digest(here / name)
             for name in ("graders.py", "tasks_heldout.py", "sandbox_runner.py",
-                         "sandbox.py", "heldout_run.py")}
+                         "sandbox.py", "heldout_run.py", "llm.py")}
 
 
 def plan_digest() -> str:

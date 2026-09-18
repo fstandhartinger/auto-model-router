@@ -13,7 +13,7 @@ import pytest
 
 from auto_router import bench, server
 from auto_router.bench import BenchmarkClient, capability_evidence, design_capability
-from auto_router.catalog import CacheRules, Catalog, ModelInfo, Prices
+from auto_router.catalog import CacheRules, Catalog, ModelInfo, Prices  # noqa: F401
 from auto_router.config import RouterConfig, load_config
 from auto_router.economics import SuccessModel
 from auto_router.jev import Classification
@@ -450,3 +450,45 @@ def test_the_report_names_any_unrecorded_drift(tmp_path):
     data = heldout.report(tmp_path)
     assert "graders.py" in data["harness_drift_since_registration"]
     assert "UNRECORDED harness drift" in heldout.format_report(data)
+
+
+# ===========================================================================
+# Found by running the harness, not by a reviewer: a metered arm that had just
+# spent $0.16 printed "$0.0000" in the results table.
+# ===========================================================================
+def test_a_gateway_reported_zero_is_not_taken_as_a_measured_cost():
+    """A gateway can report cost 0 while the money is charged upstream.
+
+    OpenRouter does exactly that for a bring-your-own-key route: the top-level
+    ``cost`` is 0 and the real figure sits in
+    ``cost_details.upstream_inference_cost``.
+    """
+    from experiments.llm import _billed_cost
+    metered = ModelInfo("m", "openrouter", "m", Prices(4.0, 20.0))
+    usage_raw = {"cost": 0, "is_byok": True,
+                 "cost_details": {"upstream_inference_cost": 0.223232}}
+    cost, basis = _billed_cost(None, usage_raw, None, metered, list_cost=0.19)
+    assert cost == pytest.approx(0.223232)
+    assert "upstream" in basis
+
+
+def test_a_byok_zero_falls_back_to_list_price_and_says_so():
+    from experiments.llm import _billed_cost
+    metered = ModelInfo("m", "openrouter", "m", Prices(4.0, 20.0))
+    cost, basis = _billed_cost(None, {"cost": 0, "is_byok": True}, None, metered, list_cost=0.19)
+    assert cost == pytest.approx(0.19)
+    assert "own key" in basis and "list" in basis
+
+
+def test_a_genuinely_free_route_reports_zero_with_that_reason():
+    from experiments.llm import _billed_cost
+    free = ModelInfo("f", "host", "f", Prices.free())
+    cost, basis = _billed_cost(None, {"cost": 0}, None, free, list_cost=0.0)
+    assert cost == 0.0 and basis == "route configured as free"
+
+
+def test_a_real_billed_figure_wins_over_list_price():
+    from experiments.llm import _billed_cost
+    metered = ModelInfo("m", "openrouter", "m", Prices(4.0, 20.0))
+    cost, basis = _billed_cost(None, {"cost": 0.05}, None, metered, list_cost=0.19)
+    assert cost == pytest.approx(0.05) and "gateway-reported" in basis

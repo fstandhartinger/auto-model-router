@@ -39,10 +39,40 @@ class CallResult:
     reasoning_tokens: int = 0
     cost_usd: float = 0.0          # money actually charged (0 on free routes)
     list_cost_usd: float = 0.0     # what the call costs at the model's list price
+    #: Where cost_usd came from. Never let a reported zero pass as a measurement
+    #: without saying which zero it is.
+    cost_basis: str = "not measured"
     routed_model: str | None = None
     latency_s: float = 0.0
     error: str | None = None
     raw_message: dict = field(default_factory=dict)
+
+
+def _billed_cost(provider, usage_raw: dict, usage, model: ModelInfo,
+                 list_cost: float) -> tuple[float, str]:
+    """What this call actually cost, and on what basis.
+
+    A gateway can report ``cost: 0`` while the money is charged somewhere else.
+    OpenRouter does exactly that for a bring-your-own-key route: the top-level
+    ``cost`` is 0 and the real figure sits in
+    ``cost_details.upstream_inference_cost``. Taking the zero at face value
+    printed "$0.0000" for an arm that had just spent sixteen cents - the exact
+    mistake this project refuses to make elsewhere, made here.
+    """
+    details = usage_raw.get("cost_details") or {}
+    upstream = details.get("upstream_inference_cost")
+    if isinstance(upstream, (int, float)) and upstream > 0:
+        return float(upstream), "gateway-reported upstream inference cost"
+    reported = usage_raw.get("cost")
+    if isinstance(reported, (int, float)) and reported > 0:
+        return float(reported), "gateway-reported cost"
+    if model.prices.is_free:
+        return 0.0, "route configured as free"
+    if isinstance(reported, (int, float)) and reported == 0 and usage_raw.get("is_byok"):
+        # The gateway billed nothing because the key is the caller's own; the
+        # provider still charged. List price is the honest stand-in, named.
+        return list_cost, "gateway billed 0 (own key); priced at list instead"
+    return list_cost, "priced at list (no billed figure reported)"
 
 
 class Client:
@@ -118,16 +148,13 @@ class Client:
             ref = self.list_prices.get(model.name, model)
             list_cost = (usage.uncached_input * ref.prices.input + usage.cached_read * ref.prices.read
                          + usage.cache_write * ref.prices.write + usage.output * ref.prices.output) / 1e6
-            if provider.name == "openrouter" and isinstance(usage_raw.get("cost"), (int, float)):
-                cost = float(usage_raw["cost"])
-            else:
-                cost = (usage.uncached_input * model.prices.input + usage.cached_read * model.prices.read
-                        + usage.cache_write * model.prices.write + usage.output * model.prices.output) / 1e6
+            cost, cost_basis = _billed_cost(provider, usage_raw, usage, model, list_cost)
             content = message.get("content") or ""
             if isinstance(content, list):
                 content = "".join(p.get("text", "") for p in content if isinstance(p, dict))
             result = CallResult(
-                ok=True, content=content, tool_calls=message.get("tool_calls") or [],
+                ok=True, content=content, cost_basis=cost_basis,
+                tool_calls=message.get("tool_calls") or [],
                 finish_reason=choice.get("finish_reason"), prompt_tokens=usage.total_input,
                 cached_tokens=usage.cached_read, cache_write_tokens=usage.cache_write,
                 output_tokens=usage.output, reasoning_tokens=int(details.get("reasoning_tokens") or 0),
@@ -139,7 +166,8 @@ class Client:
         return result
 
     def _log(self, model: ModelInfo, tag: str, r: CallResult) -> None:
-        row = {"ts": time.time(), "model": model.name, "tag": tag, "ok": r.ok, "prompt": r.prompt_tokens,
+        row = {"ts": time.time(), "model": model.name, "tag": tag, "ok": r.ok,
+               "cost_basis": r.cost_basis, "prompt": r.prompt_tokens,
                "cached": r.cached_tokens, "cache_write": r.cache_write_tokens, "output": r.output_tokens,
                "reasoning": r.reasoning_tokens, "cost_usd": r.cost_usd, "list_cost_usd": r.list_cost_usd,
                "latency_s": round(r.latency_s, 2), "error": r.error}
