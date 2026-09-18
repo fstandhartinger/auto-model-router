@@ -33,6 +33,6 @@ def test_local_http_smoke_and_outage_paths(tmp_path):
     assert not failed, "failed checks: " + json.dumps(failed, indent=1) + "\n" + detail
     assert proc.returncode == 0, detail
     # Guard against an empty or truncated report silently passing.
-    assert data["passed"] >= 20, json.dumps(data, indent=1)
+    assert data["passed"] >= 24, json.dumps(data, indent=1)
     # The point of the exercise: the server is gone again.
     assert any(c["check"] == "no service left behind" and c["ok"] for c in data["checks"])

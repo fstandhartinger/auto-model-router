@@ -264,6 +264,39 @@ def main(argv: list[str] | None = None) -> int:
         results.append(check(SECRET not in ledger.read_text()
                              and "responsive dashboard" not in ledger.read_text(),
                              "no prompt text or credential in the ledger file"))
+
+        # -- outage and fallback: the classifier is configured but unreachable
+        # The first phase ran with no key at all, which exercises "disabled".
+        # This phase sets a key and points the endpoint at an unroutable host,
+        # which is what an actual Jev outage looks like from inside the server.
+        stop(router)
+        router = spawn(REPO, "auto_router.server:app", router_port, {
+            "AUTO_ROUTER_CONFIG": str(config_path),
+            "AUTO_ROUTER_CACHE_DIR": str(tmp / "bench-cache"),
+            "AUTO_ROUTER_BENCH_URL": "http://127.0.0.1:1/bench-is-down",
+            "AUTO_ROUTER_LEDGER": str(ledger),
+            # Unroutable on purpose: this is a classifier outage, not a missing key.
+            "AUTO_ROUTER_JEV_URL": "http://127.0.0.1:1/jev-is-down",
+            "AUTO_ROUTER_JEV_ATTEMPTS": "1",
+            "TYPESAFE_API_KEY": "smoke-test-placeholder-not-a-real-key",
+            "PYTHONPATH": str(REPO),
+        })
+        wait_for(router_port, proc=router)
+        body["messages"] = [{"role": "user", "content": "Summarise this changelog. " * 90}]
+        started = time.perf_counter()
+        status, completion, headers = request(f"{base}/v1/chat/completions", body)
+        elapsed = time.perf_counter() - started
+        results.append(check(status == 200,
+                             "a classifier outage does not break routing", f"HTTP {status}"))
+        results.append(check(headers.get("X-Router-Safe-Fallback") == "classifier-unavailable",
+                             "the classifier outage is named as a safe fallback",
+                             str(headers.get("X-Router-Safe-Fallback"))))
+        results.append(check(float(headers.get("X-Router-Evidence", "1")) < 1.0,
+                             "the outage lowers the recorded evidence confidence",
+                             str(headers.get("X-Router-Evidence"))))
+        results.append(check(elapsed < 60,
+                             "the outage fails fast instead of hanging the request",
+                             f"{elapsed:.1f}s"))
     finally:
         stop(router)
         stop(stub)
