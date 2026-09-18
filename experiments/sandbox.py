@@ -26,8 +26,18 @@ What the sandbox gives the code
 What it does not give
 ---------------------
 Bubblewrap is a namespace sandbox, not a VM. It does not defend against a local
-kernel exploit. It is the right tool for grading benchmark answers; it is not a
-reason to execute code from an untrusted third party on a machine that matters.
+kernel exploit.
+
+It also does not hide the host's ``/usr`` from the code: the read-only binds are
+what the interpreter needs to start, and anything else installed under ``/usr``
+is readable. The code cannot send what it reads anywhere - there is no network -
+and its output goes only to the grader, so the exposure is bounded by what the
+grader then does with that output. If you point this at genuinely hostile code
+rather than at benchmark answers, build a minimal root filesystem first and bind
+only the interpreter.
+
+It is the right tool for grading benchmark answers; it is not a reason to
+execute code from an untrusted third party on a machine that matters.
 
 ``preflight()`` reports whether the sandbox works here, so a harness can record
 an exact limitation instead of silently running code unisolated. Nothing in
@@ -91,17 +101,47 @@ def _process_cap(headroom: int) -> int | None:
     limit is already lower, in which case nothing is changed.
     """
     try:
-        # Field 4 of /proc/loadavg is "running/total" *threads* system-wide.
-        # RLIMIT_NPROC counts threads too, so a cap based on the process count
-        # alone is far too low on a machine with threaded services.
-        total = int(open("/proc/loadavg").read().split()[3].split("/")[1])
         soft, hard = resource.getrlimit(resource.RLIMIT_NPROC)
-    except (OSError, IndexError, ValueError):
+    except OSError:
         return None
-    cap = total + max(16, headroom)
+    running = _own_threads()
+    if running is None:
+        return None
+    cap = running + max(16, headroom)
     if hard != resource.RLIM_INFINITY and cap >= hard:
+        # No cap we could install would be both effective and permitted.
         return None
     return cap
+
+
+def _own_threads() -> int | None:
+    """Threads belonging to this real uid.
+
+    RLIMIT_NPROC is counted per real uid, so the right baseline is what *this
+    user* is running - not the machine's total, which would make the cap far
+    too loose, and not the process count, which would make it far too tight on
+    a host with threaded services.
+    """
+    uid = os.getuid()
+    total = 0
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return None
+    for entry in entries:
+        if not entry.isdigit():
+            continue
+        try:
+            if os.stat(f"/proc/{entry}").st_uid != uid:
+                continue
+            with open(f"/proc/{entry}/status") as handle:
+                for line in handle:
+                    if line.startswith("Threads:"):
+                        total += int(line.split()[1])
+                        break
+        except (OSError, ValueError, IndexError):
+            continue
+    return total or None
 
 
 def _rlimits(limits: Limits):
@@ -151,6 +191,27 @@ def build_argv(command: list[str], workdir: Path, limits: Limits,
     return argv + command
 
 
+class UnsafePath(ValueError):
+    """A requested file name would land outside the private work directory."""
+
+
+def _safe_target(workdir: Path, name: str) -> Path:
+    """Resolve ``name`` strictly beneath ``workdir``.
+
+    ``files={"../../etc/x": ...}`` or an absolute path would otherwise be
+    written on the host, with the harness's privileges, *before* the sandbox
+    starts - so the sandbox would never see it and could not stop it.
+    """
+    candidate = Path(name)
+    if candidate.is_absolute() or any(part == ".." for part in candidate.parts):
+        raise UnsafePath(f"{name!r} must be a relative path inside the work directory")
+    target = (workdir / candidate).resolve()
+    root = workdir.resolve()
+    if target != root and root not in target.parents:
+        raise UnsafePath(f"{name!r} resolves outside the work directory")
+    return target
+
+
 def run(command: list[str], *, files: dict[str, str] | None = None, stdin: str = "",
         limits: Limits | None = None, ro_binds: dict[str, str] | None = None) -> SandboxResult:
     """Run ``command`` in a fresh sandbox. ``files`` are written into /work first."""
@@ -159,32 +220,55 @@ def run(command: list[str], *, files: dict[str, str] | None = None, stdin: str =
         return SandboxResult(False, -1, "", "", unavailable="bwrap is not installed")
     with tempfile.TemporaryDirectory(prefix="auto-router-sandbox-") as tmp:
         workdir = Path(tmp)
-        for name, content in (files or {}).items():
-            target = workdir / name
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(content)
+        try:
+            for name, content in (files or {}).items():
+                target = _safe_target(workdir, name)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(content)
+        except UnsafePath as exc:
+            return SandboxResult(False, -1, "", "", unavailable=str(exc))
         argv = build_argv(command, workdir, limits, ro_binds)
         import time
         started = time.perf_counter()
+        # Output goes to files inside the work directory, not to pipes. A pipe
+        # is buffered in the harness's memory and RLIMIT_FSIZE does not apply to
+        # it, so a program that prints continuously for the whole timeout can
+        # exhaust the harness. Written to a file, the same program hits
+        # RLIMIT_FSIZE and dies.
+        out_path, err_path = workdir / ".stdout", workdir / ".stderr"
         try:
-            proc = subprocess.run(argv, input=stdin, capture_output=True, text=True,
-                                  timeout=limits.wall_seconds, preexec_fn=_rlimits(limits))
-        except subprocess.TimeoutExpired as exc:
-            return SandboxResult(False, -9, _text(exc.stdout, limits), _text(exc.stderr, limits),
-                                 timed_out=True, seconds=limits.wall_seconds, argv=argv)
+            with out_path.open("wb") as out, err_path.open("wb") as err:
+                proc = subprocess.run(argv, input=stdin.encode(), stdout=out, stderr=err,
+                                      timeout=limits.wall_seconds, preexec_fn=_rlimits(limits))
+            returncode, timed_out = proc.returncode, False
+        except subprocess.TimeoutExpired:
+            returncode, timed_out = -9, True
         except OSError as exc:
             return SandboxResult(False, -1, "", "", unavailable=f"{type(exc).__name__}: {exc}",
                                  argv=argv)
         seconds = time.perf_counter() - started
-        stderr = _text(proc.stderr, limits)
-        if proc.returncode != 0 and "bwrap:" in stderr and "No such file" not in stderr:
+        stdout = _read_capped(out_path, limits)
+        stderr = _read_capped(err_path, limits)
+        if timed_out:
+            return SandboxResult(False, -9, stdout, stderr, timed_out=True,
+                                 seconds=limits.wall_seconds, argv=argv)
+        if returncode != 0 and ("setting up uid map" in stderr
+                                or "Creating new namespace" in stderr):
             # bwrap itself refused (no user namespaces, restricted kernel): this
             # is an unavailable sandbox, not a failing program.
-            if "setting up uid map" in stderr or "Creating new namespace" in stderr:
-                return SandboxResult(False, proc.returncode, "", stderr,
-                                     unavailable=stderr.strip()[:200], argv=argv)
-        return SandboxResult(proc.returncode == 0, proc.returncode, _text(proc.stdout, limits),
-                             stderr, seconds=seconds, argv=argv)
+            return SandboxResult(False, returncode, "", stderr,
+                                 unavailable=stderr.strip()[:200], argv=argv)
+        return SandboxResult(returncode == 0, returncode, stdout, stderr, seconds=seconds,
+                             argv=argv)
+
+
+def _read_capped(path: Path, limits: Limits) -> str:
+    """At most ``max_output_bytes`` from a capture file, never the whole thing."""
+    try:
+        with path.open("rb") as handle:
+            return handle.read(limits.max_output_bytes).decode("utf-8", "replace")
+    except OSError:
+        return ""
 
 
 def _text(value, limits: Limits) -> str:

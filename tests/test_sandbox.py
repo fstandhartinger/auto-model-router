@@ -153,10 +153,53 @@ def test_a_missing_bwrap_is_reported_not_bypassed(monkeypatch):
     assert "should not run" not in result.stdout
 
 
-def test_the_process_cap_stays_above_what_the_machine_already_runs():
-    """A flat per-uid process cap makes bwrap fail with EAGAIN before it starts."""
+def test_the_process_cap_is_above_this_user_and_below_the_machine():
+    """Two ways to get RLIMIT_NPROC wrong, both of which happened here.
+
+    Too low and ``bwrap`` fails with EAGAIN before the child ever starts,
+    because the limit is per real uid and system-wide. Based on the *machine's*
+    total thread count instead of this user's, the headroom is so large that the
+    fork-bomb cap does nothing.
+    """
     cap = sandbox._process_cap(256)
-    if cap is None:
+    own = sandbox._own_threads()
+    if cap is None or own is None:
         pytest.skip("no usable process limit on this host")
-    total = int(open("/proc/loadavg").read().split()[3].split("/")[1])
-    assert cap > total
+    assert cap > own, "a cap below what this user already runs breaks bwrap outright"
+    assert cap <= own + 512, "the cap must still bound a fork bomb"
+
+
+def test_own_thread_count_is_smaller_than_the_machine_total():
+    own = sandbox._own_threads()
+    if own is None:
+        pytest.skip("/proc is not readable")
+    machine = int(open("/proc/loadavg").read().split()[3].split("/")[1])
+    assert 0 < own <= machine
+
+
+def test_a_file_outside_the_work_directory_is_refused(tmp_path):
+    """Files are written by the harness before the sandbox starts, so a
+    traversing name would be written on the host with harness privileges."""
+    victim = tmp_path / "must-not-exist.txt"
+    for name in ("../escape.txt", "../../etc/passwd", "/etc/passwd", "a/../../escape.txt"):
+        result = sandbox.run_python("print(1)", extra_files={name: "x"})
+        assert not result.ok and result.unavailable, name
+        assert "outside" in result.unavailable or "relative path" in result.unavailable
+    assert not victim.exists()
+
+
+def test_a_nested_relative_file_is_still_allowed(available):
+    result = sandbox.run_python("print(open('pkg/data.txt').read().strip())",
+                                extra_files={"pkg/data.txt": "nested ok"})
+    assert result.stdout.strip() == "nested ok"
+
+
+def test_a_program_that_floods_stdout_does_not_exhaust_the_harness(available):
+    """Captured output goes to a file inside the sandbox, where RLIMIT_FSIZE
+    applies; a pipe would be buffered in the harness's own memory instead."""
+    limits = sandbox.Limits(wall_seconds=15, output_file_mb=2, max_output_bytes=50_000)
+    result = sandbox.run_python(
+        "import sys\nline = 'x' * 4096\nwhile True:\n    sys.stdout.write(line)\n",
+        limits=limits)
+    assert not result.ok
+    assert len(result.stdout) <= limits.max_output_bytes

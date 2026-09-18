@@ -7,7 +7,8 @@ from the stored answers and will produce exactly the same verdicts.
 Honesty about what each one measures
 ------------------------------------
 ``coding``   executes the answer against hidden tests in the Bubblewrap
-             sandbox. This is a real pass/fail.
+             sandbox. This is a real pass/fail. The verdict does **not** come
+             from anything the answer can print: see ``grade_coding``.
 ``math``     compares a normalised final answer against the known value. Real
              pass/fail.
 ``research`` checks that the required factual token appears and that a named
@@ -32,6 +33,8 @@ from __future__ import annotations
 
 import math
 import re
+import secrets
+from pathlib import Path
 from typing import Any
 
 from . import sandbox
@@ -81,22 +84,47 @@ def _close(a: str, b: str, atol: float) -> bool:
 # ---------------------------------------------------------------------------
 # graders
 # ---------------------------------------------------------------------------
+RUNNER = Path(__file__).resolve().parent / "sandbox_runner.py"
+
+
 def grade_coding(task: dict, answer: str) -> tuple[bool, str]:
-    """Execute the answer against hidden tests inside the sandbox."""
+    """Execute the answer against hidden tests inside the sandbox.
+
+    The verdict is a nonce generated here, handed to the runner on stdin, and
+    printed only after every assertion has passed. An answer cannot guess it,
+    cannot read it off the filesystem, and cannot short-circuit to it by exiting
+    early - so an answer of ``print("ALL_TESTS_PASSED")`` fails, and so does
+    ``os._exit(0)``.
+
+    Both of those *passed* before 18 September 2026, when the answer and the
+    assertions were concatenated into one script and the verdict was a fixed
+    marker on stdout. An independent reviewer found it.
+
+    This grades models, not attackers: an answer that deliberately introspects
+    the interpreter's frames could still reach the nonce. That is out of scope
+    for a benchmark harness, and is stated rather than papered over.
+    """
     code = extract_code(answer)
     if not code:
         return False, "no code in the answer"
-    harness = task["hidden_tests"]
-    result = sandbox.run_python(code + "\n\n" + harness,
-                                limits=sandbox.Limits(wall_seconds=task.get("timeout_s", 20)))
+    nonce = secrets.token_hex(16)
+    result = sandbox.run_python(
+        RUNNER.read_text(), stdin=nonce + "\n",
+        extra_files={"solution.py": code, "checks.py": task["hidden_tests"]},
+        limits=sandbox.Limits(wall_seconds=task.get("timeout_s", 20)))
     if result.unavailable:
         return False, f"SANDBOX UNAVAILABLE: {result.unavailable}"
     if result.timed_out:
         return False, "timed out in the sandbox"
-    if not result.ok:
-        return False, f"exit {result.returncode}: {(result.stderr or '').strip()[-200:]}"
-    passed = "ALL_TESTS_PASSED" in result.stdout
-    return passed, "hidden tests passed" if passed else f"output: {result.stdout.strip()[-200:]}"
+    if f"VERDICT {nonce}" not in result.stdout:
+        reason = {10: "the runner received no nonce",
+                  11: "the answer raised while being loaded",
+                  12: "a hidden test assertion failed",
+                  13: "a hidden test raised"}.get(result.returncode,
+                                                  f"exit {result.returncode}")
+        tail = (result.stderr or result.stdout or "").strip()[-200:]
+        return False, f"{reason}: {tail}"
+    return True, "hidden tests passed (verified by run nonce)"
 
 
 NUMBER_IN = re.compile(r"-?\d+(?:\.\d+)?")
@@ -139,8 +167,8 @@ def grade_design(task: dict, answer: str) -> tuple[bool, str]:
     low = code.lower()
     checks: dict[str, bool] = {
         "is markup, not prose": "<html" in low or "<!doctype" in low or "<section" in low,
-        "self-contained (no external stylesheet or script)":
-            not re.search(r'<(?:link[^>]+href|script[^>]+src)=["\']https?://', low),
+        "self-contained (no external stylesheet, script, font, image or frame)":
+            not _EXTERNAL.search(low),
     }
     for rule in task["rules"]:
         checks[rule["label"]] = bool(re.search(rule["pattern"], low, re.S))
@@ -149,6 +177,16 @@ def grade_design(task: dict, answer: str) -> tuple[bool, str]:
               else f"STRUCTURAL PROXY - failed: {failed}")
     return not failed, detail
 
+
+#: Every way a page can reach off-box that the design tasks forbid. The first
+#: version matched only an absolute ``link href`` or ``script src``, so
+#: ``@import``, ``url(//cdn...)``, an ``<iframe>`` and an external ``<img>`` all
+#: slipped through - found by an independent reviewer.
+_EXTERNAL = re.compile(
+    r"(?:<(?:link|script|img|iframe|embed|object|source|video|audio|track)\b[^>]*"
+    r"\b(?:href|src|data)\s*=\s*[\"\']?\s*(?:https?:)?//)"
+    r"|(?:@import\s+(?:url\s*\(\s*)?[\"\']?\s*(?:https?:)?//)"
+    r"|(?:\burl\s*\(\s*[\"\']?\s*(?:https?:)?//)", re.I)
 
 NUMBER = re.compile(r"\b\d+(?:[.,]\d+)?\b")
 

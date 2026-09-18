@@ -36,6 +36,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from auto_router import jev                                    # noqa: E402
 from auto_router.catalog import ModelInfo                      # noqa: E402
 from auto_router.config import load_config                     # noqa: E402
 from auto_router.decision import ObservedOutcome               # noqa: E402
@@ -76,6 +77,29 @@ DEFAULT_OUTPUT_BUDGET = 4000
 
 def output_budget(task: dict) -> int:
     return OUTPUT_BUDGET.get(task["category"], DEFAULT_OUTPUT_BUDGET)
+
+
+#: How much of a grader's explanation is kept. Unlike the router's own decision
+#: ledger, which carries no answer text at all, this experiment ledger keeps a
+#: short excerpt so a failure can be diagnosed without re-running the model. It
+#: is put through the same credential scrubber first and capped hard, and that
+#: difference is deliberate and stated rather than accidental.
+DETAIL_CHARS = 200
+
+
+def _detail(text: str) -> str:
+    return jev.scrub(text or "", DETAIL_CHARS)
+
+
+def _error_label(error: str | None) -> str:
+    """Only the shape of a provider error, never its message.
+
+    Provider error bodies echo prompt fragments and sometimes the rejected key.
+    """
+    if not error:
+        return "unknown"
+    head = error.split(":")[0].strip()
+    return head[:40] if head else "unknown"
 
 
 def control_model(router: Router, name: str | None = None) -> ModelInfo:
@@ -208,10 +232,13 @@ def _one(task: dict, arm: str, router: Router, control: ModelInfo, client: Clien
             cost_basis=("route configured as free: no cash cost to measure"
                         if model.prices.is_free
                         else "provider-reported tokens x configured list prices"),
-            error=call.error))
+            error=_error_label(call.error) if call.error else None))
 
     if not call.ok:
-        passed, detail = None, f"call failed: {call.error}"
+        # A refused or failed upstream call is a property of the route, not of
+        # the harness, so it counts as a failure. Excluding it would let a flaky
+        # provider drop its own failures out of its denominator.
+        passed, detail = False, f"the route failed the call: {_error_label(call.error)}"
     elif call.output_tokens >= budget:
         # A truncated answer says nothing about the model's capability, so it is
         # excluded rather than scored as a failure.
@@ -224,7 +251,8 @@ def _one(task: dict, arm: str, router: Router, control: ModelInfo, client: Clien
 
     return TaskOutcome(
         task_id=task["id"], category=task["category"], arm=arm, passed=passed,
-        grader=task["grader"], grader_kind=graders.GRADER_KIND[task["grader"]], detail=detail,
+        grader=task["grader"], grader_kind=graders.GRADER_KIND[task["grader"]],
+        detail=_detail(detail),
         model=model.name, latency_ms=round(latency_ms, 1),
         prompt_tokens=call.prompt_tokens, cached_tokens=call.cached_tokens,
         output_tokens=call.output_tokens,
@@ -236,4 +264,4 @@ def _one(task: dict, arm: str, router: Router, control: ModelInfo, client: Clien
         cache_status=(explanation.cache.status if explanation else "n/a"),
         evidence_confidence=(explanation.selection.evidence_confidence if explanation else None),
         safe_fallback=(explanation.selection.safe_fallback if explanation else None),
-        error=call.error, label="live")
+        error=_error_label(call.error) if call.error else None, label="live")

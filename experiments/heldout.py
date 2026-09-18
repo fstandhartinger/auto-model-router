@@ -25,8 +25,16 @@ What is measured per task
 -------------------------
 classification, selected route, estimated cost and success probability
 (before), then observed pass/fail, latency, tokens, cache status and cost
-(after) - each kept in its own object, exactly as ``auto_router.decision``
-defines them.
+(after).
+
+``TaskOutcome`` is a **flat analysis row**, not a decision record: one line per
+(task, arm) so the ledger can be loaded into a table without unnesting. The
+four-object separation lives in ``auto_router.decision`` and is what the router
+itself writes; this file mirrors selected fields from it, and every field that
+came from an estimate is named ``estimated_*`` so the two can never be summed
+together by accident. A control-arm row has no classification and no estimate,
+because the control does not classify or forecast - those fields are ``None``,
+not zero.
 
 Labels
 ------
@@ -70,9 +78,10 @@ ANALYSIS_PLAN = {
                    "per-category table beside it.",
     "stopping_rule": "The run stops when the task set is exhausted or the spend cap is reached; "
                      "a partial run reports the categories it completed and names the rest.",
-    "exclusions": "A row is excluded from pass rates and counted separately when the grader "
-                  "reports SANDBOX UNAVAILABLE or the answer hit the output budget (TRUNCATED). "
-                  "Both are harness failures, not model failures.",
+    "exclusions": "Only a HARNESS failure is excluded: the grader reports SANDBOX UNAVAILABLE, "
+                  "or the answer hit the harness's output budget (TRUNCATED). A failed or "
+                  "refused upstream call is a property of the route and is counted as a FAILURE, "
+                  "so a flaky provider cannot drop its failures out of its own denominator.",
     "claims_not_made": [
         "No cash saving is claimed from estimated or list-price arithmetic.",
         "No quality claim is made from a category with fewer than 10 graded tasks.",
@@ -87,6 +96,20 @@ ANALYSIS_PLAN = {
 # ---------------------------------------------------------------------------
 def digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+#: Files whose content decides an outcome. Hashing the task list alone would let
+#: a grader be loosened after the fact without the digest changing.
+def _code_digests() -> dict[str, str]:
+    here = Path(__file__).resolve().parent
+    return {name: digest(here / name)
+            for name in ("graders.py", "tasks_heldout.py", "sandbox_runner.py",
+                         "sandbox.py", "heldout_run.py")}
+
+
+def plan_digest() -> str:
+    return hashlib.sha256(
+        json.dumps(ANALYSIS_PLAN, sort_keys=True).encode()).hexdigest()
 
 
 def preregister(out_dir: Path, seed: int = 20260918) -> dict:
@@ -104,30 +127,78 @@ def preregister(out_dir: Path, seed: int = 20260918) -> dict:
         "seed": seed,
         "task_file": task_file.name,
         "task_file_sha256": digest(task_file),
+        "analysis_plan_sha256": plan_digest(),
+        "code_sha256": _code_digests(),
         "task_count": len(tasks),
         "tasks_by_category": counts,
         "grader_by_category": {c: graders.GRADER_KIND[
             next(t["grader"] for t in tasks if t["category"] == c)] for c in counts},
         "task_ids": [t["id"] for t in tasks],
         "analysis_plan": ANALYSIS_PLAN,
-        "note": "Written before any model was called. The runner verifies this digest.",
+        "note": ("Written before any model was called. The runner and the report both verify "
+                 "these digests. Note the limit of a self-certifying file: someone with write "
+                 "access can change a task and update the digest here in the same edit. The "
+                 "external anchor is the copy of these digests in the run's evidence file and "
+                 "in the git commit message, which are written once and not rewritten."),
     }
     (out_dir / "preregistration.json").write_text(json.dumps(record, indent=1))
     return record
 
 
-def load_preregistration(out_dir: Path) -> dict:
+def load_preregistration(out_dir: Path, *, strict: bool = True) -> dict:
+    """Load the pre-registration and check that nothing decisive has changed.
+
+    ``strict=False`` reports drift instead of refusing, which is what the
+    reporter wants: it must still be able to describe a run whose harness has
+    since been amended, as long as it says so.
+    """
     path = out_dir / "preregistration.json"
     if not path.exists():
         raise SystemExit(f"no pre-registration in {out_dir}; run `preregister` first")
     record = json.loads(path.read_text())
-    task_file = out_dir / record["task_file"]
-    actual = digest(task_file)
+    drift: list[str] = []
+
+    actual = digest(out_dir / record["task_file"])
     if actual != record["task_file_sha256"]:
         raise SystemExit(
             f"task file digest changed since pre-registration\n"
             f"  registered: {record['task_file_sha256']}\n  actual:     {actual}\n"
             "Re-register deliberately if the task set really should change.")
+
+    if record.get("analysis_plan_sha256") not in (None, plan_digest()):
+        drift.append("analysis plan")
+    for name, expected in (record.get("code_sha256") or {}).items():
+        current = _code_digests().get(name)
+        if current and current != expected:
+            drift.append(name)
+    record["drift"] = drift
+    if drift and strict:
+        raise SystemExit(
+            "these decide an outcome and have changed since pre-registration: "
+            + ", ".join(drift)
+            + "\nAmend the pre-registration explicitly (heldout.py amend \"reason\") "
+              "so the change is on the record, then re-run.")
+    return record
+
+
+def amend(out_dir: Path, reason: str) -> dict:
+    """Record a deliberate post-registration change to the harness, with a reason.
+
+    The task set is never amended this way - changing a task means re-registering.
+    This is for the code around it: a grader that was wrong, an output budget
+    that truncated answers. Every amendment is appended, never overwritten.
+    """
+    path = out_dir / "preregistration.json"
+    record = json.loads(path.read_text())
+    record.setdefault("amendments", []).append({
+        "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "reason": reason,
+        "previous_code_sha256": record.get("code_sha256"),
+        "previous_analysis_plan_sha256": record.get("analysis_plan_sha256"),
+    })
+    record["code_sha256"] = _code_digests()
+    record["analysis_plan_sha256"] = plan_digest()
+    path.write_text(json.dumps(record, indent=1))
     return record
 
 
@@ -182,13 +253,15 @@ def report(out_dir: Path) -> dict:
     if not ledger.exists():
         raise SystemExit(f"no ledger at {ledger}; run `run` first")
     rows = [json.loads(line) for line in ledger.read_text().splitlines() if line.strip()]
-    prereg = json.loads((out_dir / "preregistration.json").read_text())
+    prereg = load_preregistration(out_dir, strict=False)
 
     by_arm_category: dict[tuple[str, str], list[dict]] = {}
     excluded: list[dict] = []
+    attempted: dict[tuple[str, str], list[dict]] = {}
     for row in rows:
         detail = row.get("detail") or ""
-        if row.get("passed") is None or "SANDBOX UNAVAILABLE" in detail or "TRUNCATED" in detail:
+        attempted.setdefault((row["arm"], row["category"]), []).append(row)
+        if "SANDBOX UNAVAILABLE" in detail or "TRUNCATED" in detail or row.get("passed") is None:
             excluded.append(row)
             continue
         by_arm_category.setdefault((row["arm"], row["category"]), []).append(row)
@@ -202,7 +275,11 @@ def report(out_dir: Path) -> dict:
                 continue
             passed = sum(1 for r in rows_ if r["passed"])
             low, high = wilson(passed, len(rows_))
-            metered = [r["observed_cost_usd"] for r in rows_
+            # Spend is summed over every *attempted* call, including ones whose
+            # answer was excluded from grading: the provider billed for those
+            # too, and leaving them out would understate what the run cost.
+            tried = attempted.get((arm, category), [])
+            metered = [r["observed_cost_usd"] for r in tried
                        if isinstance(r.get("observed_cost_usd"), (int, float))]
             entry[arm] = {
                 "n": len(rows_), "passed": passed,
@@ -210,9 +287,10 @@ def report(out_dir: Path) -> dict:
                 "wilson_95": [round(low, 4), round(high, 4)],
                 "grader_kind": rows_[0]["grader_kind"],
                 "label": rows_[0].get("label", "live"),
+                "attempted": len(tried),
                 "metered_cost_usd": round(sum(metered), 6) if metered else None,
                 "metered_calls": len(metered),
-                "unmetered_calls": len(rows_) - len(metered),
+                "unmetered_calls": len(tried) - len(metered),
                 "median_latency_ms": round(sorted(r["latency_ms"] for r in rows_)[len(rows_) // 2], 1),
                 "routes_used": sorted({r["model"] for r in rows_}),
                 # Provider-reported, not inferred: the share of input tokens the
@@ -236,6 +314,8 @@ def report(out_dir: Path) -> dict:
     out = {
         "preregistration_sha256": prereg["task_file_sha256"],
         "registered_at": prereg["registered_at"],
+        "harness_drift_since_registration": prereg.get("drift") or [],
+        "amendments": prereg.get("amendments") or [],
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "graded_rows": len(rows) - len(excluded),
         "excluded_rows": len(excluded),
@@ -262,6 +342,12 @@ def format_report(data: dict) -> str:
             cost = "n/a" if e["metered_cost_usd"] is None else f"{e['metered_cost_usd']:.4f}"
             lines.append(f"{category:<14}{arm:<9}{e['n']:>4}{e['passed']:>6}"
                          f"{e['pass_rate']:>8.2f}{ci:>16}{cost:>10}  {e['grader_kind']}")
+    if data.get("amendments"):
+        lines += ["", "Harness amended after registration:"]
+        lines += [f"  - {a['at']}: {a['reason']}" for a in data["amendments"]]
+    if data.get("harness_drift_since_registration"):
+        lines += ["", "UNRECORDED harness drift since registration: "
+                  + ", ".join(data["harness_drift_since_registration"])]
     if data["categories_too_small_for_a_quality_claim"]:
         lines += ["", "No quality claim is made for: "
                   + ", ".join(data["categories_too_small_for_a_quality_claim"])
@@ -275,7 +361,9 @@ def format_report(data: dict) -> str:
 # ---------------------------------------------------------------------------
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["preregister", "verify", "run", "report", "sandbox"])
+    parser.add_argument("command",
+                        choices=["preregister", "verify", "run", "report", "sandbox", "amend"])
+    parser.add_argument("--reason", help="why the harness is being amended (for `amend`)")
     parser.add_argument("--dir", type=Path, default=DEFAULT_DIR)
     parser.add_argument("--config", type=Path, help="router config for a live run")
     parser.add_argument("--budget", type=float, default=0.0, help="hard USD cap for a live run")
@@ -292,7 +380,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "verify":
         record = load_preregistration(args.dir)
         print(f"pre-registration intact: {record['task_count']} tasks, "
-              f"sha256 {record['task_file_sha256'][:16]}")
+              f"sha256 {record['task_file_sha256'][:16]}, "
+              f"{len(record.get('amendments') or [])} amendment(s)")
+        return 0
+    if args.command == "amend":
+        if not args.reason:
+            raise SystemExit("--reason is required: an amendment without a reason is a rewrite")
+        record = amend(args.dir, args.reason)
+        print(json.dumps(record.get("amendments"), indent=1))
         return 0
     if args.command == "sandbox":
         print(json.dumps(sandbox.preflight(), indent=1))
