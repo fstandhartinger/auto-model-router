@@ -341,6 +341,87 @@ isolation, the coding tasks are **excluded from the results with the exact
 reason recorded** — the harness never falls back to running a generated answer
 on the host.
 
+## 11. The live held-out run (18 Sep 2026)
+
+Three arms on the same pre-registered tasks, identical prompts, one run.
+`router` is policy F choosing per task. `control` is one capable route for
+everything, picked by the same capability data the router uses — it resolved to
+**kimi-k3, which is free in this catalog**. `control-metered` is **gpt-5.6-sol**,
+added on the record once the first control turned out to cost nothing, so that a
+billed figure exists at all.
+
+> **No saving was measured and none is claimed.** The router and the free
+> control both spent $0.0000; there is no cash difference between them to
+> report. The paid control spent real money for pass rates that are
+> indistinguishable at this sample size. Every category is below the
+> pre-registered ten-task floor for a quality claim, which is why the Wilson
+> intervals are printed — they overlap completely.
+
+<!-- heldout:start -->
+| category | arm | n | passed | pass rate | Wilson 95 % | measured USD | grader |
+|---|---|---:|---:|---:|---|---:|---|
+| design | router (policy F) | 1 | 1 | 1.00 | 0.21–1.00 | $0.0000 (free route) | structural-proxy |
+| design | control · kimi-k3 (free) | 2 | 2 | 1.00 | 0.34–1.00 | $0.0000 (free route) | structural-proxy |
+| design | control · gpt-5.6-sol (metered) | 4 | 3 | 0.75 | 0.30–0.95 | $0.2071 | structural-proxy |
+| coding | router (policy F) | 4 | 4 | 1.00 | 0.51–1.00 | $0.0000 (free route) | executed |
+| coding | control · kimi-k3 (free) | 4 | 4 | 1.00 | 0.51–1.00 | $0.0000 (free route) | executed |
+| coding | control · gpt-5.6-sol (metered) | 4 | 4 | 1.00 | 0.51–1.00 | $0.0231 | executed |
+| math | router (policy F) | 6 | 5 | 0.83 | 0.44–0.97 | $0.0000 (free route) | exact |
+| math | control · kimi-k3 (free) | 6 | 6 | 1.00 | 0.61–1.00 | $0.0000 (free route) | exact |
+| math | control · gpt-5.6-sol (metered) | 6 | 6 | 1.00 | 0.61–1.00 | $0.0177 | exact |
+| research | router (policy F) | 5 | 5 | 1.00 | 0.57–1.00 | $0.0000 (free route) | exact |
+| research | control · kimi-k3 (free) | 5 | 5 | 1.00 | 0.57–1.00 | $0.0000 (free route) | exact |
+| research | control · gpt-5.6-sol (metered) | 5 | 5 | 1.00 | 0.57–1.00 | $0.0017 | exact |
+| summarisation | router (policy F) | 4 | 3 | 0.75 | 0.30–0.95 | $0.0000 (free route) | rubric |
+| summarisation | control · kimi-k3 (free) | 4 | 4 | 1.00 | 0.51–1.00 | $0.0000 (free route) | rubric |
+| summarisation | control · gpt-5.6-sol (metered) | 4 | 4 | 1.00 | 0.51–1.00 | $0.0132 | rubric |
+| cache_repeat | router (policy F) | 4 | 4 | 1.00 | 0.51–1.00 | $0.0000 (free route) | exact |
+| cache_repeat | control · kimi-k3 (free) | 4 | 4 | 1.00 | 0.51–1.00 | $0.0000 (free route) | exact |
+| cache_repeat | control · gpt-5.6-sol (metered) | 4 | 4 | 1.00 | 0.51–1.00 | $0.0032 | exact |
+
+**Measured spend over the whole set, by arm:** router (policy F) **$0.0000** · control · kimi-k3 (free) **$0.0000** · control · gpt-5.6-sol (metered) **$0.2659**
+
+Graded rows 76, excluded 3. Task set `84731010531b266f` registered 2026-09-18T06:42:03Z, 3 recorded amendment(s), no drift.
+<!-- heldout:end -->
+
+Two things this does show:
+
+1. **The router routes by category.** All four summarisation tasks and half the
+   maths went to the cheaper `dsv4-flash`; research and design stayed entirely on
+   `kimi-k3`; the cache-repeat set went to `qwen3.8-27b`; coding split three to
+   one in `kimi-k3`'s favour. Those are per-category decisions taken from
+   evidence, not one fixed model.
+2. **Both of its failures were on the cheaper route it downgraded to** — with
+   no cash saving to weigh against them, because both routes are free. At 4–6
+   tasks per cell that is well inside noise. The honest reading is not that the
+   router is worse; it is that this run cannot show it is better.
+
+**The design category is only *fully* measurable on the metered arm.** The easy
+design task completed on kimi-k3 on both free arms. The two harder ones did not:
+`design-medium-form` and `design-hard-dashboard` ran for 305 s and 377 s and hit
+the 12,000-token output budget without finishing the page. gpt-5.6-sol answered
+the same prompts in roughly 2,200 tokens and 18 s. The truncated rows are
+excluded as harness failures rather than scored as model failures, which is the
+pre-registered rule — but the pattern is not noise, and it is the difficulty
+that separates them.
+
+A router that reads only capability scores cannot see that at all: both routes
+look capable, and design-arena Elo puts kimi-k3 *above* gpt-5.6-sol on exactly
+this kind of work. It shows up only as an *observed* property of the route on
+harder instances. The router does not currently treat truncation as a failure
+signal, which is the clearest single thing to add next.
+
+Reproduce:
+
+```sh
+python experiments/heldout.py preregister
+python experiments/heldout.py verify
+python experiments/heldout.py run --config my.local.yaml --budget 4.00
+python experiments/heldout.py run --config my.local.yaml --budget 4.00 \
+    --control <a-metered-route> --control-label control-metered --arms control
+python experiments/heldout.py report
+```
+
 ## Limits
 
 - Cells hold 4–6 tasks; task difficulty for real traffic is a proxy (calls per turn).
