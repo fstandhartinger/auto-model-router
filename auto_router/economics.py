@@ -115,7 +115,7 @@ class SuccessModel:
         return "easy" if difficulty < 0.34 else "medium" if difficulty < 0.67 else "hard"
 
     def p(self, model: ModelInfo, category: str, difficulty: float) -> float:
-        key = (model.name, category, self.bucket(difficulty))
+        key = (model.measurement_key, category, self.bucket(difficulty))
         if key in self.measured:
             return self.measured[key]
         offset, slope, scale = self.per_category.get(category, (self.offset, self.slope, self.scale))

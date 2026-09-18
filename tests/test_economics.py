@@ -61,3 +61,27 @@ def test_benchmaxxing_penalty_lowers_capability():
 def test_measured_rates_override_the_curve():
     s = SuccessModel(measured={("mid", "coding", "hard"): 0.33})
     assert s.p(MID, "coding", 0.9) == 0.33
+
+
+def test_two_routes_to_one_model_share_its_measured_success():
+    """A plan route and a metered route are one model to the calibration.
+
+    Found live: a subscription route named after the plan rather than the model
+    missed the measured table entirely and was priced off the fitted curve,
+    which put it two tiers below where 78 graded tasks had actually placed it.
+    """
+    from auto_router.catalog import ModelInfo, Prices
+    from auto_router.economics import SuccessModel
+
+    success = SuccessModel(measured={("strong-model", "agentic", "hard"): 0.59})
+    metered = ModelInfo(name="strong-model", provider="p", upstream_id="strong-model",
+                        prices=Prices(5.0, 25.0), capability={"agentic": 60})
+    plan = ModelInfo(name="plan-route", provider="p", upstream_id="strong-model",
+                     prices=Prices.free(), capability={"agentic": 60},
+                     subscription="plan", success_key="strong-model")
+    assert success.p(metered, "agentic", 0.9) == 0.59
+    assert success.p(plan, "agentic", 0.9) == 0.59
+    # Without the key the route falls back to the curve, which is the bug.
+    orphan = ModelInfo(name="plan-route", provider="p", upstream_id="strong-model",
+                       prices=Prices.free(), capability={"agentic": 60})
+    assert success.p(orphan, "agentic", 0.9) != 0.59

@@ -23,9 +23,10 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
-from .config import Provider, RouterConfig, load_config
+from .config import Provider, RouterConfig, for_http, load_config
 from .decision import ObservedOutcome
 from .metrics import metrics
+from .policies import NoRouteAvailable
 from .pricing import Usage, cost_usd, parse_openai_usage
 from .router import RouteResult, Router
 from .stream_translate import StreamOutcome, translate_stream
@@ -43,7 +44,9 @@ log = logging.getLogger("auto_router.server")
 
 app = FastAPI(title="auto-model-router", version="0.2.0")
 
-config: RouterConfig = load_config()
+#: Routes only a launched client can reach are not endpoints, so the HTTP
+#: surface never sees them. See ``config.for_http`` and ``launcher.py``.
+config: RouterConfig = for_http(load_config())
 router = Router(config)
 _client: httpx.AsyncClient | None = None
 TIMEOUT = float(os.environ.get("AUTO_ROUTER_TIMEOUT_S", "600"))
@@ -135,7 +138,13 @@ async def router_decisions(limit: int = 20) -> dict:
 
 
 async def _route(messages, system, tools, max_tokens) -> RouteResult:
-    return await asyncio.to_thread(router.route, messages, system, tools, max_tokens)
+    try:
+        return await asyncio.to_thread(router.route, messages, system, tools, max_tokens)
+    except NoRouteAvailable as exc:
+        # Not a bug and not a 500: the operator's own quota rules closed the
+        # last open route. Say which state we are in, so the caller can wait
+        # or configure a cheaper one.
+        raise HTTPException(503, str(exc)) from exc
 
 
 # --------------------------------------------------------------------------
@@ -331,9 +340,16 @@ async def anthropic_messages(request: Request) -> Any:
     messages = body.get("messages") or []
     if not messages:
         raise HTTPException(400, "messages is required")
+    from . import plan_auth
+    kind = plan_auth.credential_kind(request.headers)
     result = await _route(messages, body.get("system"), body.get("tools"), body.get("max_tokens"))
     if result.model.subscription == "claude":
         return await shim.subscription_passthrough(request, raw, body, result)
+    if kind == plan_auth.SUBSCRIPTION and plan_auth.subscription_mode() == "passthrough_only":
+        # The client is signed in with its own claude.ai login, so the plan
+        # pays and Claude Code's own model choice stands. The router records
+        # what it would have done and changes nothing. See shim.py.
+        return await shim.advisory_passthrough(request, raw, result)
     return await proxy_openai_as_anthropic(body, result)
 
 

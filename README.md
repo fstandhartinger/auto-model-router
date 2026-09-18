@@ -1,9 +1,11 @@
 # auto-model-router
 
 A cost-, cache- and quota-aware LLM router. It sits in front of any number of
-OpenAI-compatible providers (and, optionally, a flat-rate Claude subscription
-through Claude Code) and picks a model per user turn so that tasks get solved
-at the lowest expected cost.
+OpenAI-compatible providers and picks a model per user turn so that tasks get
+solved at the lowest expected cost. It can also route *whole jobs* to a coding
+agent's official CLI - including one running on a flat-rate subscription - so
+that work lands on a plan you already pay for instead of a per-token bill. What
+the vendors allow there is quoted, with links, in [`TERMS.md`](TERMS.md).
 
 Status: experimental, measured. Full method and numbers: [`EXPERIMENTS.md`](EXPERIMENTS.md).
 
@@ -241,7 +243,10 @@ Point OpenAI clients at `http://127.0.0.1:8787/v1`, or Claude Code at it with
 | `AUTO_ROUTER_BENCH_URL` | benchmark API base URL (default `https://benchmarkheaven.com`) |
 | `AUTO_ROUTER_BENCH_OFFLINE` | `1` = use cached benchmark data only |
 | `AUTO_ROUTER_CACHE_DIR` | where benchmark responses are cached |
-| `AUTO_ROUTER_REWRITE_MODEL` | allow replacing Claude Code's requested model on passthrough |
+| `AUTO_ROUTER_SUBSCRIPTION_MODE` | `passthrough_only` (default) or `route_others`; see "Two ways to use a plan" |
+| `AUTO_ROUTER_REWRITE_MODEL` | allow replacing Claude Code's requested model on passthrough (off) |
+| `AUTO_ROUTER_PLAN_MODELS` | models your own plan includes; bounds the rewrite on subscription traffic |
+| `AUTO_ROUTER_ALLOW_UPSTREAM_HOSTS` | extra hosts a subscription credential may reach (default: none) |
 | `AUTO_ROUTER_LEDGER` | JSONL file for decision records; unset disables the ledger |
 | `TYPESAFE_API_KEY` | Jev classifier; without it a cautious default is used |
 
@@ -251,7 +256,122 @@ Responses carry `X-Router-Model`, `X-Router-Category`, `X-Router-Difficulty`,
 (0–1 evidence confidence), `X-Router-Cache` and, when one applies,
 `X-Router-Safe-Fallback`.
 
-### Verifying a checkout
+## Two ways to use a flat-rate plan
+
+A coding subscription is the cheapest strong model most people have, and it is
+also the one a router cannot simply call: it is sold for use through its own
+client. There are two honest ways to put a router near it, and this repository
+implements both. [`TERMS.md`](TERMS.md) quotes the vendor documentation behind
+each, including the parts that say no.
+
+### 1. Route the job, not the request (`route-run`)
+
+The launcher decides *which program* should do a piece of work and then starts
+that program, unmodified, signed in the way its vendor documents:
+
+```bash
+cp examples/launcher.example.yaml my.local.yaml    # add a runner block per route
+export AUTO_ROUTER_CONFIG=my.local.yaml TYPESAFE_API_KEY=...
+scripts/route-run --list                           # what can run a job here
+scripts/route-run --dry-run "fix the flaky upload test"   # decide, run nothing
+scripts/route-run "fix the flaky upload test"             # decide and run it
+```
+
+An easy job lands on a free model; a hard one goes to a plan through
+`claude -p --model …` or `codex exec -m …` while that plan has headroom, and to
+a metered API model when it does not. Nothing intercepts the client's traffic,
+nobody's login is read, and the choice of model is made the way a person makes
+it — with the client's own flag.
+
+Each run appends the same four-part decision record the HTTP surface writes, so
+launched jobs and routed turns end up in one ledger. What a launched client
+reports back is its exit status and how long it took, so that is what the record
+contains: no token counts are invented, and a subscription run has no per-token
+cost to claim.
+
+Two details that are worth more than they look:
+
+- **`clear_env`** empties the credential variables that would move the run from
+  the plan to per-token billing (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`,
+  `OPENAI_API_KEY`). A single exported key otherwise turns a "free" job into an
+  invoice, silently.
+- **`launch_only: true`** marks a plan that can only be reached by launching its
+  own client — a ChatGPT plan, for instance. Such a route is a candidate for the
+  launcher and is removed from the HTTP catalog, because no HTTP request from
+  another client can ever be served from it.
+
+Quota pacing decides when a plan is "in budget". `usage_command` runs **your**
+usage reader and parses percentages; the router never reads a login token to ask
+a vendor how full a plan is, and a reader that fails or goes stale closes the
+plan rather than opening it on a guess.
+
+### 2. A gateway in front of Claude Code (`ANTHROPIC_BASE_URL`)
+
+Anthropic documents this case directly:
+
+> Setting only that variable, without a gateway credential, doesn't replace the
+> subscription. Requests still route through the gateway, but a saved claude.ai
+> login remains the active credential, so its usage limits and billing apply.
+> Gateways that pass this traffic on to Anthropic must forward the OAuth
+> capability in `anthropic-beta`.
+> — [code.claude.com/docs/en/llm-gateway](https://code.claude.com/docs/en/llm-gateway)
+
+So run the router and point Claude Code at it, with **no** gateway credential
+set:
+
+```bash
+uvicorn auto_router.server:app --host 127.0.0.1 --port 8787
+ANTHROPIC_BASE_URL=http://127.0.0.1:8787 claude       # ANTHROPIC_API_KEY unset
+```
+
+The turn is forwarded to Anthropic byte for byte — every `anthropic-*` header
+verbatim, the system array untouched, the stream and its keep-alive pings
+relayed as they arrive — and it is billed to the plan. Set a gateway credential
+instead and the same endpoint meters the traffic against that credential; both
+are legitimate, and which one is in force is not a guess: the OAuth capability
+on the request says so ([`auto_router/plan_auth.py`](auto_router/plan_auth.py)).
+
+What the router does with a subscription-authenticated turn is a setting:
+
+| `AUTO_ROUTER_SUBSCRIPTION_MODE` | behaviour |
+|---|---|
+| `passthrough_only` (default) | Forward every turn unchanged and record the decision the policy *would* have made as `not_taken`. Claude Code behaves exactly as it does with no gateway, and the ledger still answers "how much of this week's plan use could have gone somewhere cheaper". |
+| `route_others` | Additionally let the policy serve a turn from another provider on **your own** API key. It works — but Anthropic "doesn't support routing Claude Code to non-Claude models through any gateway", so you maintain it yourself. |
+
+Three refusals are built in, and they are code rather than advice:
+
+- A credential that identifies as a claude.ai login is forwarded to
+  `api.anthropic.com` and to nothing else, whatever the configuration says.
+- A turn served from another provider is authenticated with that provider's own
+  key; the client's `Authorization` header is not forwarded there.
+- The model Claude Code asked for is not replaced by default. With
+  `AUTO_ROUTER_REWRITE_MODEL=1` it may be, and on subscription traffic only for
+  a model listed in `AUTO_ROUTER_PLAN_MODELS` — a plan grants particular models,
+  and a gateway should not ask it for one the developer could not have picked.
+
+Nothing is logged that could identify a credential: `redact()` covers every
+header dict that reaches a log line, and the decision records carry no prompt
+text and no token.
+
+### Install it with a coding agent
+
+Paste this into Claude Code or Codex in the directory you want it in:
+
+> Clone https://github.com/fstandhartinger/auto-model-router and set it up for
+> me. Read TERMS.md first and keep to it. Then: create a virtualenv, install
+> requirements.txt, run `pytest -q` and stop if anything fails. Copy
+> `examples/launcher.example.yaml` to `router.local.yaml` and edit it for this
+> machine — one route per model I can actually reach, each with a `runner`
+> block that starts its official CLI, API keys referenced by environment
+> variable name only and never pasted in. Mark any plan that is only reachable
+> through its own CLI `launch_only: true`. For every subscription route set
+> `clear_env` to the credential variables that would otherwise bill me per
+> token. If I have a command that reports my plan usage as percentages, wire it
+> up as `usage_command`; if not, leave the subscription tier closed rather than
+> guessing. Then show me `scripts/route-run --list`, a `--dry-run` for one easy
+> and one hard task, and tell me in three lines what it decided and why.
+
+## Verifying a checkout
 
 ```bash
 pytest -q                          # full suite, including the HTTP smoke test
@@ -268,7 +388,7 @@ and no `TYPESAFE_API_KEY`, so the benchmark-outage and classifier-outage
 fallbacks are what is exercised. It tears both processes down and then checks
 that neither port still accepts a connection, so no service is left behind.
 
-### Verifying a finished run, and what you cannot verify
+## Verifying a finished run, and what you cannot verify
 
 `experiments/evidence_verify.py` re-derives a finished run's **public identity**
 from its registration and this checkout — the task file, the registered task ids
@@ -305,6 +425,8 @@ that gap for the next run and cannot close it retroactively for an old one.
 | `auto_router/ledger.py` | append-only JSONL decision ledger |
 | `auto_router/router.py` | live routing state |
 | `auto_router/server.py`, `shim.py` | HTTP API and Claude Code passthrough |
+| `auto_router/plan_auth.py` | which credential is on a request, and where it may go |
+| `auto_router/launcher.py`, `scripts/route-run` | job-level launcher: pick the tool, start its own client |
 | `auto_router/translate.py`, `stream_translate.py` | Anthropic ↔ OpenAI translation |
 | `experiments/sandbox.py` | Bubblewrap isolation for executing model-produced code |
 | `experiments/heldout.py` | pre-registered held-out evaluation across six categories |
@@ -365,15 +487,23 @@ whose terms restrict use in competing commercial products. Fine for personal
 and internal experiments; a commercial deployment needs its own licensed or
 self-measured capability data.
 
-Subscription passthrough is for your own sessions on your own plan, through the
-vendor's official client and within its terms. Anthropic's Claude Code terms reserve plan
-OAuth for ordinary use of the unmodified Claude Code binary, forbid routing requests through
-plan credentials on behalf of others, and forbid intermediating those credentials. A local
-proxy that forwards Claude Code's own requests is a grey area under that wording: the router
-never adds traffic to a plan, only moves Claude Code's own turns off it, and passthrough is
-only active when you configure a `subscription: claude` model. Check the current terms
-before enabling it. Plans such as Codex have no API route and are out of scope for the
-proxy; choose them at the job level instead.
+A subscription is for your own sessions on your own plan, through the vendor's
+official client. [`TERMS.md`](TERMS.md) quotes what each vendor documents, with
+links and with the dates they were read; the two sentences that matter are that
+Anthropic describes a gateway in front of Claude Code with a claude.ai login as
+a configuration where "its usage limits and billing apply", and that plan OAuth
+is reserved for ordinary use of the unmodified client - a developer may not
+offer Claude.ai login in their own product, route other people's requests
+through plan credentials, or collect, store or intermediate those credentials.
+This router keeps to both: it forwards a subscription credential to Anthropic
+and to nowhere else, never reads or stores one, and paces plan use well below
+the plan's own limits. An earlier version of this file called the gateway a
+grey area; the documentation quoted in `TERMS.md` is clearer than that, in both
+directions.
+
+A ChatGPT plan is reachable only through the Codex CLI, so it is configured as a
+`launch_only` route: the launcher starts that CLI, and the HTTP surface never
+offers it.
 
 ## Licence
 

@@ -622,6 +622,89 @@ python experiments/supplement.py run --dir runs/heldout-supplement-<ts> --config
 python experiments/supplement.py report --dir runs/heldout-supplement-<ts> --original runs/heldout
 ```
 
+## 13. The two subscription paths, run live (18 Sep 2026)
+
+Seven runs on one machine, each n=1. They establish that the paths *work* and
+what they record; they measure no saving, rank no policy and compare no cost.
+Client versions: Claude Code 2.1.270, Codex CLI 0.154.0, OpenCode 1.18.18.
+
+### 13.1 The launcher
+
+| # | what was asked | plan state at the time | route chosen | result |
+|---|---|---|---|---|
+| 1 | "What is 2 + 2? Answer with the number only." | both plans over their hard stop | free model, through its own CLI | answered `4`, exit 0, $0 |
+| 2 | a hard refactor-and-test job (dry run) | same | free model | plan routes excluded, reason recorded: "weekly use 94% at or above hard stop 80%" and "weekly use 89% at or above hard stop 75%" |
+| 3 | the same job, with a stand-in usage reader reporting 20 % / 25 % | plans open, shadow price x0.00 | **a plan route** (expected $2.18 vs $2.94 for the best free route) | dry run; the tier switch is the point |
+| 4 | "Write a Python function merge_sorted_unique(a, b) …", forced with `--route` | Claude plan at 94 % | Claude plan, `claude -p --model opus` | answered with working code in 10.8 s, exit 0 |
+
+Run 4 is the one that proves the billing path: this machine has no Anthropic API
+key at all, so a successful answer from the official client can only have been
+served by the signed-in plan. The record carries `cost_usd: null` with the basis
+"subscription route: no per-token charge; the plan's own usage limits apply",
+and the launcher reports which credential variables it cleared for the child.
+
+Run 3 used a deliberately fake usage reader, and the record says so: it is a
+*configuration* experiment about the pacing rule, not a measurement of a plan.
+
+### 13.2 The gateway
+
+A real Claude Code session against `ANTHROPIC_BASE_URL=http://127.0.0.1:8787`
+with no gateway credential set, three times, one tiny prompt each:
+
+| # | mode and catalog | what the router decided | what happened |
+|---|---|---|---|
+| 5 | default `passthrough_only` | a free route would have done | every turn forwarded to Anthropic unchanged, 200, recorded `not_taken`; the session answered normally |
+| 6 | plan open, only plan and metered routes configured | the plan route | forwarded, 200 in 1.5–1.8 s, recorded `ok` with the subscription cost basis |
+| 7 | `route_others`, free routes available | a free route | the turn really was served by the free model: 38,849 uncached input tokens, **0 cache reads**, 43 output tokens |
+
+Run 7 is the most informative and the least flattering to the idea it tests. The
+turn worked - Claude Code accepted the translated answer - but Claude Code's
+prefix is large and the free host cached none of it, so a route that is free in
+cash paid full price in tokens and latency on every turn. That is the measured
+version of the point the replay made in §5: caching is a property of the route,
+and the plan's own cache is a large part of what the plan is worth. It is also
+the configuration Anthropic says it "doesn't support", which is why it is off
+unless asked for.
+
+The server log and the ledger were grepped for credential-shaped strings after
+every run: nothing. `redact()` covers the log lines, and decision records carry
+no headers at all.
+
+### 13.3 Two bugs these runs found
+
+Both were invisible to the test suite and obvious within a minute of running the
+thing against a real machine:
+
+1. **One usage reader, two plans, one cache entry.** The command-backed quota
+   reader cached its result by command only. Both subscriptions were configured
+   with the same reader, so the second plan was paced with the first plan's
+   numbers - the ChatGPT plan was reported as 94 % full when it was at 89 %.
+   Fixed by putting the plan name in the cache key, with a regression test.
+2. **A plan offered on a surface it cannot serve.** With both plans open, the
+   gateway chose the *ChatGPT* plan for a Claude Code turn. Nothing broke,
+   because subscription traffic is forwarded unchanged either way, but the
+   decision was meaningless: that plan is reachable only through its own CLI.
+   Routes now declare `launch_only`, and the HTTP catalog drops them.
+
+A third, quieter one came from the same session: a subscription route named
+after the plan rather than the model missed the measured success table entirely
+and was priced off the fitted curve, two tiers below where 78 graded tasks had
+put it. Routes now carry a `success_key`, so a plan route and a metered route to
+the same model share its measurements.
+
+### 13.4 What these runs do not show
+
+- **No before/after plan usage.** The usage endpoint behind the reader answered
+  `rate_limit_error` throughout the experiment window, so the plan's percentage
+  could not be sampled on either side of the runs. The evidence that a run was
+  billed to the plan is structural (no API key exists on the machine), not a
+  measured delta.
+- **No saving, no quality comparison.** One run per path, different prompts per
+  path, no pairing, no grader.
+- **Run 3's plan headroom was simulated**, and the two real plans were near their
+  weekly limits all day, so the interesting regime - a plan with room, chosen on
+  its merits, for a hard job - was exercised as a decision and not as a job.
+
 ## Limits
 
 - Cells hold 4–6 tasks; task difficulty for real traffic is a proxy (calls per turn).
@@ -641,3 +724,5 @@ python experiments/supplement.py report --dir runs/heldout-supplement-<ts> --ori
 - The simulator treats a failed turn as a whole-turn redo and assumes partially correlated retries.
 - Latency is not modelled well; free-tier routes are slower (F's turns take longer in the replay).
 - Plan usage in percent depends on a single week's conversion from list-price dollars.
+- The subscription paths (§13) are n=1 per path, and the plan-with-headroom case
+  was simulated with a stand-in usage reader.

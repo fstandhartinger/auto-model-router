@@ -14,13 +14,15 @@ Schema (YAML shown)::
         extra_headers: {User-Agent: "..."}
     subscriptions:
       claude:
-        budget_file: ~/.agent-budget.json      # optional usage source
+        usage_command: [my-usage-reader, --json]   # your own reader, percentages only
+        budget_file: ~/.agent-budget.json      # optional cached usage source
         weekly_reserve: 0.65                   # see quota.py
     models:
       - name: cheap-coder
         provider: my-host
         upstream_id: vendor/model-x
         bench_id: model-x::default             # capability + list price lookup
+        success_key: model-x                   # name in the measured success table
         bench_offer: {platform: OpenRouter, provider: SomeHost}
         prices: {input: 0.1, output: 0.4, cache_read: 0.01}   # overrides list price
         free: true                              # shorthand for all-zero prices
@@ -29,6 +31,11 @@ Schema (YAML shown)::
         vision: false
         tools: true
         context_tokens: 128000
+        launch_only: true                       # only reachable by launching its own client
+        runner:                                 # optional: how route-run starts this route
+          cmd: [the-official-cli, --model, vendor/model-x]
+          stdin: true                           # pass the task on stdin
+          env: {SOME_API_KEY: ""}               # cleared, never a literal secret
 """
 
 from __future__ import annotations
@@ -169,7 +176,20 @@ def build_model(entry: dict, providers: dict[str, Provider],
         evidence=evidence,
         bench_id=bench_id,
         latency_s=float(entry.get("latency_s", 5.0)),
+        success_key=entry.get("success_key"),
+        runner=entry.get("runner"),
+        launch_only=bool(entry.get("launch_only", False)),
     )
+
+
+def for_http(config: RouterConfig) -> RouterConfig:
+    """The same configuration, minus routes that only a launched client can reach.
+
+    A subscription that is served exclusively through its own CLI is not an
+    endpoint: no HTTP request from another client can be answered from it. It
+    stays in the catalog for the launcher and disappears here.
+    """
+    return replace(config, catalog=Catalog(config.catalog.http_routable()))
 
 
 def load_config(path: str | Path | None = None, *, bench: BenchmarkClient | None = None,

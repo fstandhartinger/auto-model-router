@@ -137,6 +137,28 @@ class ModelInfo:
     bench_id: str | None = None
     #: Seconds to first token under normal load; used as a latency tie-breaker.
     latency_s: float = 5.0
+    #: Name this route's model is *measured* under, when that differs from the
+    #: route name. The same model reached two ways - through a flat-rate plan's
+    #: client and through a metered API - is one model as far as capability and
+    #: measured success rates go, and splitting them would quietly drop a route
+    #: back onto the fitted curve. Defaults to ``name``.
+    success_key: str | None = None
+    #: How to run a whole job on this route through its own official client,
+    #: for the job-level launcher: ``{cmd, env, env_from, stdin, timeout_s}``.
+    #: ``None`` means the route is reachable over HTTP only. See launcher.py.
+    runner: dict | None = None
+    #: True when the *only* way to reach this route is to launch its own
+    #: client. A flat-rate plan tied to one vendor's CLI is the case that
+    #: matters: it cannot serve another client's HTTP request at all, and a
+    #: router that offered it as an HTTP route would either fail the request or
+    #: invite an implementation to send one vendor's login to another. Such a
+    #: route is a candidate for the launcher and for nothing else.
+    launch_only: bool = False
+
+    @property
+    def measurement_key(self) -> str:
+        """The name measurements about this model are filed under."""
+        return self.success_key or self.name
 
     def evidence_strength(self, category: str) -> str:
         """How well this model's capability in ``category`` is evidenced."""
@@ -195,6 +217,10 @@ class Catalog:
 
     def all(self) -> list[ModelInfo]:
         return list(self._models.values())
+
+    def http_routable(self) -> list[ModelInfo]:
+        """Routes an HTTP client can actually be served from."""
+        return [m for m in self._models.values() if not m.launch_only]
 
     def eligible(self, *, needs_vision: bool = False, needs_tools: bool = False,
                  prompt_tokens: int = 0, exclude: set[str] | None = None) -> list[ModelInfo]:

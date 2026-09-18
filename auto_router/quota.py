@@ -107,15 +107,8 @@ def decide(state: QuotaState | None, rule: PacingRule = PacingRule(), now: float
 
 
 # -- readers ----------------------------------------------------------------
-def from_budget_file(path: str | os.PathLike, name: str) -> QuotaState | None:
-    """Generic budget JSON: ``{name: {week_percent, session_percent, week_resets_at}, generated_at}``."""
-    p = Path(path).expanduser()
-    if not p.exists():
-        return None
-    try:
-        data = json.loads(p.read_text())
-    except json.JSONDecodeError:
-        return None
+def _state_from_document(data: dict, name: str, *, measured_at: float, source: str) -> QuotaState | None:
+    """``{name: {week_percent, session_percent, week_resets_at}, generated_at}``."""
     entry = data.get(name) or {}
     week = entry.get("week_percent", entry.get("percent"))
     if not isinstance(week, (int, float)):
@@ -125,9 +118,58 @@ def from_budget_file(path: str | os.PathLike, name: str) -> QuotaState | None:
         week_used=float(week) / 100.0,
         week_resets_at=_to_epoch(entry.get("week_resets_at") or entry.get("resets_at")),
         session_used=float(session) / 100.0 if isinstance(session, (int, float)) else None,
-        measured_at=_to_epoch(data.get("generated_at")) or p.stat().st_mtime,
-        source=str(p),
+        measured_at=_to_epoch(data.get("generated_at")) or measured_at,
+        source=source,
     )
+
+
+def from_budget_file(path: str | os.PathLike, name: str) -> QuotaState | None:
+    """Generic budget JSON written by whatever measures the plan on this machine."""
+    p = Path(path).expanduser()
+    if not p.exists():
+        return None
+    try:
+        data = json.loads(p.read_text())
+    except json.JSONDecodeError:
+        return None
+    return _state_from_document(data, name, measured_at=p.stat().st_mtime, source=str(p))
+
+
+#: Command results, so a per-turn routing decision does not spawn a usage
+#: reader: {(command, plan name) -> (read_at, state)}. The plan name belongs in
+#: the key: one reader usually reports every plan on the machine, and caching
+#: by command alone would hand the first plan's usage to the second.
+_command_cache: dict[tuple[tuple[str, ...], str], tuple[float, QuotaState | None]] = {}
+
+
+def from_command(command: list[str], name: str, *, ttl_s: float = 600.0,
+                 timeout_s: float = 30.0) -> QuotaState | None:
+    """Ask the plan's own usage reader, in the same JSON shape as the budget file.
+
+    The router has no business reading anyone's login token, so it never asks a
+    vendor how full a plan is - it runs *your* reader and parses percentages.
+    On this machine that is the client's own usage command; in a container it
+    might be a script that echoes a cached number. A reader that fails, times
+    out or prints something unparseable yields ``None``, which closes the
+    subscription tier rather than opening it on a guess (see ``decide``).
+    """
+    import subprocess
+
+    key = (tuple(command), name)
+    now = time.time()
+    cached = _command_cache.get(key)
+    if cached and now - cached[0] < ttl_s:
+        return cached[1]
+    state: QuotaState | None = None
+    try:
+        proc = subprocess.run(command, capture_output=True, text=True, timeout=timeout_s)
+        if proc.returncode == 0 and proc.stdout.strip():
+            state = _state_from_document(json.loads(proc.stdout), name,
+                                         measured_at=now, source=f"command:{command[0]}")
+    except (OSError, ValueError, subprocess.SubprocessError):
+        state = None
+    _command_cache[key] = (now, state)
+    return state
 
 
 def from_codex_rollouts(root: str | os.PathLike = "~/.codex/sessions", max_files: int = 40) -> QuotaState | None:

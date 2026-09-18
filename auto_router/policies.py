@@ -178,7 +178,21 @@ def effective_difficulty(conv: Conversation, req: TurnRequest) -> float:
     return d
 
 
+class NoRouteAvailable(RuntimeError):
+    """Every configured route is filtered out or paced out.
+
+    A distinct error rather than a crash from an empty ``max()``: with a
+    subscription-only catalog this is a state the operator will reach on an
+    ordinary Friday, when the plan hits its hard stop and nothing cheaper is
+    configured. It deserves a sentence, not a traceback.
+    """
+
+
 def strongest(models: list[ModelInfo], category: str, ctx: Context) -> ModelInfo:
+    if not models:
+        raise NoRouteAvailable(
+            "no route is available: every configured route is either unsuitable for this request "
+            "(context length, tools, vision) or paced out by its quota")
     return max(models, key=lambda m: (m.cap(category, benchmaxxing_weight=ctx.success.benchmaxxing_weight),
                                       -list_blended(m)))
 

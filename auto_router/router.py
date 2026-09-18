@@ -12,7 +12,7 @@ import os
 import threading
 import time
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable
 
 from . import jev
@@ -31,7 +31,8 @@ from .decision import (
 from .economics import SuccessModel, turn_cost
 from .ledger import RoutingLedger
 from .policies import POLICIES, Context, Conversation, Policy, TurnRequest, turn_call_cost
-from .quota import PacingRule, QuotaDecision, decide as quota_decide, from_budget_file, from_codex_rollouts
+from .quota import (PacingRule, QuotaDecision, decide as quota_decide, from_budget_file,
+                    from_codex_rollouts, from_command)
 
 log = logging.getLogger("auto_router.router")
 
@@ -180,8 +181,13 @@ class Router:
         for name, sub in (self.config.subscriptions or {}).items():
             rule = PacingRule(**{k: v for k, v in sub.items() if k in PacingRule.__dataclass_fields__})
             state = None
-            if sub.get("budget_file"):
-                state = from_budget_file(sub["budget_file"], sub.get("budget_key", name))
+            key = sub.get("budget_key", name)
+            if sub.get("usage_command"):
+                # The operator's own reader is the truth; a budget file is a cache of it.
+                state = from_command(list(sub["usage_command"]), key,
+                                     ttl_s=float(sub.get("usage_command_ttl_s", 600)))
+            if state is None and sub.get("budget_file"):
+                state = from_budget_file(sub["budget_file"], key)
             if state is None and sub.get("codex_rollouts"):
                 state = from_codex_rollouts(sub["codex_rollouts"])
             out[name] = quota_decide(state, rule)
@@ -239,6 +245,66 @@ class Router:
         return self._result(ctx, conv, cid, ctx.catalog[choice.model], choice.reason, req, cls, now,
                             cls_ms, turn_start=True, switched_from=conv.current,
                             prefix=self.conversation_id(messages, system, tools))
+
+    def route_job(self, task: str, *, steps: int = 12, output_per_step: int = 1200,
+                  force: str | None = None, now: float | None = None) -> RouteResult:
+        """Route a whole job rather than one turn: which *tool* should run this.
+
+        The difference from :meth:`route` is the shape of the request, not the
+        policy. A job handed to a coding agent is a long tool loop that starts
+        cold - a new session, nothing cached anywhere - so it is priced as
+        ``steps`` calls over a growing prefix, and no route gets credit for a
+        warm cache it cannot have. The decision is recorded exactly like a turn
+        decision, so a job and a turn are comparable in the same ledger.
+
+        The dollar figures on the candidates are therefore an *estimate of a
+        job*, built from the task text alone before any of it has run. They
+        rank routes; they are not a measurement, and the observed outcome
+        (``launcher``) records what really happened next to them.
+
+        ``force`` names a route the operator insists on. The record is then
+        built for *that* route - its cache state, its estimate, its candidate
+        row - and says in one line which route the policy would have picked
+        instead. An override the ledger describes as a routing decision would
+        be the one lie that makes every later comparison worthless.
+        """
+        now = now or time.time()
+        messages = [{"role": "user", "content": task}]
+        # Truthful, and the only tool information available before the client
+        # starts: every runnable route in this catalog is a coding agent with a
+        # shell, a file editor and a reader.
+        tools = [{"name": "shell"}, {"name": "edit"}, {"name": "read"}]
+        ctx = self.context()
+        cid = self.conversation_id(messages, None, tools)
+        conv = Conversation()          # a launched job starts cold, always
+        prompt_tokens = self.estimator.estimate(estimate_tokens(messages, None, tools))
+        started = time.perf_counter()
+        cls = self.classifier(task, self._job_summary(task, steps)) if self.classifier else None
+        cls_ms = (time.perf_counter() - started) * 1000
+        req = self._turn_request(cls, prompt_tokens, None, now, True, messages)
+        req = replace(req, steps=max(1, steps), output_tokens=max(1, steps) * output_per_step,
+                      remaining_turns=0.0)
+        choice = self.policy.choose(conv, req, ctx)
+        model = ctx.catalog[choice.model]
+        reason = f"job of about {steps} calls: {choice.reason}"
+        note = None
+        if force and force != model.name:
+            forced = ctx.catalog.get(force)
+            if forced is None:
+                raise KeyError(force)
+            note = f"Route forced by the operator; the policy's own choice was {model.name}."
+            reason = (f"operator override (--route {force}); "
+                      f"the policy would have picked {model.name}")
+            model = forced
+        result = self._result(ctx, conv, cid, model, reason, req, cls, now, cls_ms, turn_start=True)
+        if note and result.explanation is not None:
+            result.explanation.notes.append(note)
+        return result
+
+    @staticmethod
+    def _job_summary(task: str, steps: int) -> str:
+        return (f"A whole coding-agent job, expected to take about {steps} model calls with a "
+                f"shell, a file editor and a reader. Task length: {len(task)} characters.")
 
     # -- explanation ---------------------------------------------------------
     def _result(self, ctx: Context, conv: Conversation, cid: str, model: ModelInfo, reason: str,

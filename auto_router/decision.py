@@ -227,7 +227,11 @@ class ObservedOutcome:
     model: str
     #: ``truncated`` is a 200 the provider itself flagged as a length stop:
     #: real tokens, real cost, no finished answer. See ``truncation.py``.
-    status: str = "pending"           # ok | truncated | upstream_error | transport_error | pending
+    #: ``not_taken`` is a decision that was recorded but deliberately not acted
+    #: on - the advisory record kept while subscription traffic is forwarded
+    #: unchanged (see ``shim.advisory_passthrough``). It is an observation about
+    #: the router, not about the model, and no capability follows from it.
+    status: str = "pending"           # ok | truncated | not_taken | upstream_error | transport_error | pending
     http_status: int | None = None
     latency_ms: float | None = None
     uncached_input_tokens: int | None = None

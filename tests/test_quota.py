@@ -63,3 +63,29 @@ def test_codex_rollout_reader(tmp_path):
     ]))
     s = from_codex_rollouts(tmp_path)
     assert s.week_used == 0.42
+
+
+def test_one_usage_reader_reports_several_plans_without_mixing_them(tmp_path, monkeypatch):
+    """A reader that prints every plan must not have its first entry cached for all.
+
+    Found live: both subscriptions were configured with the same reader, and
+    the second plan was paced with the first plan's numbers.
+    """
+    from auto_router import quota
+
+    reader = tmp_path / "usage"
+    reader.write_text('#!/bin/sh\necho \'{"claude": {"week_percent": 94}, "codex": {"week_percent": 40}}\'\n')
+    reader.chmod(0o755)
+    monkeypatch.setattr(quota, "_command_cache", {})
+    first = quota.from_command([str(reader)], "claude")
+    second = quota.from_command([str(reader)], "codex")
+    assert first.week_used == 0.94
+    assert second.week_used == 0.40
+
+
+def test_a_failing_usage_reader_closes_the_plan_rather_than_guessing(tmp_path, monkeypatch):
+    from auto_router import quota
+
+    monkeypatch.setattr(quota, "_command_cache", {})
+    assert quota.from_command([str(tmp_path / "does-not-exist")], "claude") is None
+    assert not quota.decide(None).open

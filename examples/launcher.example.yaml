@@ -1,0 +1,103 @@
+# Example configuration for the job launcher (`scripts/route-run`).
+#
+# Same schema as examples/config.example.yaml, plus a `runner` block per route.
+# A route with a runner can be handed a whole job; a route without one is
+# reachable over HTTP only. Copy this file, keep your copy out of version
+# control, and point AUTO_ROUTER_CONFIG at it.
+#
+# Nothing here contains a credential. `env_from` copies a value from a named
+# environment variable; `clear_env` empties the variables that would move a
+# subscription run onto per-token billing.
+
+providers:
+  # Needed so a subscription route has a provider entry; the launcher never
+  # calls these endpoints itself - the official clients do.
+  anthropic:
+    base_url: https://api.anthropic.com/v1
+    api: anthropic
+    cache: anthropic
+  openai:
+    base_url: https://api.openai.com/v1
+    cache: openai
+  free-host:
+    base_url: https://llm.example.com/v1
+    api_key_env: EXAMPLE_API_KEY
+    cache: generic
+
+subscriptions:
+  claude:
+    # Your own usage reader. It prints JSON in the budget-file shape:
+    #   {"claude": {"week_percent": 41, "session_percent": 12,
+    #               "week_resets_at": "2026-09-19T05:00:00Z"}}
+    # The router never reads a login token; it only parses percentages.
+    usage_command: [my-plan-usage, --json]
+    usage_command_ttl_s: 600
+    budget_file: ~/.agent-budget.json     # fallback when the command is absent
+    weekly_reserve: 0.65                  # fill the plan up to a projected 65 %
+    hard_stop: 0.80                       # never launch on the plan above 80 % used
+    session_stop: 0.70
+    # Emptied for the child process, so the run really goes to the plan.
+    clear_env: [ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN]
+  codex:
+    codex_rollouts: ~/.codex/sessions     # the CLI writes its own rate limits there
+    weekly_reserve: 0.65
+    hard_stop: 0.80
+    clear_env: [OPENAI_API_KEY]
+
+policy:
+  name: F_expected
+  success:
+    table: examples/success.measured.json
+
+models:
+  # 1. Free or near-free worker: an easy job should land here.
+  - name: free-worker
+    provider: free-host
+    upstream_id: vendor/small-model
+    free: true
+    capability: {coding: 45, agentic: 40, general: 45}
+    latency_s: 8
+    runner:
+      cmd: [your-cli, run, -m, vendor/small-model, "{task}"]
+      timeout_s: 1800
+
+  # 2. The Claude plan through its own client. `-p` prints and exits;
+  #    `--model` picks the model the plan grants. Nothing proxies this.
+  - name: plan-strong
+    provider: anthropic
+    upstream_id: claude-opus-5
+    subscription: claude
+    list_price_model: metered-strong      # what a plan call would have cost
+    cache_family: anthropic
+    capability: {coding: 70, agentic: 72, general: 70}
+    latency_s: 4
+    runner:
+      cmd: [claude, -p, --model, opus, --permission-mode, acceptEdits]
+      stdin: true                         # the task goes in on stdin
+      timeout_s: 3600
+
+  # 3. The ChatGPT plan through the Codex CLI, same idea.
+  - name: plan-codex
+    provider: openai
+    upstream_id: gpt-5.6
+    subscription: codex
+    list_price_model: metered-strong
+    capability: {coding: 72, agentic: 70, general: 68}
+    latency_s: 4
+    runner:
+      cmd: [codex, exec, -m, gpt-5.6, "{task}"]
+      clear_env: [OPENAI_API_KEY]
+      timeout_s: 3600
+
+  # 4. A metered API model, for when both plans are paced out. This entry is
+  #    also the price reference the subscription routes are shadow-priced
+  #    against when their quota gets tight (see quota.py).
+  - name: metered-strong
+    provider: openai
+    upstream_id: gpt-5.6
+    prices: {input: 1.25, output: 10.0, cache_read: 0.125}
+    capability: {coding: 72, agentic: 70, general: 68}
+    runner:
+      cmd: [your-cli, run, -m, gpt-5.6, "{task}"]
+      env_from: {OPENAI_API_KEY: OPENAI_API_KEY}
+      timeout_s: 3600
