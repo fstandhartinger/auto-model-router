@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -300,18 +301,28 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         stop(router)
         stop(stub)
+        # Leave no service behind, and no litter either: 36 stale
+        # /tmp/auto-router-smoke-* directories accumulated over one afternoon of
+        # suite runs before this was added. Set AUTO_ROUTER_SMOKE_KEEP=1 to keep
+        # the config, ledger and stub for inspection after a failure.
+        if os.environ.get("AUTO_ROUTER_SMOKE_KEEP") != "1":
+            shutil.rmtree(tmp, ignore_errors=True)
 
     left_behind = [p for p in (router_port, stub_port) if port_open(p, timeout=0.3)]
     results.append(check(not left_behind, "no service left behind",
                          f"ports still open: {left_behind}" if left_behind else "both ports closed"))
+    kept = os.environ.get("AUTO_ROUTER_SMOKE_KEEP") == "1"
+    results.append(check(kept or not tmp.exists(), "no temporary files left behind",
+                         f"kept at {tmp} on request" if kept else "working directory removed"))
 
     failed = [r for r in results if not r["ok"]]
     report = {"checks": results, "passed": len(results) - len(failed), "failed": len(failed),
-              "tmpdir": str(tmp)}
+              "tmpdir": str(tmp), "tmpdir_kept": kept}
     out = os.environ.get("AUTO_ROUTER_SMOKE_REPORT")
     if out:
         Path(out).write_text(json.dumps(report, indent=1))
-    print(f"\n{len(results) - len(failed)}/{len(results)} checks passed; artifacts in {tmp}")
+    where = f"artifacts kept in {tmp}" if kept else "working directory cleaned up"
+    print(f"\n{len(results) - len(failed)}/{len(results)} checks passed; {where}")
     return 1 if failed else 0
 
 
