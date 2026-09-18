@@ -285,9 +285,38 @@ that neither port still accepts a connection, so no service is left behind.
 | `auto_router/translate.py`, `stream_translate.py` | Anthropic ↔ OpenAI translation |
 | `experiments/sandbox.py` | Bubblewrap isolation for executing model-produced code |
 | `experiments/heldout.py` | pre-registered held-out evaluation across six categories |
+| `experiments/supplement.py` | the pre-registered supplement: its own frozen registration (policy and catalog included), a concurrent runner, a cumulative budget guard, the combined report |
+| `experiments/pairing.py` | valid-**pair** accounting — a pair counts only when both arms were graded |
 | `experiments/graders.py` | deterministic graders (no grader calls a model) |
 | `experiments/` | task set, evaluation harness, simulator |
 | `scripts/smoke_http.py` | local HTTP smoke test including the outage paths |
+
+## What the evaluation actually shows
+
+Ten valid **paired** tasks per category, across two separately pre-registered
+runs (27 + 60 tasks), against the real normal routing policy — `F_expected`
+with the live classifier, the same object the server builds:
+
+- The routing policy is **never ahead** of a single fixed route in any of the
+  six categories. It ties in coding, research and cache-repeat, and is behind by
+  one, two and three discordant pairs in design, maths and summarisation. None
+  of those is significant at this size, and none of the ties is evidence of
+  equality either — the conservative paired interval on a twelve-pair tie still
+  runs ±0.265.
+- **No saving was measured and none is claimed.** The routing policy keeps
+  choosing free routes, which is the correct decision and also why there is no
+  cash contrast: both free arms spent $0.0000. The metered comparator spent
+  $0.9457 for pass rates that are equal or one pair better.
+- **No quality claim is supported in any category**, and that is structural:
+  "at least as often" is a non-inferiority statement and no non-inferiority
+  margin was pre-registered. What ten valid pairs per category *do* buy is a
+  ceiling — a routing advantage large enough to show up at this sample size is
+  not there.
+
+The combined report prints eleven named limitations next to those numbers,
+including that the supplement is an adaptive sample, that its design tasks are
+mostly compact components, and that the cache-repeat category is warm-prefix
+repeats rather than independent tasks. `EXPERIMENTS.md` §12 has the tables.
 
 ## Privacy
 

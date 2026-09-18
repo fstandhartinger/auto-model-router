@@ -447,12 +447,122 @@ python experiments/heldout.py run --config my.local.yaml --budget 4.00 \
 python experiments/heldout.py report
 ```
 
+## 12. The pre-registered supplement: ten valid pairs in every category (18 Sep 2026)
+
+The run in §11 could not answer its own question, for one arithmetic reason: the
+unit of evidence in a paired comparison is the **pair**, a pair needs *both*
+rows graded, and four of the twelve design rows were harness truncations. Every
+category sat under the pre-registered floor of ten.
+
+The 27-task ledger is finished evidence and was not touched. A **second,
+separately pre-registered supplement** of 60 tasks was registered before any
+call — `runs/heldout-supplement-<ts>/preregistration.json`, task digest
+`b55743c99d41fac9…`, policy/catalog identity digest `56ca0ebd84fd9fe6…` — and
+the two are *combined for reporting* while staying distinguishable.
+
+The supplement registration freezes something the first one did not: **what the
+routing arm actually is.** `policy_identity` records the resolved policy name
+(`F_expected`, the router's own default, because the config sets no
+`policy.name`), its settings, and for every route the provider, upstream id,
+prices, per-category capability and staleness. The runner refuses to start if
+any of that, the task file, the analysis plan, the config file, the experiment
+code or `auto_router/*.py` has moved without an amendment.
+
+### The result
+
+<!-- supplement:start -->
+| category | valid pairs | router | control (free) | control-metered | paired diff vs control, conservative 95 % | sign p |
+|---|---:|---:|---:|---:|---:|---:|
+| design | 22 / 23 | 19 / 20 | 20 | 21 | −0.045 (−0.228…+0.217) | 1.000 |
+| coding | 12 | 12 | 12 | 12 | 0.000 (−0.265…+0.265) | n/a |
+| math | 13 | 11 | 13 | 13 | −0.154 (−0.455…+0.311) | 0.500 |
+| research | 12 | 12 | 12 | 12 | 0.000 (−0.265…+0.265) | n/a |
+| summarisation | 11 / 12 | 7 / 8 | 9 | 11 | −0.182 (−0.683…+0.423) | 0.625 |
+| cache_repeat | 12 | 12 | 12 | 12 | 0.000 (−0.265…+0.265) | n/a |
+
+Every category now reaches **ten valid pairs against both comparators**. The
+intervals are printed because they are wide: even a category where the two arms
+agreed on all twelve pairs still admits a difference of a quarter in either
+direction. "No disagreement observed" is not "equal".
+
+**No category supports a quality claim, and that is structural.** "At least as
+often" is a non-inferiority statement, and **no non-inferiority margin was
+pre-registered**. Choosing one now, with the numbers in hand, is exactly the
+move the pre-registration exists to prevent. The report therefore reports an
+empty supported list by construction and says why, instead of promoting a tie
+into a result.
+<!-- supplement:end -->
+
+**What that buys, stated exactly.** The routing policy is **never ahead** in any
+category. It ties in coding, research and cache_repeat — identically, on every
+pair — and it is **behind** in design, maths and summarisation, losing 1, 2 and
+3 discordant pairs respectively. None of those deficits is significant at this
+size (sign test p = 0.25–1.00), and a large p-value here is *absence of
+evidence against equality*, not evidence of equality. The one thing this does
+establish is a ceiling: a routing advantage large enough to matter at these
+sample sizes is not there.
+
+**And still no saving.** The routing arm and the free control both spent
+**$0.0000**, because the policy keeps choosing free routes — which is the
+correct decision and is also why there is no cash contrast to weigh the
+deficits against. The metered comparator spent **$0.9457** on retained rows
+(**$1.1095** counting the calls whose rows were later discarded and re-run) for
+pass rates that are equal or one pair better. That is a real billed-adjacent
+figure — the gateway's reported upstream inference cost, not an invoice.
+
+**The routing is real, and visible per category:** `qwen3.8-27b` for every
+cache-repeat, `dsv4-flash` for all summarisation and part of maths and coding,
+`kimi-k3` for design and research. Both of the maths losses and three of the
+four summarisation losses are on `dsv4-flash`, the cheaper route the policy
+downgraded to. The pattern from §11 held at four times the sample size.
+
+### The honest caveats, in the report itself
+
+The combined report prints nine of them next to the numbers rather than in a
+footnote. The three that change how the table should be read:
+
+- **The supplement is an adaptive sample.** Its size and per-category mix were
+  chosen after the original outcomes were known — that is what "bring every
+  category to ten valid pairs" requires. No rule, grader, prompt or arm moved;
+  the counts did.
+- **19 of 22 design tasks are compact single components**, because the original
+  larger pages are exactly what the free routes could not finish. Design is
+  therefore reported split by the registered difficulty tier, and the split is
+  the interesting part: easy 12/13 vs 13/13, medium 7/7 vs 7/7, **hard (full
+  pages) 0/2 vs 0/2 with two of four pairs truncated.** The failure mode is
+  still there; it is not averaged away.
+- **`cache_repeat` is eight questions over one warm prefix**, so its twelve
+  pairs are twelve observations and nothing like twelve independent tasks. It
+  is flagged `independent_samples: false` everywhere it appears.
+
+Because the original run's exclusion rule ("a truncated answer is excluded, not
+failed") was written *after* a truncation had been seen, every category also
+carries the same numbers under the opposite rule. The conclusion does not move:
+design 20/26 vs 21/26, summarisation 8/12 vs 9/12 — the routing policy is level
+or behind either way.
+
+Reproduce:
+
+```sh
+python experiments/supplement.py preregister --dir runs/heldout-supplement-<ts> --config my.local.yaml
+python experiments/supplement.py verify     --dir runs/heldout-supplement-<ts> --config my.local.yaml
+python experiments/supplement.py run --dir runs/heldout-supplement-<ts> --config my.local.yaml \
+    --arms router,control --workers 6 --budget 1.00 --cap 30.00 --prior-spend <recorded>
+python experiments/supplement.py run --dir runs/heldout-supplement-<ts> --config my.local.yaml \
+    --arms control --control <a-metered-route> --control-label control-metered \
+    --workers 6 --budget 2.50 --cap 30.00 --prior-spend <recorded>
+python experiments/supplement.py report --dir runs/heldout-supplement-<ts> --original runs/heldout
+```
+
 ## Limits
 
 - Cells hold 4–6 tasks; task difficulty for real traffic is a proxy (calls per turn).
-- The held-out set is small by design (27 tasks). It separates categories; it does
-  not rank frontier models, and no quality claim is made from a category with
-  fewer than 10 graded tasks.
+- The held-out set is small by design (27 tasks, plus a 60-task pre-registered
+  supplement). It separates categories; it does not rank frontier models, and no
+  quality claim is made from a category with fewer than 10 valid *pairs*. With
+  the supplement every category clears that floor — and the answer it gives is
+  that the routing policy is level or slightly behind a single fixed route, with
+  no cash saving to set against it (§12).
 - The design grader is structural. A page can satisfy every rule and still look bad.
 - The simulator treats a failed turn as a whole-turn redo and assumes partially correlated retries.
 - Latency is not modelled well; free-tier routes are slower (F's turns take longer in the replay).
