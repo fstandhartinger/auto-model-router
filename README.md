@@ -76,11 +76,42 @@ router stays on the turn's model):
 4. **Choose** with the configured policy (below), then escalate on failure
    signals. A *capability* failure (repeated failing tool results, an inadequate
    answer) escalates to a clearly stronger route; an *availability* failure
-   (5xx, a broken connection) falls back sideways to the next usable route,
-   because a 503 is not evidence that the model was too weak. A Jev adequacy
-   judge (`jev.judge`) is measured in EXPERIMENTS.md and works well for
-   self-contained coding and math answers; it is not yet wired into the server.
+   (5xx, a broken connection, an answer the provider says it never finished)
+   falls back sideways to the next usable route, because a 503 is not evidence
+   that the model was too weak. A Jev adequacy judge (`jev.judge`) is measured
+   in EXPERIMENTS.md and works well for self-contained coding and math answers;
+   it is not yet wired into the server.
 5. **Record** the decision as four separate objects — see below.
+
+### An answer the provider says it never finished
+
+A route that exhausts its output budget returns HTTP 200 and a well-formed
+body, so it used to be recorded as a success. It is not one, and it is the only
+route difference the held-out run measured that no capability score predicted:
+on the two hardest web-design tasks one route burned a 12,000-token budget
+without finishing the page while a route the design-arena evidence rated
+*lower* finished the same prompt in about 2,200 tokens.
+
+So a completion the provider itself flags as a length stop
+(`finish_reason: length`, `stop_reason: max_tokens`, or a gateway's
+`native_finish_reason` equivalent) is recorded as `status: "truncated"` — an
+observed failed attempt — and the non-streaming OpenAI surface then takes the
+same sideways safe fallback a 5xx takes, by default for **one** extra route
+(`AUTO_ROUTER_TRUNCATION_RETRIES`, `0` disables the retry and keeps the label).
+Three limits are deliberate:
+
+- **Only the provider's own machine-readable flag.** Never the answer text;
+  "it reads as cut off" is an inference this router will not make, and acting
+  on it would mean reading content the decision record deliberately excludes
+  ([`auto_router/truncation.py`](auto_router/truncation.py)).
+- **Nothing is written back into capability.** The observation is recorded and
+  goes no further; no score is invented from it.
+- **A stream is recorded, never retried.** Its bytes are already on the wire.
+  The `/v1/messages` surface has no attempt loop, so it records too.
+
+The tokens a truncated attempt spent were really billed, so it is committed and
+metered like any other call; `total_requests` therefore counts attempts, not
+turns, on a turn that truncated.
 
 ## Four things the router never mixes up
 
@@ -95,7 +126,7 @@ at `GET /v1/router/decisions` and appended to a JSONL ledger when
 | `classification` | what the task *is*: category, difficulty, confidence, source | a model name |
 | `selection` | what the router *decided*: candidates, evidence, cache decision, chosen route, fallback | an outcome |
 | `estimated_outcome` | what it *expected*: cost, `p_success`, tokens, and the basis | anything measured |
-| `observed_outcome` | what *happened*: status, latency, provider-reported tokens, cost when a price basis exists | an estimate standing in for a measurement |
+| `observed_outcome` | what *happened*: status (`ok`, `truncated`, `upstream_error`, `transport_error`), latency, provider-reported tokens, cost when a price basis exists | an estimate standing in for a measurement |
 
 A cost with no measurement basis is recorded as `null` with the reason, never
 as a zero — a free or subscription route must not later read as a measured

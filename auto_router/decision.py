@@ -24,7 +24,9 @@ kinds of statement in four different places, and nothing merges them:
     What actually *happened*: status, latency, billed-token counts as reported
     by the provider, cost when - and only when - a price basis exists. An
     observation with no measurement basis is recorded as ``None``, never as a
-    zero or as the estimate.
+    zero or as the estimate. A route that told us it ran out of output budget
+    is recorded here as a failed attempt and nowhere else: an observation never
+    writes back into a capability score.
 
 ``RoutingExplanation`` bundles the four and renders a compact dict. That dict
 is the only thing that leaves the process (API, ledger, logs), and it holds no
@@ -223,7 +225,9 @@ class ObservedOutcome:
     """After the call. Only what the provider actually reported."""
 
     model: str
-    status: str = "pending"           # ok | upstream_error | transport_error | pending
+    #: ``truncated`` is a 200 the provider itself flagged as a length stop:
+    #: real tokens, real cost, no finished answer. See ``truncation.py``.
+    status: str = "pending"           # ok | truncated | upstream_error | transport_error | pending
     http_status: int | None = None
     latency_ms: float | None = None
     uncached_input_tokens: int | None = None

@@ -45,21 +45,37 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 app = FastAPI()
-STATE = {"calls": 0, "fail_next": int(os.environ.get("STUB_FAIL_FIRST", "0"))}
+STATE = {"calls": 0, "models": [],
+         "fail_next": int(os.environ.get("STUB_FAIL_FIRST", "0")),
+         "cut_next": int(os.environ.get("STUB_TRUNCATE_FIRST", "0"))}
 
 
 @app.get("/healthz")
 async def healthz():
-    return {"calls": STATE["calls"]}
+    return {"calls": STATE["calls"], "models": STATE["models"]}
 
 
 @app.post("/v1/chat/completions")
 async def completions(request: Request):
     body = await request.json()
     STATE["calls"] += 1
+    STATE["models"].append(body.get("model"))
     if STATE["fail_next"] > 0:
         STATE["fail_next"] -= 1
         return JSONResponse({"error": {"message": "stub is failing on purpose"}}, status_code=503)
+    if STATE["cut_next"] > 0:
+        # A real length stop: HTTP 200, a well-formed body, real billed tokens,
+        # and an answer the provider itself says it never finished.
+        STATE["cut_next"] -= 1
+        return {
+            "id": "stub-cut",
+            "object": "chat.completion",
+            "model": body.get("model"),
+            "choices": [{"index": 0, "finish_reason": "length",
+                         "message": {"role": "assistant", "content": "half a dash"}}],
+            "usage": {"prompt_tokens": 4321, "completion_tokens": 12000,
+                      "prompt_tokens_details": {"cached_tokens": 4000}},
+        }
     return {
         "id": "stub-1",
         "object": "chat.completion",
@@ -265,6 +281,55 @@ def main(argv: list[str] | None = None) -> int:
         results.append(check(SECRET not in ledger.read_text()
                              and "responsive dashboard" not in ledger.read_text(),
                              "no prompt text or credential in the ledger file"))
+
+        # -- an unfinished answer: 200, real tokens, no finished page --------
+        # The one route difference the 18 September held-out run measured that
+        # no capability score predicted. The provider says "length"; the router
+        # must not call that a success, and must take the same safe fallback a
+        # 5xx takes.
+        stop(stub)
+        stub = spawn(tmp, "stub_upstream:app", stub_port,
+                     {"STUB_TRUNCATE_FIRST": "1", "PYTHONPATH": str(tmp)})
+        wait_for(stub_port, proc=stub)
+        body["messages"] = [{"role": "user",
+                             "content": PROMPT * 70 + f" my api_key={SECRET}"}]
+        status, completion, headers = request(f"{base}/v1/chat/completions", body)
+        results.append(check(status == 200 and completion["choices"][0]["message"]["content"]
+                             == "stub answer",
+                             "a truncated answer is replaced by a finished one",
+                             f"HTTP {status}"))
+        _s, stub_state, _h = request(f"http://127.0.0.1:{stub_port}/healthz")
+        tried = stub_state.get("models") or []
+        results.append(check(len(tried) == 2 and tried[0] != tried[1],
+                             "the length stop attempted one eligible alternate route",
+                             " -> ".join(str(m) for m in tried)))
+
+        status, decisions, _ = request(f"{base}/v1/router/decisions?limit=5")
+        records = decisions.get("data") or []
+        cut = [r for r in records
+               if (r.get("observed_outcome") or {}).get("status") == "truncated"]
+        results.append(check(len(cut) == 1 and cut[0]["observed_outcome"]["error"]
+                             == "finish_reason:length",
+                             "the length stop is recorded as an observed failed attempt",
+                             json.dumps([(r["selection"]["selected"],
+                                          r["observed_outcome"]["status"]) for r in records[:3]])))
+        results.append(check(cut[0]["observed_outcome"]["tokens"]["output"] == 12000
+                             and cut[0]["observed_outcome"]["http_status"] == 200,
+                             "the tokens the unfinished attempt really spent are still counted",
+                             json.dumps(cut[0]["observed_outcome"]["tokens"])))
+        results.append(check((records[0].get("observed_outcome") or {}).get("status") == "ok"
+                             and records[0]["selection"]["switched_from"]
+                             == cut[0]["selection"]["selected"],
+                             "the retry is the documented switch away from the failed route",
+                             str(records[0]["selection"].get("reason"))[:90]))
+        results.append(check(all(c["capability_basis"] in ("config", "bench+config", "none")
+                                 or "truncat" not in json.dumps(c)
+                                 for r in records for c in r["candidates"]),
+                             "no capability score was invented from the truncation"))
+        blob = json.dumps(decisions) + ledger.read_text()
+        results.append(check(SECRET not in blob and "responsive dashboard" not in blob
+                             and "half a dash" not in blob,
+                             "the truncated turn leaked no prompt, body or credential"))
 
         # -- outage and fallback: the classifier is configured but unreachable
         # The first phase ran with no key at all, which exercises "disabled".

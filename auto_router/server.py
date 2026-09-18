@@ -37,6 +37,7 @@ from .translate import (
     tool_choice_to_openai,
     tools_to_openai,
 )
+from .truncation import label_for_stop_reason, truncation_label
 
 log = logging.getLogger("auto_router.server")
 
@@ -47,6 +48,23 @@ router = Router(config)
 _client: httpx.AsyncClient | None = None
 TIMEOUT = float(os.environ.get("AUTO_ROUTER_TIMEOUT_S", "600"))
 MAX_ATTEMPTS = int(os.environ.get("AUTO_ROUTER_MAX_ATTEMPTS", "3"))
+
+
+def truncation_retry_budget() -> int:
+    """How many extra routes one unfinished answer may cost.
+
+    Deliberately smaller than ``MAX_ATTEMPTS``, and deliberately read per
+    request rather than at import. A length stop is a genuine failure, but
+    unlike a 5xx it still returns a usable partial answer and it still bills
+    for the tokens, so a caller who asked for a very small ``max_tokens`` must
+    not have their bill multiplied by the retry budget. One extra route is
+    what the observed case needed; ``0`` turns the retry off and leaves only
+    the honest label behind.
+    """
+    try:
+        return max(0, int(os.environ.get("AUTO_ROUTER_TRUNCATION_RETRIES", "1")))
+    except ValueError:
+        return 1
 
 
 def client() -> httpx.AsyncClient:
@@ -138,6 +156,11 @@ async def chat_completions(request: Request) -> Any:
                                  headers=result.headers)
 
     last_error: tuple[int, Any] = (502, {"error": "no attempt made"})
+    #: The first answer a provider told us it never finished, kept so that a
+    #: turn where every route runs out of budget still returns what it did
+    #: produce - exactly what the client got before truncation was noticed.
+    unfinished: tuple[Any, RouteResult] | None = None
+    truncation_retries = truncation_retry_budget()
     first = result
     for attempt in range(1, MAX_ATTEMPTS + 1):
         provider = provider_for(result)
@@ -152,12 +175,35 @@ async def chat_completions(request: Request) -> Any:
         latency_ms = (time.perf_counter() - started) * 1000
         if resp is not None and resp.status_code == 200 and (data.get("choices") or []):
             usage = parse_openai_usage(data.get("usage") or {})
+            # The provider's own machine-readable stop flag, never the prose.
+            cut = truncation_label(data)
+            # The tokens were really spent either way, so the call is committed
+            # and metered either way: dropping a truncated attempt from the
+            # books would under-report what the turn actually cost.
             router.commit(result, usage.total_input or None, usage.output)
-            record_observed(result, "ok", 200, latency_ms, usage, attempt, first)
+            record_observed(result, "truncated" if cut else "ok", 200, latency_ms, usage,
+                            attempt, first, error=cut)
             metrics.record(category=result.request.category, model=result.model,
                            classification_ms=result.classification_ms, usage=usage,
                            switched=False, escalated=bool(result.tried))
-            return JSONResponse(data, headers=result.headers)
+            if cut is None:
+                return JSONResponse(data, headers=result.headers)
+            # An answer the route says it never finished is a failed attempt,
+            # not an answer. It says nothing about the model being too weak -
+            # the measured case had the *higher*-rated route run out of budget -
+            # so this takes the same sideways safe fallback a 5xx takes, and no
+            # capability score is touched anywhere.
+            metrics.record_error(result.model.name)
+            if unfinished is None:
+                unfinished = (data, result)
+            if truncation_retries <= 0:
+                break
+            truncation_retries -= 1
+            retry = router.escalate(result, availability=True)
+            if retry is None:
+                break
+            result = retry
+            continue
         metrics.record_error(result.model.name)
         status = resp.status_code if resp is not None else 502
         # Only a controlled label is kept. An upstream error body routinely
@@ -173,6 +219,9 @@ async def chat_completions(request: Request) -> Any:
         if retry is None:
             break
         result = retry
+    if unfinished is not None:
+        data, result = unfinished
+        return JSONResponse(data, headers=result.headers)
     return JSONResponse(last_error[1], status_code=last_error[0], headers=result.headers)
 
 
@@ -197,7 +246,8 @@ def record_observed(result: RouteResult, status: str, http_status: int | None,
 
     Cost is filled in only when the route publishes prices; a free or
     subscription route reports ``None`` with the reason, never a zero that
-    would later read as a measured saving.
+    would later read as a measured saving. ``truncated`` is a 200 whose tokens
+    are real and whose answer is not: the cost is measured as usual.
     """
     model = result.model
     if usage is None:
@@ -224,6 +274,7 @@ async def _openai_stream(body: dict, result: RouteResult):
     payload = {**body, "model": result.model.upstream_id,
                "stream_options": {**(body.get("stream_options") or {}), "include_usage": True}}
     usage = Usage()
+    finish_reason: str | None = None
     started = time.perf_counter()
     async with client().stream("POST", f"{provider.base_url}/chat/completions",
                                headers=provider_headers(provider), json=payload) as resp:
@@ -243,11 +294,24 @@ async def _openai_stream(body: dict, result: RouteResult):
                         parsed = json.loads(chunk)
                         if parsed.get("usage"):
                             usage = parse_openai_usage(parsed["usage"])
+                        for choice in parsed.get("choices") or []:
+                            # With several choices, a length stop on any of them
+                            # is the honest verdict for the turn.
+                            reason = choice.get("finish_reason") if isinstance(choice, dict) else None
+                            if reason and (finish_reason is None
+                                           or label_for_stop_reason(finish_reason) is None):
+                                finish_reason = reason
                     except json.JSONDecodeError:
                         pass
             yield line + "\n"
+    # The bytes are already on the wire, so a stream can only be recorded
+    # honestly, never retried. See ``truncation.py``.
+    cut = label_for_stop_reason(finish_reason)
     router.commit(result, usage.total_input or None, usage.output)
-    record_observed(result, "ok", 200, (time.perf_counter() - started) * 1000, usage, 1, result)
+    record_observed(result, "truncated" if cut else "ok", 200,
+                    (time.perf_counter() - started) * 1000, usage, 1, result, error=cut)
+    if cut:
+        metrics.record_error(result.model.name)
     metrics.record(category=result.request.category, model=result.model,
                    classification_ms=result.classification_ms, usage=usage)
 
@@ -326,8 +390,14 @@ async def proxy_openai_as_anthropic(body: dict, result: RouteResult) -> Any:
                                                         "message": f"response translation failed: {exc}"}},
                             status_code=502, headers=headers)
     usage = parse_openai_usage(data.get("usage") or {})
+    cut = truncation_label(data)
     router.commit(result, usage.total_input or None, usage.output)
-    record_observed(result, "ok", 200, latency_ms, usage, 1, result)
+    record_observed(result, "truncated" if cut else "ok", 200, latency_ms, usage, 1, result,
+                    error=cut)
+    if cut:
+        # This surface has no attempt loop to fall back through; the record is
+        # still honest about what the route did.
+        metrics.record_error(result.model.name)
     metrics.record(category=result.request.category, model=result.model,
                    classification_ms=result.classification_ms, usage=usage)
     return JSONResponse(message, headers=headers)
@@ -363,8 +433,14 @@ async def _anthropic_stream(payload: dict, provider: Provider, result: RouteResu
                         error=f"transport:{type(exc).__name__}")
         yield anthropic_error_sse(f"{type(exc).__name__}: {exc}")
         return
+    # The provider's own word, not the Anthropic stop reason it was mapped to:
+    # a stream with tool calls maps to "tool_use" even when the budget ran out.
+    cut = label_for_stop_reason(outcome.finish_reason)
     router.commit(result, outcome.usage.total_input or None, outcome.usage.output)
-    record_observed(result, "ok", 200, (time.perf_counter() - started) * 1000, outcome.usage, 1, result)
+    record_observed(result, "truncated" if cut else "ok", 200,
+                    (time.perf_counter() - started) * 1000, outcome.usage, 1, result, error=cut)
+    if cut:
+        metrics.record_error(result.model.name)
     metrics.record(category=result.request.category, model=result.model,
                    classification_ms=result.classification_ms, usage=outcome.usage)
 

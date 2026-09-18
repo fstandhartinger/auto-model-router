@@ -408,8 +408,25 @@ that separates them.
 A router that reads only capability scores cannot see that at all: both routes
 look capable, and design-arena Elo puts kimi-k3 *above* gpt-5.6-sol on exactly
 this kind of work. It shows up only as an *observed* property of the route on
-harder instances. The router does not currently treat truncation as a failure
-signal, which is the clearest single thing to add next.
+harder instances.
+
+**This is now the one thing the router does about it.** A completion the
+provider itself flags as a length stop is recorded as `status: "truncated"` —
+an observed failed attempt, not a success — and the non-streaming OpenAI
+surface takes the same sideways safe fallback a 5xx takes, for one extra route
+by default. Nothing is written back into a capability score, and the flag is
+read only from the provider's own machine-readable field, never from the answer
+text. See `auto_router/truncation.py` and the README section *An answer the
+provider says it never finished*.
+
+What that does **not** do is turn the observation above into a claim. These
+numbers are still four excluded rows on two tasks in one run. The change makes
+the router able to *see* the failure and survive it; whether falling back on a
+length stop produces better answers or lower cost across a real workload is
+unmeasured, and the held-out set at its current size cannot measure it. The
+evidence for the behaviour is the deterministic local suite
+(`tests/test_truncation.py`, 41 tests) and the loopback HTTP smoke test, not a
+live comparison.
 
 The same failure appeared somewhere else entirely, which is why it looks like a
 route property rather than a task artefact. Two reasoning routes were also asked

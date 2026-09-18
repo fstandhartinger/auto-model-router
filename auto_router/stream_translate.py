@@ -32,6 +32,12 @@ class StreamOutcome:
     usage: Usage = field(default_factory=Usage)
     stop_reason: str = "end_turn"
     saw_content: bool = False
+    #: The provider's own last word, before it is mapped onto an Anthropic stop
+    #: reason. ``stop_reason`` alone cannot be read back: a stream that emitted
+    #: tool calls *and* ran out of output budget is mapped to ``tool_use``, so
+    #: the budget failure would be invisible. Nothing formats this into a
+    #: response; only the observation reads it.
+    finish_reason: str | None = None
 
 
 async def translate_stream(
@@ -84,6 +90,7 @@ async def translate_stream(
         delta = choice.get("delta") or {}
         if choice.get("finish_reason"):
             finish_reason = choice["finish_reason"]
+            outcome.finish_reason = finish_reason
 
         if not started_message:
             started_message = True
