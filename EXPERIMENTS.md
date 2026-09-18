@@ -541,7 +541,75 @@ carries the same numbers under the opposite rule. The conclusion does not move:
 design 20/26 vs 21/26, summarisation 8/12 vs 9/12 — the routing policy is level
 or behind either way.
 
-Reproduce:
+### What a reader can check, and what only the operator can
+
+Start with the part that is easy to read past: **the run directories are not in
+this repository.** `experiments/runs/` is in `.gitignore`, and the two runs
+behind every number above — `runs/heldout` and
+`runs/heldout-supplement-20260918T1021Z` — live on the operator's machine. What
+is published is the code that produced them, the numbers, and the digests quoted
+in this file and in the commit. A reader can therefore re-run the *harness*, and
+can check any run directory they are given against this checkout; a reader
+cannot, from a clone alone, verify the runs that produced the table above.
+
+Given the run directory, the split is sharper still. Everything below the first
+line of the recipe needs `my.local.yaml`: the runtime config, carrying provider
+credentials, which is not in this repository and cannot be reconstructed from the
+registration. That is not an oversight that can be patched — it is what the
+strict verifier is *for*, and it refuses rather than pretending when the file is
+absent:
+
+```sh
+$ python experiments/supplement.py verify --dir runs/heldout-supplement-<ts> --config anything-else
+the registered config '...' is missing, so the policy/catalog identity cannot be
+re-checked; refusing to run                                               # exit 1
+```
+
+So the supplement's configuration identity is **verifiable only by whoever holds
+that exact file**, and no claim that it was independently verified should be
+made on a reader's behalf. What a reader *can* re-derive, on any machine, with
+no config at all, is the run's public identity:
+
+```sh
+python experiments/evidence_verify.py --dir runs/heldout-supplement-<ts>
+```
+
+That checks the task file, the registered task ids and per-category counts, the
+analysis plan, the frozen policy/catalog identity against the digest it carries,
+and every registered experiment- and product-code digest against the checkout —
+and then prints, every time, that none of it proves the secret-bearing runtime
+config ever existed, hashed as recorded, or produced that identity. Offline
+verification of a frozen redacted identity is not proof of the original.
+
+Two things it turns up that were not visible before, both about the human-readable
+analysis plan rather than any collected row:
+
+- In the **supplement** registration the plan *text* is the version first
+  registered, while the enforced `analysis_plan_sha256` is the amended one —
+  `amend` refreshes the digest and leaves the prose alone. The trail links them
+  (the text hashes to the `previous_analysis_plan_sha256` every amendment
+  records), so it verifies, with that stated as a limitation.
+- In the **original 27-task** registration it does **not** verify. That run's
+  first amendment recorded `previous_analysis_plan_sha256: null`, because the
+  registration had no plan digest until the amendment added one. The plan text
+  sitting in that file hashes to `4e2cee61…` and nothing in the record ties it to
+  the enforced `0fa59644…`. `heldout.py verify` passes — it only compares the
+  digest to the checkout — but the prose and the digest in that registration are
+  not demonstrably the same plan, and freezing it after the fact would be
+  tampering, so it is reported rather than repaired.
+
+A run registered from now on should freeze a credential-free projection of its
+config as well, which is the only thing that closes the configuration gap for a
+*future* run:
+
+```sh
+python experiments/evidence_verify.py --dir runs/<new-run> --freeze-public-config my.local.yaml
+```
+
+Rotating a credential leaves that projection's digest unchanged; changing a
+route, an endpoint or a policy setting does not.
+
+Reproduce (the operator's path, needing the config):
 
 ```sh
 python experiments/supplement.py preregister --dir runs/heldout-supplement-<ts> --config my.local.yaml
@@ -563,6 +631,12 @@ python experiments/supplement.py report --dir runs/heldout-supplement-<ts> --ori
   the supplement every category clears that floor — and the answer it gives is
   that the routing policy is level or slightly behind a single fixed route, with
   no cash saving to set against it (§12).
+- **Neither run is fully verifiable by a reader.** The configuration half of the
+  supplement's registration can only be checked by whoever holds the
+  credential-bearing config it names; `evidence_verify.py` re-derives the rest
+  and prints that limit every time. Nothing in the published evidence
+  establishes that the recorded runtime config existed or produced the frozen
+  policy/catalog identity.
 - The design grader is structural. A page can satisfy every rule and still look bad.
 - The simulator treats a failed turn as a whole-turn redo and assumes partially correlated retries.
 - Latency is not modelled well; free-tier routes are slower (F's turns take longer in the replay).

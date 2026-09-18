@@ -259,6 +259,7 @@ python scripts/smoke_http.py       # the smoke test on its own, with its report
 python experiments/sandbox.py      # prove the execution sandbox really isolates
 python experiments/heldout.py preregister   # write the task set and analysis plan
 python experiments/heldout.py verify        # confirm the task set has not changed
+python experiments/evidence_verify.py --dir <a finished run directory>
 ```
 
 `scripts/smoke_http.py` starts a stub upstream and the router itself on
@@ -266,6 +267,28 @@ ephemeral loopback ports, with the benchmark API pointed at an unroutable host
 and no `TYPESAFE_API_KEY`, so the benchmark-outage and classifier-outage
 fallbacks are what is exercised. It tears both processes down and then checks
 that neither port still accepts a connection, so no service is left behind.
+
+### Verifying a finished run, and what you cannot verify
+
+`experiments/evidence_verify.py` re-derives a finished run's **public identity**
+from its registration and this checkout — the task file, the registered task ids
+and counts, the analysis plan, the frozen policy/catalog identity, and every
+registered experiment- and product-code digest. It never opens a config, so it
+gives the same answer on every machine, and it prints the limit of what it
+established.
+
+That limit is real and is not a formality. A run's registration also records the
+path and digest of the **runtime config** it was measured against. That file
+carries provider credentials, is not in this repository and cannot be
+reconstructed from the registration, so the only tool that can check it —
+`experiments/supplement.py verify --config <that exact file>`, which refuses when
+the file is missing or has drifted — can only be run by whoever already holds it.
+**A reader cannot verify the configuration half of a published run**, and
+`evidence_verify.py` says so on every run rather than letting a pass be read as
+more than it is. A run registered from now on should also freeze a
+credential-free projection of its config
+(`evidence_verify.py --dir <run> --freeze-public-config <config>`), which closes
+that gap for the next run and cannot close it retroactively for an old one.
 
 ## Layout
 
@@ -286,6 +309,7 @@ that neither port still accepts a connection, so no service is left behind.
 | `experiments/sandbox.py` | Bubblewrap isolation for executing model-produced code |
 | `experiments/heldout.py` | pre-registered held-out evaluation across six categories |
 | `experiments/supplement.py` | the pre-registered supplement: its own frozen registration (policy and catalog included), a concurrent runner, a cumulative budget guard, the combined report |
+| `experiments/evidence_verify.py` | offline re-derivation of a finished run's public identity, with the limit of that guarantee printed every time |
 | `experiments/pairing.py` | valid-**pair** accounting — a pair counts only when both arms were graded |
 | `experiments/graders.py` | deterministic graders (no grader calls a model) |
 | `experiments/` | task set, evaluation harness, simulator |
