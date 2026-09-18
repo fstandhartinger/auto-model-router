@@ -76,6 +76,11 @@ def test_the_scrubber_over_redacts_documentation_prose():
     prose = "lines of `key = value`, where keys and values are stripped"
     assert "[REDACTED]" in jev.scrub(prose, 6000)
     assert "credential-assignment" in jev.scrub_report(prose)
+    # The word only has to *contain* a credential word, so `monkeys=12` is
+    # redacted and `crossword=5` is not. Both are the safe direction of a
+    # best-effort filter, and both are here so the behaviour is not a surprise.
+    assert jev.scrub("monkeys=12", 200) == "monkeys=[REDACTED]"
+    assert jev.scrub("crossword=5", 200) == "crossword=5"
 
 
 # -- graders ----------------------------------------------------------------

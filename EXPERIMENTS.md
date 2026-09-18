@@ -360,7 +360,7 @@ billed figure exists at all.
 <!-- heldout:start -->
 | category | arm | n | passed | pass rate | Wilson 95 % | measured USD | grader |
 |---|---|---:|---:|---:|---|---:|---|
-| design | router (policy F) | 1 | 1 | 1.00 | 0.21–1.00 | $0.0000 (free route) | structural-proxy |
+| design | router (policy F) | 2 | 2 | 1.00 | 0.34–1.00 | $0.0000 (free route) | structural-proxy |
 | design | control · kimi-k3 (free) | 2 | 2 | 1.00 | 0.34–1.00 | $0.0000 (free route) | structural-proxy |
 | design | control · gpt-5.6-sol (metered) | 4 | 3 | 0.75 | 0.30–0.95 | $0.2071 | structural-proxy |
 | coding | router (policy F) | 4 | 4 | 1.00 | 0.51–1.00 | $0.0000 (free route) | executed |
@@ -381,7 +381,7 @@ billed figure exists at all.
 
 **Measured spend over the whole set, by arm:** router (policy F) **$0.0000** · control · kimi-k3 (free) **$0.0000** · control · gpt-5.6-sol (metered) **$0.2659**
 
-Graded rows 76, excluded 3. Task set `84731010531b266f` registered 2026-09-18T06:42:03Z, 3 recorded amendment(s), no drift.
+Graded rows 77, excluded 4. Task set `84731010531b266f` registered 2026-09-18T06:42:03Z, 3 recorded amendment(s), no drift.
 <!-- heldout:end -->
 
 Two things this does show:
@@ -410,6 +410,14 @@ look capable, and design-arena Elo puts kimi-k3 *above* gpt-5.6-sol on exactly
 this kind of work. It shows up only as an *observed* property of the route on
 harder instances. The router does not currently treat truncation as a failure
 signal, which is the clearest single thing to add next.
+
+The same failure appeared somewhere else entirely, which is why it looks like a
+route property rather than a task artefact. Two reasoning routes were also asked
+to review this change set: each spent its *whole* output budget on reasoning and
+returned zero characters, twice, at 6,000 and again at 16,000 output tokens —
+four calls and about 57,000 reasoning tokens for no output at all. "Capable but
+unable to finish within a budget" is not something a capability index measures,
+and it costs real time and real tokens.
 
 Reproduce:
 
