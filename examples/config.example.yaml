@@ -27,6 +27,26 @@ policy:
   success:
     table: examples/success.measured.json   # measured rates beat benchmark-derived curves
 
+  # Check a cheap route's answer with Jev before returning it, and escalate when
+  # it falls short. Only the tier the judge was measured on: the ceilings below
+  # keep a frontier route - free or not - out of it, because a judge that is not
+  # stronger than what it grades produces false alarms, not quality.
+  verify:
+    enabled: true
+    max_price_per_mtok: 1.0        # blended 80/20 list price; free routes are 0
+    max_capability: 72             # per-category, after the evidence discount
+    thresholds: {default: 0.30, coding: 0.30, math: 0.30}
+    # Measured at those thresholds (experiments/verify_calibrate.py). The cost
+    # model uses them: a cheap route whose failures are caught cheaply is worth
+    # more than one whose failures reach the user.
+    catch_rate: {coding: 0.85, math: 0.67}
+    false_flag_rate: {coding: 0.0, math: 0.0}
+    skip_categories: [long_context]  # the judge cannot see the document
+    max_request_chars: 6000
+    carry_failed_attempt: false      # a failed cheap answer anchors the retry
+    judge_usd: 0.0004
+    judge_seconds: 0.6
+
 models:
   - name: small-free
     provider: some-free-host

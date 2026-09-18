@@ -709,6 +709,150 @@ the same model share its measurements.
   weekly limits all day, so the interesting regime - a plan with room, chosen on
   its merits, for a hard job - was exercised as a decision and not as a job.
 
+# Cycle 3 (18 Sep 2026): checking a cheap answer, and what that does to a chain
+
+## 14. Verify-and-escalate: calibration, cost, and Scott's cascade
+
+Prompted by a reply to the launch post: *"I'd want to see how that holds when
+you chain three or four routed calls where a bad early model pick cascades
+downstream. Single-hop latency flatters routers."* The router did not grade
+answers at all; §4 had measured that Jev *could* grade a cheap one, and nothing
+acted on it. This cycle wires it in and measures what it buys.
+
+**Reproduce:**
+
+```
+python experiments/verify_calibrate.py answers   --config <cfg> --models qwen3.8-27b,dsv4-flash,kimi-k3,glm-5.3-flash --out runs/verify/answers.jsonl
+python experiments/verify_calibrate.py judge     --answers runs/verify/answers.jsonl --out runs/verify/judged.jsonl
+python experiments/verify_calibrate.py escalate  --judged runs/verify/judged.jsonl --answers runs/verify/answers.jsonl --config <cfg> --threshold coding=0.25,math=0.60 --carry both --out runs/verify/escalated.jsonl
+python experiments/verify_calibrate.py report    --judged runs/verify/judged.jsonl --escalated runs/verify/escalated.jsonl --out runs/verify/report.json
+python experiments/cascade.py --config <cfg> --success runs/success.json --calibration runs/verify/report.json --latency runs/verify/latency.json --out runs/verify/cascade.json
+```
+
+### 14.1 What was measured
+
+192 answers: four cheap routes (Qwen3.8 27B, DeepSeek V4 Flash, Kimi K3, all
+free; GLM-5.3 Flash, metered) on the 48 single-shot tasks of the 78-task set -
+18 coding, 18 maths, 12 long-document. Each answer graded against ground truth
+by the same deterministic graders as §1, then judged by Jev with a **typed
+question pair** it had not been asked before: the adequacy Noul with
+*task-specific* criteria, plus a Choice naming the failure (`wrong`,
+`incomplete`, `off_topic`, `fine`). Both questions in one call.
+
+46 of the 192 answers were wrong. Judge: `jev-1.13.0`, 1,395 input and 66 output
+tokens on average, **median 0.69 s, p90 0.78 s**, 0 failures in 192 calls.
+
+| answers | n | wrong | AUC | shipped threshold | catches | false alarms |
+|---|---:|---:|---:|---:|---|---|
+| coding | 72 | 33 | 0.948 | **0.25** | 85 % (28/33) | 10 % (4/39) |
+| maths | 72 | 11 | 0.955 | **0.60** | 73 % (8/11) | **0 %** (0/61) |
+| long-document | 48 | 2 | 0.538 | *not checked* | — | 96 % at 0.3 (44/46) |
+
+The two thresholds differ because the score distributions do. An *adequate*
+maths answer never scored below 0.77, so a high bar there is free; an adequate
+coding answer can score anywhere, so the bar has to sit low and still costs
+false alarms. **Four of the six coding false flags at 0.3 are the same task**
+(HumanEval/149, `sorted_list_sum`), whose written specification contradicts its
+own hidden tests - the judge reads the specification, the grader runs the
+tests, and they disagree. The rate is reported as measured, not adjusted for
+that.
+
+The long-document row is the negative control and it reproduces §4 exactly: the
+judge is not shown the document, so it rejects almost every adequate answer.
+That is why `long_context` is skipped rather than given a threshold.
+
+### 14.2 What an escalation buys
+
+Every flagged answer was re-run at the threshold above, on the route **the
+router itself** would escalate to (the cheapest route by its own expected-cost
+ranking that is at least 4 capability points stronger - in this catalog usually
+Kimi K3, sometimes GLM-5.3 Flash or GPT-5.6 Sol), and graded again. Both arms
+of the carry decision were run.
+
+| | escalations | wrong ones fixed | unnecessary | broke a good answer | extra cost | extra latency (median) |
+|---|---:|---:|---:|---:|---:|---:|
+| clean retry (**shipped**) | 39 | **18 of 35 (51 %)** | 4 | 0 | $1.04 ($0.027 each) | +84 s |
+| carrying the failed answer | 39 | 19 of 35 (54 %) | 4 | 0 | $1.23 ($0.031 each) | +139 s |
+
+Carrying the failed attempt fixes one more answer out of 35, costs 18 % more
+and takes 66 % longer, so the default is a clean retry - a measurement, not a
+preference.
+
+**On the 192 answers as a whole:** 46 wrong before, 28 after; correctness 76.0 %
+-> 85.4 %, for 39 second calls, $1.04, a judge call on every checked answer
+(0.7 s), and 4 escalations that were not needed. Per *answered* turn that is
++0.7 s always and +84 s on the 20 % of turns that escalate.
+
+### 14.3 The expected-cost model now prices the judge
+
+Detection stops being a property of the user and becomes a property of the
+route: `detect = detect_prob + (1 - detect_prob) x catch_rate`. Against that
+gain the model charges the judge's own price on every checked answer, and the
+second call each false alarm buys.
+
+Two corrections came out of the simulation, and both are measurements the first
+version of the model got wrong:
+
+1. **A judge-driven retry succeeds at the measured rate (51 %), not at the
+   escalation target's rate on the category.** The turns that reach it are the
+   ones a cheaper route already failed, which is what makes them harder than
+   average.
+2. **A detected-but-unfixed failure still costs the stakes.** The router
+   escalates once; pricing the residual as if a third attempt were waiting made
+   the model prefer a weaker checked route over a stronger free one, and the
+   simulation showed that trade losing accuracy at easy difficulties. With both
+   corrections the judge never moves a choice that it cannot improve.
+
+### 14.4 Chains of 3-4 calls, with and without the judge
+
+`experiments/cascade.py`. **A simulation, and labelled as one.** Measured
+inputs: per-model success by category and difficulty (§1), the catch, false
+alarm and fix rates above, the measured per-route and judge latencies. Assumed:
+a wrong step is fatal to the chain unless it is caught, steps are independent
+given model and difficulty, difficulty is constant along the chain. The first
+assumption is the pessimistic reading of Scott's point - it is what makes the
+*no-judge* arm look bad - so a reader who thinks later steps often repair
+earlier mistakes should treat the gap as an upper bound. 6,000 chains per cell.
+
+Chains that finish **entirely** correct:
+
+| | 1 call | 2 | 3 | 4 | cost of the 4-chain | wall time, 4-chain |
+|---|---:|---:|---:|---:|---:|---:|
+| coding, hard (d=0.70), no judge | 44.0 % | 20.2 % | 8.8 % | **3.6 %** | $0 (free route) | 341 s |
+| coding, hard (d=0.70), with judge | 68.4 % | 47.4 % | 32.2 % | **22.3 %** | $0.0077 | 79 s |
+| maths, moderate (d=0.45), no judge | 98.8 % | 96.8 % | 95.5 % | **94.8 %** | $0 | 20 s |
+| maths, moderate (d=0.45), with judge | 99.4 % | 98.4 % | 97.6 % | **97.1 %** | $0.0016 | 62 s |
+| coding easy (d=0.45) and maths hard (d=0.70) | — | — | — | *unchanged* | — | — |
+
+This is the shape of Scott's objection, and it is real: without a check, a
+four-call chain on hard coding work finishes correctly 3.6 % of the time even
+though each individual call succeeds 44 % of the time. Catching 85 % of the
+failures at the step where they happen takes that to 22 %. The gap *widens*
+with chain length, which is exactly the property a single-hop benchmark hides.
+
+The last row matters as much as the others: where the router already sends the
+turn to a route the judge may not grade, the judge changes nothing at all -
+not the choice, not the cost, not the latency. It is an addition to the cheap
+tier, not a new tax on every turn.
+
+### 14.5 Honest limits of this cycle
+
+- **192 answers, 4 routes, 2 checkable categories.** The maths threshold rests
+  on 11 wrong answers, and the per-category fix rate on 7. The coding numbers
+  are the ones with enough mass to lean on.
+- **The escalation measurement is single-pass.** Each flagged answer was
+  escalated once; no repeated sampling, so the 51 % fix rate carries binomial
+  noise of roughly +/-8 points.
+- **The cascade table is a simulation**, not a measured agent run. No chain of
+  three or four real routed calls was executed end to end.
+- **The judge's price is an assumption.** Its token counts are measured; the
+  dollars per token are a stand-in for a small model's public rate, which is
+  why `verify.judge_usd` is a configuration value.
+- **Two of 80 escalation calls failed** at the provider and are excluded; the
+  arms are therefore 39 rows each rather than 40.
+- **Nothing here says the judge improves frontier answers.** It was never asked
+  to grade one, and the gate exists precisely to keep it from trying.
+
 ## Limits
 
 - Cells hold 4–6 tasks; task difficulty for real traffic is a proxy (calls per turn).

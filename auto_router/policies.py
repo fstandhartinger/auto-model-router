@@ -26,6 +26,14 @@ E  D + subscription tier priced by quota pacing (quota.py).
 F  expected    minimise expected total cost = call cost (cache-aware) +
                P(fail) x [P(detected) x retry cost + P(undetected) x stakes],
                over a horizon, with difficulty memory and the subscription tier.
+
+When an answer judge is configured (``verify.py``), F prices it too. Detection
+stops being a property of the user and becomes a property of the route: a cheap
+route whose failures are caught by a $0.0004 check is worth more than an
+equally cheap route whose failures reach the user, and the judge's own cost and
+its false alarms are charged against that gain. Nothing else about the ranking
+changes, and a route the judge is not allowed to grade is priced exactly as
+before.
 """
 
 from __future__ import annotations
@@ -36,6 +44,7 @@ from dataclasses import dataclass, field
 from .catalog import Catalog, ModelInfo
 from .economics import SuccessModel, horizon_cost, is_warm, turn_cost
 from .quota import QuotaDecision
+from .verify import VerifyPolicy
 
 
 # ---------------------------------------------------------------------------
@@ -57,6 +66,13 @@ class TurnRequest:
     detect_prob: float = 0.6          # P(a failure is noticed and retried)
     remaining_turns: float = 3.0      # expected further user turns in the conversation
     difficulty_confidence: float = 1.0
+    #: The classifier's view that the answer depends on material in the prompt.
+    #: The answer judge is blind to that material, so it is not asked (verify.py).
+    needs_long_context: bool = False
+    #: Characters in the request the judge would be shown. Zero means unknown,
+    #: which the gate treats as "short enough", because the runtime's own
+    #: character check runs again before any judge call is made.
+    request_chars: int = 0
 
 
 @dataclass
@@ -363,25 +379,79 @@ class ExpectedCostPolicy(EscalatePolicy):
     allow_subscription = True
 
     def __init__(self, horizon_turns: float = 3.0, memory_half_life_s: float = 1800.0,
-                 switch_margin: float = 0.0):
+                 switch_margin: float = 0.0, verify: VerifyPolicy | None = None,
+                 judge_available: bool = False):
         super().__init__(horizon_turns=horizon_turns, memory_half_life_s=memory_half_life_s)
         self.switch_margin = switch_margin
+        #: The answer-judge policy, when one is configured, and whether a judge
+        #: can actually be called. Both matter: pricing a check that the
+        #: deployment cannot perform would make cheap routes look better than
+        #: they are, which is the one direction this model must not err in.
+        self.verify = verify
+        self.judge_available = judge_available
+
+    def checks(self, m: ModelInfo, req: TurnRequest, ctx: Context) -> bool:
+        """Would this route's answer be checked by the judge before it is returned?"""
+        if self.verify is None:
+            return False
+        applies, _ = self.verify.applies(
+            m, req.category, request_chars=req.request_chars,
+            needs_long_context=req.needs_long_context,
+            evidence_discount=ctx.success.evidence_discount,
+            judge_available=self.judge_available)
+        return applies
 
     def value(self, m: ModelInfo, conv: Conversation, req: TurnRequest, ctx: Context, d: float,
               pool: list[ModelInfo]) -> tuple[float, float]:
         warm = conv.warm_tokens(m, req.now)
         call = turn_call_cost(m, req, warm, ctx)
         p = ctx.success.p(m, req.category, d)
+        checked = self.checks(m, req, ctx)
+        # A turn that reaches a retry has already proved harder than it was
+        # estimated to be - that is what the failure *is*. Pricing the second
+        # attempt at the first attempt's difficulty credits it with a success
+        # rate it does not have on exactly the turns it gets, and the
+        # calibration measured the gap directly: the escalation target solved
+        # 51 % of the answers the judge rejected, far below its own rate on the
+        # category as a whole. So a checked route prices its retry at that
+        # measured rate, which is the difference between "the judge catches it"
+        # and "the judge catches it and something better fixes it".
         stronger = [x for x in pool if x.cap(req.category) > m.cap(req.category) + 1.0]
         if stronger:
             retry_model = max(stronger, key=lambda x: ctx.success.p(x, req.category, d)
                               / max(turn_call_cost(x, req, conv.warm_tokens(x, req.now), ctx), 1e-6))
             p_retry = ctx.success.p(retry_model, req.category, d)
-            retry = (turn_call_cost(retry_model, req, conv.warm_tokens(retry_model, req.now), ctx)
-                     + (1 - p_retry) * (1 - req.detect_prob) * req.stakes_usd)
+            retry_call = turn_call_cost(retry_model, req, conv.warm_tokens(retry_model, req.now), ctx)
+            retry = retry_call + (1 - p_retry) * (1 - req.detect_prob) * req.stakes_usd
+            if checked:
+                # A judge-driven retry is priced differently from one the user
+                # asked for, in two ways. It succeeds at the *measured* rate on
+                # the answers the judge rejects, not at the route's rate on the
+                # category. And when it fails, that is the end of the turn -
+                # the router escalates once - so the wrong answer reaches the
+                # user at full stakes rather than being discounted again as if
+                # a third attempt were waiting. Only the share of retries the
+                # judge actually triggers is priced this way; with a judge that
+                # catches nothing the term collapses back to the line above,
+                # which is what makes this an addition rather than a change.
+                catch = self.verify.catch(req.category)
+                judge_share = (1 - req.detect_prob) * catch / max(
+                    req.detect_prob + (1 - req.detect_prob) * catch, 1e-9)
+                judged_retry = retry_call + (1 - self.verify.fix(req.category)) * req.stakes_usd
+                retry = (1 - judge_share) * retry + judge_share * judged_retry
         else:
+            retry_call = call
             retry = call + (1 - p) * req.stakes_usd
-        fail = req.detect_prob * retry + (1 - req.detect_prob) * req.stakes_usd
+        detect = req.detect_prob
+        if checked:
+            # The judge sees every answer this route produces, so it raises the
+            # share of failures that are noticed at all - that is the whole
+            # gain. It is paid for twice: once per answer, and once more every
+            # time it flags an answer that was fine and buys a second call
+            # nobody needed.
+            detect = detect + (1 - detect) * self.verify.catch(req.category)
+            call += self.verify.judge_usd + p * self.verify.false_flag(req.category) * retry_call
+        fail = detect * retry + (1 - detect) * req.stakes_usd
         immediate = call + (1 - p) * fail
         # Future turns: the chosen model will be warm, others cold. Charge the
         # horizon at this model's warm follow-up price so cheap-cache models

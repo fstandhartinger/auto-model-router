@@ -43,6 +43,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .catalog import ModelInfo
+from .verify import Verdict
 
 
 def _r(value: float | None, digits: int = 4) -> float | None:
@@ -292,6 +293,12 @@ class RoutingExplanation:
     cache: CacheDecision
     candidates: list[CandidateEvaluation] = field(default_factory=list)
     observed: ObservedOutcome | None = None
+    #: What the answer judge said about the answer this decision produced, when
+    #: it was asked at all. A fifth kind of statement, kept apart from the other
+    #: four for the same reason they are kept apart from each other: it is a
+    #: judgement about an *answer*, made after the fact by a model, and it must
+    #: never be read as a measurement of the route.
+    verification: Verdict | None = None
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:16])
     created_at: float = field(default_factory=time.time)
     #: Free-form notes the router wants surfaced (stale evidence, outages).
@@ -313,6 +320,7 @@ class RoutingExplanation:
             "cache": self.cache.to_dict(),
             "estimated_outcome": self.estimated.to_dict(),
             "observed_outcome": self.observed.to_dict() if self.observed else None,
+            "verification": self.verification.to_dict() if self.verification else None,
             "candidates": [c.to_dict() for c in candidates[: self.MAX_CANDIDATES]],
             "candidates_omitted": max(0, len(candidates) - self.MAX_CANDIDATES),
             "notes": list(self.notes),

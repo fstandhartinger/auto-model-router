@@ -30,9 +30,12 @@ from .decision import (
 )
 from .economics import SuccessModel, turn_cost
 from .ledger import RoutingLedger
-from .policies import POLICIES, Context, Conversation, Policy, TurnRequest, turn_call_cost
+from .policies import (POLICIES, Context, Conversation, ExpectedCostPolicy, Policy, TurnRequest,
+                       turn_call_cost)
 from .quota import (PacingRule, QuotaDecision, decide as quota_decide, from_budget_file,
                     from_codex_rollouts, from_command)
+from .verify import (VerifyPolicy, Verdict, bump_floor, escalation_choice, not_verified,
+                     retry_messages, verdict_from)
 
 log = logging.getLogger("auto_router.router")
 
@@ -147,6 +150,12 @@ class RouteResult:
             head["X-Router-Cache"] = self.explanation.cache.status
             if self.explanation.selection.safe_fallback:
                 head["X-Router-Safe-Fallback"] = self.explanation.selection.safe_fallback
+            verdict = self.explanation.verification
+            if verdict is not None and verdict.verified and verdict.p_adequate is not None:
+                head["X-Router-Verified"] = f"{verdict.p_adequate:.2f}"
+                head["X-Router-Verify-Failure"] = verdict.failure
+                if verdict.escalated_to:
+                    head["X-Router-Verify-Escalated-To"] = verdict.escalated_to
         return head
 
 
@@ -155,10 +164,21 @@ class Router:
                  success: SuccessModel | None = None,
                  classifier: Callable[[str, str], jev.Classification] | None = None,
                  quota_reader: Callable[[], dict[str, QuotaDecision]] | None = None,
-                 ledger: "RoutingLedger | None" = None):
+                 ledger: "RoutingLedger | None" = None,
+                 judge: Callable[..., jev.Judgement] | None = None):
         self.config = config
         name = (config.policy or {}).get("name") or os.environ.get("AUTO_ROUTER_POLICY", "F_expected")
         self.policy = policy or POLICIES[name]()
+        #: Answer verification: the policy that decides which answers are
+        #: checked, and the judge that checks them. A deployment without a Jev
+        #: key keeps a policy object - so the configuration still reads the
+        #: same - but no judge, and then nothing is ever checked and nothing is
+        #: priced as if it were.
+        self.verify = VerifyPolicy.from_config(config.policy or {})
+        self.judge = judge or (jev.judge if os.environ.get("TYPESAFE_API_KEY") else None)
+        if isinstance(self.policy, ExpectedCostPolicy) and self.policy.verify is None:
+            self.policy.verify = self.verify
+            self.policy.judge_available = self.judge is not None
         self.success = success or success_model_from_config(config.policy or {})
         cal = (config.policy or {}).get("jev_difficulty_calibration") or [0.0, 1.0]
         self.jev_offset, self.jev_scale = float(cal[0]), float(cal[1]) or 1.0
@@ -498,10 +518,12 @@ class Router:
 
     def _turn_request(self, cls: jev.Classification | None, prompt_tokens: int, max_tokens: int | None,
                       now: float, has_tools: bool, messages: list[dict]) -> TurnRequest:
+        request_chars = len(last_user_text(messages))
         if cls is None or cls.failed:
             return TurnRequest(category="agentic" if has_tools else "general", difficulty=0.5,
                                prompt_tokens=prompt_tokens, output_tokens=max_tokens or 1500, now=now,
-                               needs_tools=has_tools, stakes_usd=STAKES_USD[2], difficulty_confidence=0.0)
+                               needs_tools=has_tools, stakes_usd=STAKES_USD[2], difficulty_confidence=0.0,
+                               request_chars=request_chars)
         stakes_idx = min(len(STAKES_USD) - 1, int(round(cls.stakes * (len(STAKES_USD) - 1))))
         agentic = has_tools and cls.needs_tools > 0.5
         difficulty = max(0.0, min(1.0, (cls.difficulty - self.jev_offset) / self.jev_scale))
@@ -518,6 +540,8 @@ class Router:
             stakes_usd=STAKES_USD[stakes_idx],
             detect_prob=0.8 if agentic else 0.5,
             difficulty_confidence=cls.difficulty_confidence,
+            needs_long_context=cls.needs_long_context > 0.5,
+            request_chars=request_chars,
         )
 
     @staticmethod
@@ -536,6 +560,95 @@ class Router:
                 conv.turns += 1
         if prompt_tokens and raw_estimate:
             self.estimator.observe(raw_estimate, prompt_tokens)
+
+    # -- verification --------------------------------------------------------
+    def check(self, result: RouteResult, request_text: str, answer: str) -> Verdict:
+        """Ask the judge whether a cheap route's answer really answers the request.
+
+        The request text is a parameter rather than something the router kept:
+        a ``RouteResult`` is prompt-free by construction and stays that way.
+        Whoever holds the answer - the HTTP server, the shim, an experiment -
+        holds the request too, and passes both in.
+
+        The verdict is attached to the decision record either way, including
+        when the answer was not checked and why, so a reader of
+        ``/v1/router/decisions`` can tell "the judge approved it" from "the
+        judge was never asked".
+        """
+        carried = result.explanation.verification if result.explanation is not None else None
+        if carried is not None and carried.escalated_to:
+            # This route *is* the second attempt. The verdict that produced it
+            # is the verdict that belongs on it, and grading a stronger model's
+            # answer is the one thing this whole module refuses to do.
+            return carried
+        req = result.request
+        applies, why = self.verify.applies(
+            result.model, req.category, request_chars=req.request_chars or len(request_text),
+            needs_long_context=req.needs_long_context,
+            evidence_discount=self.success.evidence_discount,
+            judge_available=self.judge is not None)
+        if not applies:
+            verdict = not_verified(why, model=result.model.name, category=req.category)
+        elif not answer.strip():
+            verdict = not_verified("the route returned no text to check",
+                                   model=result.model.name, category=req.category)
+        else:
+            try:
+                judgement = self.judge(request_text, answer, category=req.category)
+            except Exception:  # noqa: BLE001 - a broken judge must not break the turn
+                log.exception("the answer judge raised")
+                verdict = not_verified("the judge raised an error",
+                                       model=result.model.name, category=req.category)
+            else:
+                verdict = verdict_from(judgement, self.verify, req.category, result.model.name)
+        self._attach_verdict(result, verdict)
+        return verdict
+
+    def escalate_after_verdict(self, result: RouteResult, verdict: Verdict,
+                               messages: list[dict], answer: str
+                               ) -> tuple[RouteResult | None, list[dict], Verdict]:
+        """Route the second attempt at a turn the judge rejected.
+
+        Raises the conversation's difficulty floor first, so the *next* turn in
+        this conversation does not start below the level this one just proved
+        it needs - the point Scott Shapiro made about a bad early pick
+        cascading: without the memory, every turn of a chain repeats the same
+        too-cheap choice and pays for it again.
+        """
+        if not verdict.escalate:
+            return None, messages, verdict
+        conv = self.conversations.setdefault(result.conversation_id, Conversation())
+        with self._lock:
+            bump_floor(conv, verdict, self.verify, result.request.now)
+        retry = self._verified_retry(result, conv) or self.escalate(result)
+        if retry is None:
+            verdict = replace(verdict, reason="no stronger route available; the answer stands")
+            self._attach_verdict(result, verdict)
+            return None, messages, verdict
+        verdict = replace(verdict, escalated_to=retry.model.name)
+        self._attach_verdict(result, verdict)
+        self._attach_verdict(retry, verdict)
+        return retry, retry_messages(messages, answer, verdict, self.verify), verdict
+
+    def _verified_retry(self, result: RouteResult, conv: Conversation) -> RouteResult | None:
+        """A route clearly stronger than the one the judge rejected, if there is one."""
+        ctx = self.context()
+        tried = result.tried | {result.model.name}
+        choice = escalation_choice(self.policy, conv, result.request, ctx, result.model.name,
+                                   tried, self.verify)
+        if choice is None:
+            return None
+        name, reason = choice
+        retry = self._result(ctx, conv, result.conversation_id, ctx.catalog[name], reason,
+                             result.request, result.classification, time.time(), 0.0,
+                             turn_start=result.turn_start, switched_from=result.model.name)
+        retry.tried = tried
+        return retry
+
+    @staticmethod
+    def _attach_verdict(result: RouteResult, verdict: Verdict) -> None:
+        if result.explanation is not None:
+            result.explanation.verification = verdict
 
     def escalate(self, result: RouteResult, *, availability: bool = False) -> RouteResult | None:
         """Pick a retry route after a failure signal.

@@ -131,6 +131,90 @@ JUDGE_QUESTION = {
     },
 }
 
+#: What "adequate" means for each kind of work. The generic wording above is
+#: what the 17 Sep evaluation measured; these sharpen it per category so the
+#: judge is told what a *coding* answer has to contain rather than being left
+#: to infer it. The category is the router's own classification, so a request
+#: it could not classify simply falls back to ``general``.
+ADEQUACY_CRITERIA: dict[str, dict[str, str]] = {
+    "coding": {
+        "true": "The code is complete and runnable as given, implements what was asked, keeps the "
+                "requested names and signatures, and handles the edge cases the request mentions.",
+        "false": "Wrong output for some input, missing or stubbed parts, a different signature than "
+                 "asked for, a described solution instead of the code, or an unfinished block.",
+    },
+    "math": {
+        "true": "The final answer is correct and stated explicitly, and the steps shown actually "
+                "support it.",
+        "false": "The final answer is wrong or missing, a step contradicts the result, or the "
+                 "response stops before reaching an answer.",
+    },
+    "knowledge": {
+        "true": "Factually correct, answers the question that was asked, and states the parts it "
+                "is unsure about.",
+        "false": "Factually wrong, answers a neighbouring question, or invents a specific that the "
+                 "request would need to be right.",
+    },
+    "summarisation": {
+        "true": "Covers the source's main points, adds nothing that is not in it, and obeys the "
+                "requested length and form.",
+        "false": "Drops a main point, adds facts the source does not contain, or ignores the "
+                 "requested length or form.",
+    },
+    "design": {
+        "true": "Delivers the artefact that was asked for (markup, layout or critique), covers every "
+                "element the request lists, and is self-contained where the request says so.",
+        "false": "Missing elements the request lists, prose where an artefact was asked for, or "
+                 "markup that would not render on its own.",
+    },
+    "tool_use": {
+        "true": "Reaches the end state the request describes and names the calls it would make.",
+        "false": "Stops before the end state, invents a tool, or describes intent instead of acting.",
+    },
+    "agentic": {
+        "true": "Completes every step the request asks for and reports the result of each.",
+        "false": "Leaves a step unfinished, reports a result it did not reach, or stops at a plan.",
+    },
+    "general": {
+        "true": "Complete, correct, follows every instruction in the request.",
+        "false": "Wrong, incomplete, evasive, truncated, or ignores part of the request.",
+    },
+}
+
+#: Why an answer is inadequate. ``fine`` is deliberately one of the options:
+#: forcing a failure type on an adequate answer would make the choice useless
+#: as a label for the ones that really failed.
+FAILURE_OPTIONS = {
+    "fine": "The response answers the request; there is nothing substantial to fix.",
+    "wrong": "The response is confidently incorrect: it answers, and the answer is not right.",
+    "incomplete": "The response is on the right track but stops short: missing steps, missing "
+                  "parts, or cut off.",
+    "off_topic": "The response does not address what was asked, or answers a different question.",
+}
+
+
+def verify_questions(category: str = "general") -> dict:
+    """The typed adequacy question pair for one category.
+
+    Two questions in one call (the API evaluates them in parallel, so this
+    costs one round trip): the adequacy Noul that the threshold is compared
+    against, and a Choice naming the failure type, which is what a user
+    interface can show and what makes a false escalation legible afterwards.
+    """
+    criteria = ADEQUACY_CRITERIA.get(category) or ADEQUACY_CRITERIA["general"]
+    return {
+        "adequate": {
+            "type": "noul",
+            "instructions": "Does `response` fully and correctly address `request`?",
+            "criteria": dict(criteria),
+        },
+        "failure": {
+            "type": "choice",
+            "instructions": "If `response` falls short of `request`, what kind of failure is it?",
+            "criteria": dict(FAILURE_OPTIONS),
+        },
+    }
+
 
 @dataclass
 class Classification:
@@ -369,16 +453,52 @@ def classify(request: str, context: str = "", *, api_key: str | None = None,
 
 @dataclass
 class Judgement:
+    """P(the answer is adequate), and what kind of failure it is if not.
+
+    ``failure`` is ``"fine"`` whenever the judge sees nothing substantial to
+    fix, and ``"unknown"`` when the failure question was not asked or could not
+    be read - never a guess. A judge that could not answer at all returns
+    ``p_adequate = 0.5`` with ``failed=True``, which is below no sensible
+    threshold and above none either: an outage must not silently escalate every
+    turn, and must not silently approve one.
+    """
+
     p_adequate: float
     latency_s: float
     failed: bool = False
+    failure: str = "unknown"
+    failure_probs: dict[str, float] = field(default_factory=dict)
+    #: Versioned model id that answered, as reported by the API.
+    model: str = ""
+    input_tokens: int = 0
+    output_tokens: int = 0
 
 
-def judge(request: str, response: str, *, api_key: str | None = None, timeout: float = 20.0) -> Judgement:
-    """P(response adequately answers request). On error returns 0.5 and failed=True."""
+def judge(request: str, response: str, *, api_key: str | None = None, timeout: float = 20.0,
+          category: str = "") -> Judgement:
+    """P(response adequately answers request). On error returns 0.5 and failed=True.
+
+    With ``category`` set, the adequacy criteria are the task-specific ones
+    from ``ADEQUACY_CRITERIA`` and a second question names the failure type.
+    Without it the question is the generic one the 17 Sep evaluation measured,
+    so old calibrations stay comparable.
+    """
     try:
         state = {"request": scrub(request, REQUEST_CHARS), "response": scrub(response, RESPONSE_CHARS)}
-        payload, latency = _post(state, JUDGE_QUESTION, api_key, timeout)
-        return Judgement(float(payload["answers"]["adequate"]["noul"]), latency)
+        questions = verify_questions(category) if category else JUDGE_QUESTION
+        payload, latency = _post(state, questions, api_key, timeout)
+        answers = payload["answers"]
+        usage = payload.get("usage") or {}
+        failure_answer = answers.get("failure") or {}
+        choice = failure_answer.get("choice")
+        return Judgement(
+            p_adequate=float(answers["adequate"]["noul"]),
+            latency_s=latency,
+            failure=str(choice) if choice in FAILURE_OPTIONS else "unknown",
+            failure_probs={k: float(v) for k, v in (failure_answer.get("probabilities") or {}).items()},
+            model=str(payload.get("model") or MODEL),
+            input_tokens=int(usage.get("input_tokens") or 0),
+            output_tokens=int(usage.get("output_tokens") or 0),
+        )
     except (urllib.error.URLError, KeyError, TypeError, ValueError, RuntimeError, TimeoutError, OSError):
         return Judgement(0.5, 0.0, failed=True)

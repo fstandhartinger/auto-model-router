@@ -69,6 +69,13 @@ With free-tier models and a Claude plan that may only serve Claude Code's own se
 kept success at today's level (91.0 % vs 91.6 %) while cutting simulated plan use from 127 % to
 24 % of the weekly quota for $485/week of API spend, or to 31 % for $0 with free models only.
 
+**Checking cheap answers (18 Sep).** On 192 answers from four cheap routes, Jev caught 85 %
+of wrong coding answers (10 % false alarms) and 73 % of wrong maths answers (no false alarms)
+in 0.69 s; re-running the flagged ones on a stronger route lifted correctness from 76.0 % to
+85.4 % for $0.027 a rescue. In a *simulated* four-call chain of hard coding turns, chains that
+finish entirely correct go from 3.6 % to 22.3 % — the cascade effect a single-hop benchmark
+hides. Details and limits: [`EXPERIMENTS.md` section 14](EXPERIMENTS.md).
+
 The four things that mattered most:
 
 1. **Measured success rates.** Capability read from benchmark headlines mis-ranks specific
@@ -111,10 +118,72 @@ router stays on the turn's model):
    answer) escalates to a clearly stronger route; an *availability* failure
    (5xx, a broken connection, an answer the provider says it never finished)
    falls back sideways to the next usable route, because a 503 is not evidence
-   that the model was too weak. A Jev adequacy judge (`jev.judge`) is measured
-   in EXPERIMENTS.md and works well for self-contained coding and math answers;
-   it is not yet wired into the server.
-5. **Record** the decision as four separate objects — see below.
+   that the model was too weak.
+5. **Check the answer — but only a cheap one.** When the answering route is in
+   the cheap tier, Jev is asked one typed question about what came back, and a
+   rejected answer is re-run on a stronger route. See below.
+6. **Record** the decision as four separate objects, plus the verdict — see below.
+
+### Checking a cheap answer before returning it
+
+The router used to choose a model and never look at what came back. For a
+frontier route that is the only honest option: the judge is not smarter than
+the thing it would be grading. For the cheap tier the relation is the other way
+round — Jev answers one narrow, typed question about an answer a much smaller
+model produced — and the measurement in EXPERIMENTS.md section 4 says it works
+there. The calibration for this feature (EXPERIMENTS.md section 14, 192 cheap
+answers) put numbers on it: **85 % of wrong coding answers caught for a 10 %
+false-alarm rate**, **73 % of wrong maths answers for none at all**, in a
+**0.69 s** median call.
+
+So [`auto_router/verify.py`](auto_router/verify.py) checks exactly that tier:
+
+- the answering route is **cheap** (free, `:free`, or a blended list price at or
+  below `verify.max_price_per_mtok`) **and** its capability for this category
+  stays below `verify.max_capability` — a free frontier-class route is not
+  cheap in the sense that matters here;
+- the request is **self-contained**: a question about a pasted document is
+  skipped, because the judge is not shown the document and would flag every
+  answer (the measured case: 24 out of 24);
+- a judge is configured at all.
+
+Everything else is recorded as "not verified", with the reason, and behaves
+exactly as it did before. A verdict is one Noul — P(the answer fully and
+correctly addresses the request), against task-specific criteria — plus a
+choice naming the failure (`wrong`, `incomplete`, `off_topic`, `fine`), both in
+one ~0.6 s call. Below `verify.thresholds[category]` the turn escalates to the
+next route by the policy's own expected-cost ranking that is clearly stronger,
+and the conversation's difficulty floor is raised so the *next* turn does not
+start too low again.
+
+What that buys, measured on the same 192 answers: 46 wrong before, 28 after -
+**76.0 % -> 85.4 % correct** - for 39 second calls at $0.027 each, +0.7 s on
+every checked turn and +84 s on the one in five that escalates. The escalation
+target fixed **51 %** of the answers it was handed; it broke none.
+
+And in a chain, which is where it matters (simulated, EXPERIMENTS.md 14.4): a
+four-call chain of hard coding turns finishes entirely correct **3.6 %** of the
+time without the judge and **22.3 %** with it. Each individual call succeeds
+44 % of the time either way - the difference is that a wrong early answer stops
+being something the next three calls build on.
+
+Three deliberate limits:
+
+- **A judge that fails never escalates.** An outage in the checker must not
+  become an escalation storm that costs more than the failures it catches; the
+  turn is recorded as unverified and the answer stands.
+- **The second attempt gets a clean shot by default.** Handing the stronger
+  model the failed answer helps when the failure was *incomplete* and anchors
+  it when the failure was *wrong*; `verify.carry_failed_attempt` turns it on.
+- **A stream is not re-written.** Its bytes are already on the wire, so the
+  verdict arrives in a final `x_router` chunk and in the decision record, and
+  the second answer is only appended for a client that asked for it
+  (`"x_router": {"stream_escalate": true}`, or `AUTO_ROUTER_STREAM_ESCALATE=1`).
+
+The expected-cost policy prices all of this: the judge's own cost, the second
+calls its false alarms buy, and the failures it catches that the user would
+not have. That is what makes a cheap route *more* attractive than it was —
+see "How F decides, plainly".
 
 ### An answer the provider says it never finished
 
@@ -160,6 +229,7 @@ at `GET /v1/router/decisions` and appended to a JSONL ledger when
 | `selection` | what the router *decided*: candidates, evidence, cache decision, chosen route, fallback | an outcome |
 | `estimated_outcome` | what it *expected*: cost, `p_success`, tokens, and the basis | anything measured |
 | `observed_outcome` | what *happened*: status (`ok`, `truncated`, `upstream_error`, `transport_error`), latency, provider-reported tokens, cost when a price basis exists | an estimate standing in for a measurement |
+| `verification` | what the *judge* said about the answer, or why it was not asked: `p_adequate`, the threshold, the failure type, where the turn escalated to | the answer it judged |
 
 A cost with no measurement basis is recorded as `null` with the reason, never
 as a zero — a free or subscription route must not later read as a measured
@@ -218,6 +288,15 @@ their failure chance is tiny; hard turns go straight to the model with the best 
 dollar; a failed turn raises the conversation's difficulty memory so the next follow-up does
 not start too low. Subscription models cost nothing while the weekly quota is on pace, and
 their price rises to list price as usage approaches the reserve line.
+
+With the answer judge configured, one term of that sum changes. "Would a failure be
+noticed?" stops being a property of the user and becomes a property of the route: a checked
+route's failures are noticed at the measured catch rate whether or not anyone is paying
+attention, and its wrong answers therefore cost a retry rather than the stakes. The judge is
+charged for on both sides — its own price per answer, and the second calls its false alarms
+buy — so a jumpy judge makes a cheap route *less* attractive, not more. A route the judge
+may not grade is priced exactly as before, and so is every route in a deployment with no Jev
+key.
 
 ## Running
 
@@ -419,6 +498,7 @@ that gap for the next run and cannot close it retroactively for an old one.
 | `auto_router/config.py` | provider config → catalog |
 | `auto_router/economics.py` | cache-aware cost model and success model |
 | `auto_router/policies.py` | policies A–F |
+| `auto_router/verify.py` | which answers are checked, the verdict, and what it costs |
 | `auto_router/quota.py` | subscription quota pacing |
 | `auto_router/jev.py` | Jev classifier and adequacy judge, with credential scrubbing |
 | `auto_router/decision.py` | classification / selection / estimate / observation, kept apart |
@@ -434,6 +514,8 @@ that gap for the next run and cannot close it retroactively for an old one.
 | `experiments/evidence_verify.py` | offline re-derivation of a finished run's public identity, with the limit of that guarantee printed every time |
 | `experiments/pairing.py` | valid-**pair** accounting — a pair counts only when both arms were graded |
 | `experiments/graders.py` | deterministic graders (no grader calls a model) |
+| `experiments/verify_calibrate.py` | answer, judge, escalate, sweep: where the verify thresholds come from |
+| `experiments/cascade.py` | chains of 3–4 routed calls, with and without the judge (simulation) |
 | `experiments/` | task set, evaluation harness, simulator |
 | `scripts/smoke_http.py` | local HTTP smoke test including the outage paths |
 
