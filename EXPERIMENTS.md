@@ -624,7 +624,7 @@ python experiments/supplement.py report --dir runs/heldout-supplement-<ts> --ori
 
 ## 13. The two subscription paths, run live (18 Sep 2026)
 
-Seven runs on one machine, each n=1. They establish that the paths *work* and
+Eight runs on one machine, each n=1. They establish that the paths *work* and
 what they record; they measure no saving, rank no policy and compare no cost.
 Client versions: Claude Code 2.1.270, Codex CLI 0.154.0, OpenCode 1.18.18.
 
@@ -636,12 +636,16 @@ Client versions: Claude Code 2.1.270, Codex CLI 0.154.0, OpenCode 1.18.18.
 | 2 | a hard refactor-and-test job (dry run) | same | free model | plan routes excluded, reason recorded: "weekly use 94% at or above hard stop 80%" and "weekly use 89% at or above hard stop 75%" |
 | 3 | the same job, with a stand-in usage reader reporting 20 % / 25 % | plans open, shadow price x0.00 | **a plan route** (expected $2.18 vs $2.94 for the best free route) | dry run; the tier switch is the point |
 | 4 | "Write a Python function merge_sorted_unique(a, b) …", forced with `--route` | Claude plan at 94 % | Claude plan, `claude -p --model opus` | answered with working code in 10.8 s, exit 0 |
+| 5 | "Write a Python one-liner that counts unique words …", forced with `--route` | ChatGPT plan at 89 % | ChatGPT plan, `codex exec -m …` | answered in 7.0 s, exit 0, and the record shows `cleared_env: ["OPENAI_API_KEY"]` |
 
-Run 4 is the one that proves the billing path: this machine has no Anthropic API
-key at all, so a successful answer from the official client can only have been
-served by the signed-in plan. The record carries `cost_usd: null` with the basis
-"subscription route: no per-token charge; the plan's own usage limits apply",
-and the launcher reports which credential variables it cleared for the child.
+Runs 4 and 5 are the ones that prove the billing path, in two different ways.
+This machine has no Anthropic API key at all, so a successful answer from
+`claude -p` can only have been served by the signed-in plan. It *does* have an
+OpenAI API key exported - which is exactly the trap `clear_env` exists for: the
+Codex run would have been billed per token had the variable reached the child,
+and the record names the variable that was emptied. Both records carry
+`cost_usd: null` with the basis "subscription route: no per-token charge; the
+plan's own usage limits apply".
 
 Run 3 used a deliberately fake usage reader, and the record says so: it is a
 *configuration* experiment about the pacing rule, not a measurement of a plan.
@@ -653,11 +657,11 @@ with no gateway credential set, three times, one tiny prompt each:
 
 | # | mode and catalog | what the router decided | what happened |
 |---|---|---|---|
-| 5 | default `passthrough_only` | a free route would have done | every turn forwarded to Anthropic unchanged, 200, recorded `not_taken`; the session answered normally |
-| 6 | plan open, only plan and metered routes configured | the plan route | forwarded, 200 in 1.5–1.8 s, recorded `ok` with the subscription cost basis |
-| 7 | `route_others`, free routes available | a free route | the turn really was served by the free model: 38,849 uncached input tokens, **0 cache reads**, 43 output tokens |
+| 6 | default `passthrough_only` | a free route would have done | every turn forwarded to Anthropic unchanged, 200, recorded `not_taken`; the session answered normally |
+| 7 | plan open, only plan and metered routes configured | the plan route | forwarded, 200 in 1.5–1.8 s, recorded `ok` with the subscription cost basis |
+| 8 | `route_others`, free routes available | a free route | the turn really was served by the free model: 38,849 uncached input tokens, **0 cache reads**, 43 output tokens |
 
-Run 7 is the most informative and the least flattering to the idea it tests. The
+Run 8 is the most informative and the least flattering to the idea it tests. The
 turn worked - Claude Code accepted the translated answer - but Claude Code's
 prefix is large and the free host cached none of it, so a route that is free in
 cash paid full price in tokens and latency on every turn. That is the measured
