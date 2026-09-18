@@ -64,6 +64,9 @@ def test_the_judge_is_not_asked_about_a_document_it_cannot_see():
     policy = verify.VerifyPolicy()
     applies, why = policy.applies(CHEAP, "long_context")
     assert not applies and "cannot see the document" in why
+    # ... and that is the reason given even when the route would also have
+    # failed the tier test: it is the one that explains the question.
+    assert "cannot see the document" in policy.applies(FRONTIER, "long_context")[1]
     assert not policy.applies(CHEAP, "coding", needs_long_context=True)[0]
     assert not policy.applies(CHEAP, "coding", request_chars=20_000)[0]
 

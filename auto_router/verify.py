@@ -192,14 +192,19 @@ class VerifyPolicy:
             return False, "verification disabled"
         if not judge_available:
             return False, "no judge configured"
-        if not self.tier_ok(model, category, evidence_discount):
-            return False, f"{model.name} is above the verified cheap tier"
+        # The request's own reasons come first. Whether the judge can see what
+        # the answer depends on is a property of the *question*, true of every
+        # route; reporting "this route is too strong to grade" instead would
+        # hide the more interesting half of the gate behind an accident of
+        # which route happened to answer.
         if category in self.skip_categories or needs_long_context:
             return False, ("the judge cannot see the document this answer depends on "
                            f"(category {category})")
         if request_chars > self.max_request_chars:
             return False, (f"request is {request_chars} characters; beyond "
                            f"{self.max_request_chars} the judge would grade what it cannot read")
+        if not self.tier_ok(model, category, evidence_discount):
+            return False, f"{model.name} is above the verified cheap tier"
         return True, ""
 
 
