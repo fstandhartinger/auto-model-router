@@ -6,6 +6,7 @@ POST /v1/chat/completions   OpenAI-compatible, routed
 POST /v1/messages           Anthropic-compatible, routed; subscription passthrough (see shim.py)
 GET  /v1/models             configured models with prices and capability
 GET  /v1/router/metrics     routing, cost and quota statistics
+GET  /v1/router/decisions   recent decisions: classification, selection, estimate, observation
 GET  /health
 """
 
@@ -15,6 +16,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from typing import Any
 
 import httpx
@@ -22,8 +24,9 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from .config import Provider, RouterConfig, load_config
+from .decision import ObservedOutcome
 from .metrics import metrics
-from .pricing import Usage, parse_openai_usage
+from .pricing import Usage, cost_usd, parse_openai_usage
 from .router import RouteResult, Router
 from .stream_translate import StreamOutcome, translate_stream
 from .translate import (
@@ -86,6 +89,9 @@ async def list_models() -> dict:
          "input_usd_per_mtok": m.prices.input, "output_usd_per_mtok": m.prices.output,
          "cache_read_usd_per_mtok": m.prices.cache_read, "cache_write_usd_per_mtok": m.prices.cache_write,
          "cache_ttl_seconds": m.cache.ttl_seconds, "capability": m.capability,
+         "capability_basis": m.capability_basis, "capability_strength": m.capability_strength,
+         "capability_source": m.capability_source, "evidence_stale": m.evidence_stale,
+         "evidence": m.evidence,
          "benchmaxxing": m.benchmaxxing, "subscription": m.subscription}
         for m in config.catalog.all()]}
 
@@ -93,6 +99,21 @@ async def list_models() -> dict:
 @app.get("/v1/router/metrics")
 async def router_metrics() -> dict:
     return {**metrics.to_dict(), "router": router.stats}
+
+
+@app.get("/v1/router/decisions")
+async def router_decisions(limit: int = 20) -> dict:
+    """Recent routing decisions, newest first.
+
+    Each record keeps the classification, the route selection, the cache
+    decision, the estimate and the observed outcome in separate objects, and
+    contains no prompt or response text. See ``auto_router/decision.py``.
+    """
+    limit = max(1, min(int(limit), router.decisions.maxlen or 200))
+    recent = list(router.decisions)[-limit:]
+    return {"object": "list", "count": len(recent),
+            "ledger": router.ledger.stats,
+            "data": [d.to_dict() for d in reversed(recent)]}
 
 
 async def _route(messages, system, tools, max_tokens) -> RouteResult:
@@ -117,29 +138,85 @@ async def chat_completions(request: Request) -> Any:
                                  headers=result.headers)
 
     last_error: tuple[int, Any] = (502, {"error": "no attempt made"})
-    for _ in range(MAX_ATTEMPTS):
+    first = result
+    for attempt in range(1, MAX_ATTEMPTS + 1):
         provider = provider_for(result)
         payload = {**body, "model": result.model.upstream_id}
+        started = time.perf_counter()
         try:
             resp = await client().post(f"{provider.base_url}/chat/completions",
                                        headers=provider_headers(provider), json=payload)
             data = resp.json() if resp.content else {}
         except (httpx.HTTPError, json.JSONDecodeError) as exc:
             resp, data = None, {"error": type(exc).__name__}
+        latency_ms = (time.perf_counter() - started) * 1000
         if resp is not None and resp.status_code == 200 and (data.get("choices") or []):
             usage = parse_openai_usage(data.get("usage") or {})
             router.commit(result, usage.total_input or None, usage.output)
+            record_observed(result, "ok", 200, latency_ms, usage, attempt, first)
             metrics.record(category=result.request.category, model=result.model,
                            classification_ms=result.classification_ms, usage=usage,
                            switched=False, escalated=bool(result.tried))
             return JSONResponse(data, headers=result.headers)
         metrics.record_error(result.model.name)
-        last_error = (resp.status_code if resp is not None else 502, data)
-        retry = router.escalate(result)
+        status = resp.status_code if resp is not None else 502
+        # Only a controlled label is kept. An upstream error body routinely
+        # echoes part of the prompt, and some providers put the rejected API
+        # key in the message, so no portion of it may reach the ledger.
+        record_observed(result, "upstream_error" if resp is not None else "transport_error",
+                        status, latency_ms, None, attempt, first,
+                        error=error_label(resp, data))
+        last_error = (status, data)
+        # A 5xx or a broken connection says the route is unavailable, not that
+        # the model was too weak, so the fallback is allowed to be sideways.
+        retry = router.escalate(result, availability=resp is None or status >= 500)
         if retry is None:
             break
         result = retry
     return JSONResponse(last_error[1], status_code=last_error[0], headers=result.headers)
+
+
+def error_label(resp, data) -> str:
+    """A short, controlled description of a failure.
+
+    Deliberately derived from the HTTP status and, for a transport failure, the
+    exception class name that ``chat_completions`` already put in ``data``.
+    Never the upstream message: provider errors echo prompt fragments and
+    sometimes the rejected credential itself.
+    """
+    if resp is None:
+        kind = data.get("error") if isinstance(data, dict) else None
+        return f"transport:{kind}" if isinstance(kind, str) and kind.isidentifier() else "transport"
+    return f"http_{resp.status_code}"
+
+
+def record_observed(result: RouteResult, status: str, http_status: int | None,
+                    latency_ms: float | None, usage: Usage | None, attempt: int,
+                    first: RouteResult, error: str | None = None) -> None:
+    """Attach what actually happened to the routing decision record.
+
+    Cost is filled in only when the route publishes prices; a free or
+    subscription route reports ``None`` with the reason, never a zero that
+    would later read as a measured saving.
+    """
+    model = result.model
+    if usage is None:
+        cost, basis = None, f"no usage reported ({status})"
+    elif model.subscription:
+        cost, basis = None, f"subscription route {model.subscription}: no marginal cash cost"
+    elif model.prices.is_free:
+        cost, basis = None, "route configured as free: no cash cost to measure"
+    else:
+        cost, basis = cost_usd(model, usage), "provider-reported tokens x configured list prices"
+    router.observe(result, ObservedOutcome(
+        model=model.name, status=status, http_status=http_status, latency_ms=latency_ms,
+        uncached_input_tokens=usage.uncached_input if usage else None,
+        cached_read_tokens=usage.cached_read if usage else None,
+        cache_write_tokens=usage.cache_write if usage else None,
+        output_tokens=usage.output if usage else None,
+        cost_usd=cost, cost_basis=basis, attempts=attempt,
+        escalated_from=first.model.name if first.model.name != model.name else None,
+        error=error))
 
 
 async def _openai_stream(body: dict, result: RouteResult):
@@ -147,11 +224,15 @@ async def _openai_stream(body: dict, result: RouteResult):
     payload = {**body, "model": result.model.upstream_id,
                "stream_options": {**(body.get("stream_options") or {}), "include_usage": True}}
     usage = Usage()
+    started = time.perf_counter()
     async with client().stream("POST", f"{provider.base_url}/chat/completions",
                                headers=provider_headers(provider), json=payload) as resp:
         if resp.status_code != 200:
             await resp.aread()
             metrics.record_error(result.model.name)
+            record_observed(result, "upstream_error", resp.status_code,
+                            (time.perf_counter() - started) * 1000, None, 1, result,
+                            error=f"http_{resp.status_code}")
             yield f"data: {json.dumps({'error': {'message': 'upstream failed', 'code': resp.status_code}})}\n\n"
             return
         async for line in resp.aiter_lines():
@@ -166,6 +247,7 @@ async def _openai_stream(body: dict, result: RouteResult):
                         pass
             yield line + "\n"
     router.commit(result, usage.total_input or None, usage.output)
+    record_observed(result, "ok", 200, (time.perf_counter() - started) * 1000, usage, 1, result)
     metrics.record(category=result.request.category, model=result.model,
                    classification_ms=result.classification_ms, usage=usage)
 
@@ -224,10 +306,14 @@ async def proxy_openai_as_anthropic(body: dict, result: RouteResult) -> Any:
         return StreamingResponse(_anthropic_stream(payload, provider, result, label),
                                  media_type="text/event-stream", headers=headers)
 
+    started = time.perf_counter()
     resp = await client().post(f"{provider.base_url}/chat/completions",
                                headers=provider_headers(provider), json=payload)
+    latency_ms = (time.perf_counter() - started) * 1000
     if resp.status_code != 200:
         metrics.record_error(result.model.name)
+        record_observed(result, "upstream_error", resp.status_code, latency_ms, None, 1, result,
+                        error=f"http_{resp.status_code}")
         return JSONResponse({"type": "error", "error": {"type": "api_error",
                                                         "message": f"upstream returned {resp.status_code}"}},
                             status_code=resp.status_code, headers=headers)
@@ -241,6 +327,7 @@ async def proxy_openai_as_anthropic(body: dict, result: RouteResult) -> Any:
                             status_code=502, headers=headers)
     usage = parse_openai_usage(data.get("usage") or {})
     router.commit(result, usage.total_input or None, usage.output)
+    record_observed(result, "ok", 200, latency_ms, usage, 1, result)
     metrics.record(category=result.request.category, model=result.model,
                    classification_ms=result.classification_ms, usage=usage)
     return JSONResponse(message, headers=headers)
@@ -248,25 +335,36 @@ async def proxy_openai_as_anthropic(body: dict, result: RouteResult) -> Any:
 
 async def _anthropic_stream(payload: dict, provider: Provider, result: RouteResult, label: str):
     outcome = StreamOutcome()
+    started = time.perf_counter()
     try:
         async with client().stream("POST", f"{provider.base_url}/chat/completions",
                                    headers=provider_headers(provider), json=payload) as resp:
             if resp.status_code != 200:
                 raw = (await resp.aread()).decode(errors="replace")[:600]
                 metrics.record_error(result.model.name)
+                record_observed(result, "upstream_error", resp.status_code,
+                                (time.perf_counter() - started) * 1000, None, 1, result,
+                                error=f"http_{resp.status_code}")
                 yield anthropic_error_sse(f"upstream returned {resp.status_code}: {raw}")
                 return
             async for event in translate_stream(resp.aiter_lines(), label, outcome):
                 yield event
     except TranslationError as exc:
         metrics.record_error(result.model.name)
+        record_observed(result, "transport_error", None,
+                        (time.perf_counter() - started) * 1000, None, 1, result,
+                        error="TranslationError")
         yield anthropic_error_sse(f"stream translation failed: {exc}")
         return
     except Exception as exc:  # noqa: BLE001 - surfaced to the client, not swallowed
         metrics.record_error(result.model.name)
+        record_observed(result, "transport_error", None,
+                        (time.perf_counter() - started) * 1000, None, 1, result,
+                        error=f"transport:{type(exc).__name__}")
         yield anthropic_error_sse(f"{type(exc).__name__}: {exc}")
         return
     router.commit(result, outcome.usage.total_input or None, outcome.usage.output)
+    record_observed(result, "ok", 200, (time.perf_counter() - started) * 1000, outcome.usage, 1, result)
     metrics.record(category=result.request.category, model=result.model,
                    classification_ms=result.classification_ms, usage=outcome.usage)
 

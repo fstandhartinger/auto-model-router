@@ -235,9 +235,119 @@ programming to Sol and everything else to free models. At 30 tasks the differenc
 is within noise. The live run confirms that the policies behave as simulated and cost about a
 cent per solved task on this mix; it cannot rank them.
 
+---
+
+# Cycle 2 (18 Sep 2026): evidence, separation and a pre-registered held-out set
+
+The first cycle asked "does routing pay?". This one asks a narrower question that
+the first could not answer honestly: **is the router's belief about a route
+actually evidenced, and can you tell an estimate from a measurement afterwards?**
+
+## 7. Specialisation is read from evidence, not asserted
+
+`bench.capability_evidence()` now returns, per category, a value *and* the basis
+it rests on *and* how strong that basis is (`direct`, `derived`, `weak`). Two
+categories were added: `design` (web/UI) and `summarisation`.
+
+`design` comes from the `designarena` block the benchmark API serves —
+frontend and fullstack Elo with battle counts — mapped onto the 0–100 axis with
+a documented affine transform (1200 Elo ≡ 50, 400 Elo ≡ 100 points), and marked
+`weak` below 200 recorded battles. Read on 18 September 2026:
+
+| route | coding | design | design basis |
+|---|---:|---:|---|
+| kimi-k3::max | 76.20 | **80.12** | designarena elo 1320 over 2813 battles |
+| claude-opus-5::high | 76.50 | 73.88 | designarena elo 1296 over 2573 battles |
+| gpt-5.6-sol::medium | 76.30 | **46.50** | designarena elo 1186 over 3866 battles |
+| gpt-5.6-luna::medium | 50.70 | 50.70 | *fallback:* aa_coding_index (derived) |
+
+Three routes within 0.3 points of each other on coding spread across 46.5–80.1
+on design. That is the whole argument for a specialised route: the design rank
+is not recoverable from the coding rank. It is also why the router must not
+hard-code a name — the ranking is a property of data that moves.
+
+`summarisation` has no dedicated benchmark in this feed. It is derived from
+long-context, knowledge and the intelligence index, and is reported as
+`derived` **every time**, never as a measurement.
+
+Four of the seven routes carry no design data at all (`designarena: {}`), so the
+fallback path is exercised in practice, not just in a test.
+
+### The evidence discount
+
+`policy.success.evidence_discount` (0 by default, `0.5` in the held-out config)
+shrinks a capability score toward a neutral prior of 50 in proportion to how
+weak its evidence is — `direct` 1.0, `derived` 0.6, `weak` 0.4, `none` 0.0 —
+and a stale benchmark document demotes every strength by one step. The effect is
+that a cheap route cannot win a specialised task on a number nobody measured.
+`test_the_evidence_discount_makes_a_thin_cheap_route_less_attractive` pins the
+behaviour in both directions.
+
+## 8. Four kinds of statement, kept apart
+
+`auto_router/decision.py` splits every decision into `classification` (what the
+task is), `selection` (what the router decided and why), `estimated_outcome`
+(what it expected) and `observed_outcome` (what happened). They are served at
+`GET /v1/router/decisions` and appended to a JSONL ledger.
+
+Two rules are enforced by tests rather than by convention:
+
+- **A cost with no measurement basis is `null` plus the reason, never `0`.** A
+  free or subscription route must not later read as a measured saving.
+- **The record contains no prompt text.** Not the request, not the response, not
+  tool arguments, not a credential.
+
+## 9. Pre-registered held-out evaluation
+
+`experiments/heldout.py preregister` writes 27 tasks across the six categories
+the next cycle asked for — web/UI design, coding, maths/reasoning, factual
+research, summarisation and cache-eligible repeats — plus the analysis plan,
+the stopping rule, the exclusion rule and a list of claims that will *not* be
+made, and takes a SHA-256 of the task file. The runner refuses to start if that
+digest has changed. All of that happens before a single model is called.
+
+Graders are deterministic and none of them calls a model, so a run can be
+regraded from stored answers with identical verdicts. Each one declares what it
+measures:
+
+| category | grader | what it really is |
+|---|---|---|
+| coding | `executed` | hidden tests run in the Bubblewrap sandbox |
+| math | `exact` | the model's own stated final answer vs the known value |
+| research | `exact` | required fact present, named confusion absent |
+| summarisation | `rubric` | inside the length bound, keeps the required facts, invents no number absent from the source |
+| design | **`structural-proxy`** | real self-contained markup meeting the rules the prompt stated — *not* a judgement that the design is good |
+| cache_repeat | `exact` | four questions over one shared 5k-character prefix |
+
+The `structural-proxy` label travels into every ledger row and into the report,
+so a design number can never be read as more than it is.
+
+## 10. Executing generated code without Docker
+
+The 18 September run stopped rather than execute model-written code without
+isolation, because the Docker socket is deliberately unreachable. This cycle
+uses Bubblewrap instead (`experiments/sandbox.py`): read-only host, private
+tmpfs for `/tmp`, `$HOME` and the working directory, all namespaces unshared
+including the network, all capabilities dropped, an empty environment, and
+CPU/address-space/file-size limits. Verified on this host:
+
+```
+{"network": "blocked:OSError", "home_readable": false, "secret_env": [],
+ "cwd": "/work", "writable_work": true}
+```
+
+`sandbox.preflight()` is called before grading. If it does not confirm real
+isolation, the coding tasks are **excluded from the results with the exact
+reason recorded** — the harness never falls back to running a generated answer
+on the host.
+
 ## Limits
 
 - Cells hold 4–6 tasks; task difficulty for real traffic is a proxy (calls per turn).
+- The held-out set is small by design (27 tasks). It separates categories; it does
+  not rank frontier models, and no quality claim is made from a category with
+  fewer than 10 graded tasks.
+- The design grader is structural. A page can satisfy every rule and still look bad.
 - The simulator treats a failed turn as a whole-turn redo and assumes partially correlated retries.
 - Latency is not modelled well; free-tier routes are slower (F's turns take longer in the replay).
 - Plan usage in percent depends on a single week's conversion from list-price dollars.

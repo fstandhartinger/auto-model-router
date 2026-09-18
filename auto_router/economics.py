@@ -97,6 +97,16 @@ class SuccessModel:
     ceiling: float = 0.98
     per_category: dict[str, tuple[float, float, float]] = field(default_factory=dict)
     benchmaxxing_weight: float = 0.5
+    #: 0..1. How far a capability score that rests on weak, derived or stale
+    #: evidence is pulled toward the neutral prior before it is turned into a
+    #: success probability.
+    #:
+    #: The default is deliberately non-zero: the requirement is that missing or
+    #: stale evidence must actually *change* the decision, not merely be
+    #: annotated after the fact. Set it to ``0`` to reproduce the behaviour
+    #: from before evidence strengths existed, in which every capability number
+    #: is trusted equally however thin its basis.
+    evidence_discount: float = 0.35
     #: Direct measurements win over the curve: (model, category, bucket) -> p.
     measured: dict[tuple[str, str, str], float] = field(default_factory=dict)
 
@@ -109,7 +119,8 @@ class SuccessModel:
         if key in self.measured:
             return self.measured[key]
         offset, slope, scale = self.per_category.get(category, (self.offset, self.slope, self.scale))
-        cap = model.cap(category, benchmaxxing_weight=self.benchmaxxing_weight)
+        cap = model.cap(category, benchmaxxing_weight=self.benchmaxxing_weight,
+                        evidence_discount=self.evidence_discount)
         z = (cap - (offset + slope * difficulty)) / scale
         z = max(-50.0, min(50.0, z))
         value = 1.0 / (1.0 + math.exp(-z))
@@ -118,6 +129,7 @@ class SuccessModel:
     def difficulty_at(self, model: ModelInfo, category: str, p: float = 0.5) -> float:
         """Difficulty at which ``model`` succeeds with probability ``p`` (curve only)."""
         offset, slope, scale = self.per_category.get(category, (self.offset, self.slope, self.scale))
-        cap = model.cap(category, benchmaxxing_weight=self.benchmaxxing_weight)
+        cap = model.cap(category, benchmaxxing_weight=self.benchmaxxing_weight,
+                        evidence_discount=self.evidence_discount)
         logit = math.log(p / (1 - p))
         return max(0.0, min(1.0, (cap - scale * logit - offset) / slope))

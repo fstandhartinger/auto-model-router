@@ -6,19 +6,38 @@ state (current model, warm caches, difficulty memory) in memory.
 
 from __future__ import annotations
 
+import logging
+import math
 import os
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from . import jev
 from .cache_index import CalibratedEstimator, estimate_tokens, prefix_hashes
-from .catalog import ModelInfo
+from .catalog import CATEGORIES, ModelInfo
 from .config import RouterConfig
-from .economics import SuccessModel
-from .policies import POLICIES, Context, Conversation, Policy, TurnRequest
+from .decision import (
+    CacheDecision,
+    EstimatedOutcome,
+    ObservedOutcome,
+    RouteSelection,
+    RoutingExplanation,
+    TaskClassification,
+    candidate_from,
+)
+from .economics import SuccessModel, turn_cost
+from .ledger import RoutingLedger
+from .policies import POLICIES, Context, Conversation, Policy, TurnRequest, turn_call_cost
 from .quota import PacingRule, QuotaDecision, decide as quota_decide, from_budget_file, from_codex_rollouts
+
+log = logging.getLogger("auto_router.router")
+
+
+def _finite(value: float) -> float | None:
+    return None if math.isinf(value) else value
 
 def success_model_from_config(policy: dict) -> SuccessModel:
     """Logistic curve parameters and an optional measured success table.
@@ -29,7 +48,8 @@ def success_model_from_config(policy: dict) -> SuccessModel:
     """
     import json
     conf = policy.get("success") or {}
-    model = SuccessModel(**{k: conf[k] for k in ("offset", "slope", "scale") if k in conf})
+    model = SuccessModel(**{k: conf[k] for k in ("offset", "slope", "scale", "evidence_discount")
+                            if k in conf})
     table = conf.get("table")
     if table:
         with open(os.path.expanduser(table)) as fh:
@@ -107,10 +127,12 @@ class RouteResult:
     started_at: float
     classification_ms: float = 0.0
     tried: set[str] = field(default_factory=set)
+    #: Full separated decision record. See decision.py.
+    explanation: RoutingExplanation | None = None
 
     @property
     def headers(self) -> dict[str, str]:
-        return {
+        head = {
             "X-Router-Model": self.model.name,
             "X-Router-Category": self.request.category,
             "X-Router-Difficulty": f"{self.request.difficulty:.2f}",
@@ -118,13 +140,21 @@ class RouteResult:
             "X-Router-Conversation": self.conversation_id,
             "X-Router-Turn-Start": "true" if self.turn_start else "false",
         }
+        if self.explanation is not None:
+            head["X-Router-Decision"] = self.explanation.id
+            head["X-Router-Evidence"] = f"{self.explanation.selection.evidence_confidence:.2f}"
+            head["X-Router-Cache"] = self.explanation.cache.status
+            if self.explanation.selection.safe_fallback:
+                head["X-Router-Safe-Fallback"] = self.explanation.selection.safe_fallback
+        return head
 
 
 class Router:
     def __init__(self, config: RouterConfig, policy: Policy | None = None,
                  success: SuccessModel | None = None,
                  classifier: Callable[[str, str], jev.Classification] | None = None,
-                 quota_reader: Callable[[], dict[str, QuotaDecision]] | None = None):
+                 quota_reader: Callable[[], dict[str, QuotaDecision]] | None = None,
+                 ledger: "RoutingLedger | None" = None):
         self.config = config
         name = (config.policy or {}).get("name") or os.environ.get("AUTO_ROUTER_POLICY", "F_expected")
         self.policy = policy or POLICIES[name]()
@@ -138,6 +168,11 @@ class Router:
         self.escalate_after_tool_errors = int((config.policy or {}).get("escalate_after_tool_errors", 3))
         self._lock = threading.Lock()
         self._quota_cache: tuple[float, dict[str, QuotaDecision]] = (0.0, {})
+        #: Recent decision records, newest last. Bounded so a long-running
+        #: server cannot grow without limit.
+        self.decisions: deque[RoutingExplanation] = deque(
+            maxlen=int((config.policy or {}).get("decision_history", 200)))
+        self.ledger = ledger or RoutingLedger.from_env()
 
     # -- quota ---------------------------------------------------------------
     def _read_quota(self) -> dict[str, QuotaDecision]:
@@ -187,11 +222,13 @@ class Router:
             if errors >= self.escalate_after_tool_errors:
                 retry = self.policy.on_failure(conv, base, ctx, conv.current, {conv.current})
                 if retry:
-                    return RouteResult(ctx.catalog[retry.model],
-                                       f"{errors} failing tool results in a row: {retry.reason}",
-                                       cid, False, base, None, now)
-            return RouteResult(ctx.catalog[conv.current], "inside a tool loop: stay on the turn's model",
-                               cid, False, base, None, now)
+                    reason = f"{errors} failing tool results in a row: {retry.reason}"
+                    return self._result(ctx, conv, cid, ctx.catalog[retry.model], reason, base,
+                                        None, now, 0.0, turn_start=False,
+                                        switched_from=conv.current)
+            return self._result(ctx, conv, cid, ctx.catalog[conv.current],
+                                "inside a tool loop: stay on the turn's model", base, None, now,
+                                0.0, turn_start=False)
 
         text = last_user_text(messages)
         started = time.perf_counter()
@@ -199,7 +236,185 @@ class Router:
         cls_ms = (time.perf_counter() - started) * 1000
         req = self._turn_request(cls, prompt_tokens, max_tokens, now, bool(tools), messages)
         choice = self.policy.choose(conv, req, ctx)
-        return RouteResult(ctx.catalog[choice.model], choice.reason, cid, True, req, cls, now, cls_ms)
+        return self._result(ctx, conv, cid, ctx.catalog[choice.model], choice.reason, req, cls, now,
+                            cls_ms, turn_start=True, switched_from=conv.current,
+                            prefix=self.conversation_id(messages, system, tools))
+
+    # -- explanation ---------------------------------------------------------
+    def _result(self, ctx: Context, conv: Conversation, cid: str, model: ModelInfo, reason: str,
+                req: TurnRequest, cls: jev.Classification | None, now: float, cls_ms: float,
+                *, turn_start: bool, switched_from: str | None = None,
+                prefix: str = "") -> RouteResult:
+        result = RouteResult(model, reason, cid, turn_start, req, cls, now, cls_ms)
+        try:
+            result.explanation = self.explain(ctx, conv, cid, model, reason, req, cls, now, cls_ms,
+                                              turn_start=turn_start, switched_from=switched_from,
+                                              prefix=prefix)
+            self.decisions.append(result.explanation)
+        except Exception:  # noqa: BLE001 - an explanation must never break routing
+            log.exception("failed to build the routing explanation")
+        return result
+
+    def observe(self, result: RouteResult, outcome: ObservedOutcome) -> None:
+        """Attach what actually happened. Estimates are never overwritten by it."""
+        if result.explanation is None:
+            return
+        result.explanation.observed = outcome
+        self.ledger.write(result.explanation)
+
+    def explain(self, ctx: Context, conv: Conversation, cid: str, model: ModelInfo, reason: str,
+                req: TurnRequest, cls: jev.Classification | None, now: float, cls_ms: float,
+                *, turn_start: bool, switched_from: str | None = None,
+                prefix: str = "") -> RoutingExplanation:
+        """Build the compact, prompt-free decision record for one routing choice."""
+        discount = ctx.success.evidence_discount
+        scored = self.policy.evaluate(conv, req, ctx) if turn_start else []
+        candidates = [
+            candidate_from(m, req.category, p_success=p,
+                           call_usd=None if math.isinf(call) else call,
+                           expected_usd=None if math.isinf(value) else value,
+                           warm_tokens=conv.warm_tokens(m, req.now),
+                           evidence_discount=discount)
+            for m, call, p, value in scored]
+        if not any(c.model == model.name for c in candidates):
+            candidates.append(candidate_from(
+                model, req.category,
+                p_success=ctx.success.p(model, req.category, req.difficulty),
+                call_usd=_finite(turn_call_cost(model, req, conv.warm_tokens(model, req.now), ctx)),
+                expected_usd=None, warm_tokens=conv.warm_tokens(model, req.now),
+                evidence_discount=discount))
+
+        chosen = next(c for c in candidates if c.model == model.name)
+        ranked = sorted((c for c in candidates if c.model != model.name and c.est_expected_usd is not None),
+                        key=lambda c: c.est_expected_usd)
+        stronger = [c for c in candidates
+                    if c.model != model.name and c.capability > chosen.capability]
+        fallback = (min(stronger, key=lambda c: (c.est_expected_usd if c.est_expected_usd is not None
+                                                 else float("inf"))).model
+                    if stronger else (ranked[0].model if ranked else None))
+
+        notes: list[str] = []
+        safe_fallback = None
+        if cls is not None and cls.failed:
+            safe_fallback = "classifier-unavailable"
+            notes.append("Jev was unreachable or unusable; cautious defaults were used.")
+        elif cls is None and turn_start:
+            safe_fallback = "classifier-disabled"
+            notes.append("No classifier configured; category and difficulty are heuristic.")
+        if chosen.evidence_stale:
+            safe_fallback = safe_fallback or "stale-evidence"
+            notes.append(f"Capability evidence for {model.name} is stale or absent "
+                         f"({model.evidence.get('source', 'unknown')}).")
+        if chosen.evidence_strength in ("none", "weak"):
+            safe_fallback = safe_fallback or "weak-category-evidence"
+            notes.append(f"No direct {req.category} evidence for {model.name}; "
+                         f"basis: {chosen.capability_basis}.")
+        if any(c.evidence_stale for c in candidates):
+            notes.append("At least one candidate was priced from stale benchmark data.")
+
+        classification = self._classification_record(cls, req, cls_ms, turn_start)
+        cache = self._cache_decision(model, conv, req, prefix)
+        evidence_confidence = self._evidence_confidence(cls, chosen)
+        selection = RouteSelection(
+            selected=model.name, policy=self.policy.name, reason=reason, fallback=fallback,
+            switched_from=switched_from if switched_from != model.name else None,
+            considered=len(candidates), evidence_confidence=evidence_confidence,
+            safe_fallback=safe_fallback, turn_start=turn_start)
+        estimated = EstimatedOutcome(
+            model=model.name, p_success=chosen.p_success,
+            cost_usd=chosen.est_call_usd, prompt_tokens=req.prompt_tokens,
+            output_tokens=req.output_tokens,
+            basis=("router cost model over configured list prices"
+                   + ("; subscription shadow-priced by quota pacing" if model.subscription else "")))
+        return RoutingExplanation(conversation=cid, classification=classification,
+                                  selection=selection, estimated=estimated, cache=cache,
+                                  candidates=candidates, notes=notes)
+
+    @staticmethod
+    def _classification_record(cls: jev.Classification | None, req: TurnRequest, cls_ms: float,
+                               turn_start: bool) -> TaskClassification:
+        if not turn_start:
+            return TaskClassification(category=req.category, difficulty=req.difficulty,
+                                      source="tool-loop", needs_tools=req.needs_tools,
+                                      stakes_usd=req.stakes_usd, follow_up=req.follow_up)
+        if cls is None:
+            return TaskClassification(category=req.category, difficulty=req.difficulty,
+                                      source="disabled", needs_tools=req.needs_tools,
+                                      needs_vision=req.needs_vision, follow_up=req.follow_up,
+                                      stakes_usd=req.stakes_usd, latency_ms=cls_ms)
+        return TaskClassification(
+            category=req.category, raw_category=cls.category, difficulty=req.difficulty,
+            source=cls.source, category_confidence=cls.category_confidence,
+            difficulty_confidence=cls.difficulty_confidence, needs_tools=req.needs_tools,
+            needs_vision=req.needs_vision, needs_long_context=cls.needs_long_context > 0.5,
+            follow_up=req.follow_up, stakes_usd=req.stakes_usd,
+            classifier_model=cls.model, latency_ms=cls_ms)
+
+    @staticmethod
+    def _cache_decision(model: ModelInfo, conv: Conversation, req: TurnRequest,
+                        prefix: str) -> CacheDecision:
+        """What the router believed about the prefix cache, with the basis recorded.
+
+        A saving is only ever quoted when both halves of the measurement exist:
+        a published cache-read price and a hit rate that came from somewhere
+        nameable. Otherwise the field stays None and says why.
+        """
+        warm = conv.warm_tokens(model, req.now)
+        rules, prices = model.cache, model.prices
+        if rules.ttl_seconds <= 0:
+            status = "no-cache"
+        elif req.prompt_tokens < rules.min_tokens:
+            status = "too-short"
+        elif warm > 0:
+            status = "warm"
+        else:
+            status = "cold"
+
+        measured = model.evidence.get("cache_hit_rate_basis")
+        hit_basis = measured or ("provider default for the configured cache family "
+                                 f"({rules.hit_rate:.2f}); measure it per route before trusting it")
+        read_tokens = 0
+        avoided: float | None = None
+        basis = "cache not warm for this route"
+        if status == "warm":
+            read_tokens = int(min(warm, req.prompt_tokens) * rules.hit_rate)
+            if prices.cache_read is None:
+                basis = ("no cache-read price published for this route, so no saving is claimed")
+            elif prices.is_free:
+                basis = "route is free or subscription-priced; no cash saving to claim"
+            else:
+                cold = turn_cost(model, req.prompt_tokens, 0, req.output_tokens)
+                hot = turn_cost(model, req.prompt_tokens, warm, req.output_tokens)
+                avoided = max(0.0, cold - hot)
+                basis = (f"estimate = cold turn cost - warm turn cost at the configured hit rate "
+                         f"{rules.hit_rate:.2f} and published cache-read price "
+                         f"{prices.cache_read} /Mtok; not a measured saving")
+        return CacheDecision(model=model.name, status=status, prompt_tokens=req.prompt_tokens,
+                             warm_tokens=warm, ttl_seconds=rules.ttl_seconds,
+                             min_tokens=rules.min_tokens, hit_rate=rules.hit_rate,
+                             hit_rate_basis=hit_basis, key_scope=prefix[:16],
+                             estimated_tokens_read_warm=read_tokens,
+                             estimated_usd_avoided=avoided, basis=basis)
+
+    @staticmethod
+    def _evidence_confidence(cls: jev.Classification | None, chosen) -> float:
+        """How much of this decision rests on current, direct evidence (0..1).
+
+        The two classifier confidences are combined with ``min``, not ``max``:
+        the route choice depends on the category *and* the difficulty, so a
+        confident category with an unknown difficulty is not a confident
+        decision. An absent confidence is reported as 0 rather than being
+        rounded up to "probably fine".
+        """
+        from .catalog import EVIDENCE_WEIGHT
+        capability = EVIDENCE_WEIGHT.get(chosen.evidence_strength, 0.0)
+        if cls is None:
+            classifier = 0.0          # no classifier at all: nothing is evidenced
+        elif cls.failed:
+            classifier = 0.0
+        else:
+            classifier = min(cls.category_confidence, cls.difficulty_confidence)
+        return round(min(1.0, max(0.0, 0.5 * capability + 0.5 * classifier)), 3)
 
     def _summary(self, messages: list[dict], tools: Any) -> str:
         users = sum(1 for m in messages if m.get("role") == "user")
@@ -256,16 +471,45 @@ class Router:
         if prompt_tokens and raw_estimate:
             self.estimator.observe(raw_estimate, prompt_tokens)
 
-    def escalate(self, result: RouteResult) -> RouteResult | None:
-        """Pick a retry model after a failure signal (upstream error, judge says inadequate)."""
+    def escalate(self, result: RouteResult, *, availability: bool = False) -> RouteResult | None:
+        """Pick a retry route after a failure signal.
+
+        Two different failures are handled differently. A *capability* failure
+        (the judge says the answer was inadequate, tool results keep failing)
+        asks the policy for a clearly stronger model. An *availability* failure
+        (the upstream returned 5xx, the connection broke) is not evidence that
+        the model was too weak, so when no stronger model exists the router
+        still moves to the next usable route rather than returning the error:
+        that is the documented safe fallback. Returns None only when there is
+        genuinely nowhere left to go.
+        """
         conv = self.conversations.setdefault(result.conversation_id, Conversation())
         ctx = self.context()
         tried = result.tried | {result.model.name}
         retry = self.policy.on_failure(conv, result.request, ctx, result.model.name, tried)
-        if retry is None:
+        reason = retry.reason if retry else ""
+        target = ctx.catalog.get(retry.model) if retry else None
+        if target is None and availability:
+            target, reason = self._next_available(conv, result.request, ctx, tried)
+        if target is None:
             return None
-        return RouteResult(ctx.catalog[retry.model], retry.reason, result.conversation_id, result.turn_start,
-                           result.request, result.classification, time.time(), 0.0, tried)
+        retry_result = self._result(ctx, conv, result.conversation_id, target, reason,
+                                    result.request, result.classification, time.time(), 0.0,
+                                    turn_start=result.turn_start,
+                                    switched_from=result.model.name)
+        retry_result.tried = tried
+        return retry_result
+
+    def _next_available(self, conv: Conversation, req: TurnRequest, ctx: Context,
+                        tried: set[str]) -> tuple[ModelInfo | None, str]:
+        """Best remaining route by the policy's own ranking, ignoring capability order."""
+        scored = [(value, m) for m, _call, _p, value in self.policy.evaluate(conv, req, ctx)
+                  if m.name not in tried and not math.isinf(value)]
+        if not scored:
+            return None, ""
+        value, model = min(scored, key=lambda pair: pair[0])
+        return model, (f"safe fallback: {len(tried)} route(s) unavailable, "
+                       f"next usable route by expected cost (${value:.4f})")
 
     @property
     def stats(self) -> dict:
@@ -276,5 +520,10 @@ class Router:
             "escalations": sum(c.escalations for c in self.conversations.values()),
             "quota": {k: v.__dict__ for k, v in self.quota().items()},
             "token_estimator": self.estimator.stats,
+            "evidence_discount": self.success.evidence_discount,
+            "decisions_retained": len(self.decisions),
+            "ledger": self.ledger.stats,
+            "stale_evidence_models": sorted(m.name for m in self.config.catalog.all()
+                                            if m.evidence_stale),
             "models": [m.name for m in self.config.catalog.all()],
         }

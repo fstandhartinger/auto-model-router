@@ -47,10 +47,26 @@ def test_router_survives_an_unreachable_api(tmp_path):
     client = _client_with(tmp_path, offline=False)
     # make the cache look stale so the client tries the (unreachable) network first
     import os
+    import time
+    stale = time.time() - 2 * 24 * 3600
     for p in tmp_path.iterdir():
-        os.utime(p, (0, 0))
+        os.utime(p, (stale, stale))
     assert client.model("example-model::max")["id"] == "example-model::max"
     assert client.errors, "the failed fetch is recorded"
+
+
+def test_expired_cache_and_missing_api_return_none(tmp_path):
+    import os
+    client = _client_with(tmp_path, offline=True)
+    for path in tmp_path.iterdir():
+        os.utime(path, (0, 0))
+    assert client.model("example-model::max") is None
+
+
+def test_cache_is_isolated_by_origin(tmp_path):
+    first = BenchmarkClient(base_url="https://one.invalid", cache_dir=tmp_path)
+    second = BenchmarkClient(base_url="https://two.invalid", cache_dir=tmp_path)
+    assert first._cache_path("/api/models/x") != second._cache_path("/api/models/x")
 
 
 def test_config_merges_bench_data_and_overrides(tmp_path):

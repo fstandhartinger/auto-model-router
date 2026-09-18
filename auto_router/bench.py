@@ -5,8 +5,8 @@ cache write prices), context length, provider cache hit rates and a
 benchmaxxing score for the models in the catalog.
 
 Everything is cached on disk with a TTL. When the API is unreachable the last
-good copy is used however old it is, and when there is no copy at all the
-router falls back to what the provider config says. Routing must never fail
+good copy is used for at most seven days by default. Older or absent copies
+fall back to what the provider config says. Routing must never fail
 because a benchmark site is down.
 
 Licensing note: some of the upstream numbers originate from third parties whose
@@ -16,12 +16,15 @@ serves; check the terms of the data you point it at before shipping a product.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import math
 import os
 import time
 import urllib.parse
 import urllib.request
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +32,39 @@ log = logging.getLogger("auto_router.bench")
 
 DEFAULT_BASE_URL = "https://benchmarkheaven.com"
 DEFAULT_TTL_SECONDS = 24 * 3600
+DEFAULT_MAX_STALE_SECONDS = 7 * 24 * 3600
+
+
+@dataclass(frozen=True)
+class Provenance:
+    """Where one benchmark document came from and how old it is.
+
+    ``source`` is one of ``network`` (fetched now), ``cache`` (fresh disk copy
+    inside the TTL), ``stale-cache`` (older than the TTL but inside the
+    stale limit, used because the API could not be reached) or ``missing``
+    (nothing usable). ``stale`` is what the router acts on: it lowers the
+    confidence attached to every capability derived from this document.
+    """
+
+    origin: str
+    path: str
+    source: str
+    age_seconds: float | None = None
+    fetched_at: float | None = None
+    error: str | None = None
+
+    @property
+    def stale(self) -> bool:
+        return self.source in ("stale-cache", "missing")
+
+    @property
+    def usable(self) -> bool:
+        return self.source != "missing"
+
+    def to_dict(self) -> dict:
+        return {"origin": self.origin, "path": self.path, "source": self.source,
+                "age_seconds": None if self.age_seconds is None else round(self.age_seconds, 1),
+                "stale": self.stale, "error": self.error}
 
 
 def _cache_dir() -> Path:
@@ -41,27 +77,42 @@ def _cache_dir() -> Path:
 
 class BenchmarkClient:
     def __init__(self, base_url: str | None = None, ttl_seconds: int = DEFAULT_TTL_SECONDS,
-                 timeout: float = 20.0, cache_dir: Path | None = None, offline: bool = False):
+                 timeout: float = 20.0, cache_dir: Path | None = None, offline: bool = False,
+                 max_stale_seconds: int = DEFAULT_MAX_STALE_SECONDS):
         self.base_url = (base_url or os.environ.get("AUTO_ROUTER_BENCH_URL") or DEFAULT_BASE_URL).rstrip("/")
         self.ttl = ttl_seconds
         self.timeout = timeout
         self.cache_dir = cache_dir or _cache_dir()
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.max_stale = max(0, max_stale_seconds)
         self.offline = offline
         self.errors: list[str] = []
 
     # -- transport ---------------------------------------------------------
     def _cache_path(self, path: str) -> Path:
-        safe = urllib.parse.quote(path, safe="")
+        safe = hashlib.sha256(f"{self.base_url}{path}".encode()).hexdigest()
         return self.cache_dir / f"{safe}.json"
 
-    def get(self, path: str) -> Any | None:
-        """GET a JSON document with a disk cache. Returns None when nothing is available."""
+    def fetch(self, path: str) -> tuple[Any | None, Provenance]:
+        """GET a JSON document with a disk cache, reporting where the answer came from.
+
+        Order: a fresh disk copy inside the TTL, then the network, then a stale
+        disk copy up to ``max_stale``. Anything older is treated as missing so
+        that a long outage degrades to the configured fallback instead of
+        routing on last month's capability numbers.
+        """
         cached = self._cache_path(path)
-        if cached.exists() and (self.offline or time.time() - cached.stat().st_mtime < self.ttl):
-            try:
-                return json.loads(cached.read_text())
-            except json.JSONDecodeError:
-                pass
+        age = time.time() - cached.stat().st_mtime if cached.exists() else float("inf")
+        fresh_enough = cached.exists() and 0 <= age <= self.max_stale
+        if fresh_enough and (self.offline or age < self.ttl):
+            data = self._read(cached)
+            if data is not None:
+                # Offline mode lets an old copy be *used*; it does not make it
+                # fresh. The source is decided by the age alone, so an offline
+                # router still discounts what it is routing on.
+                source = "cache" if age < self.ttl else "stale-cache"
+                return data, Provenance(self.base_url, path, source, age, time.time() - age)
+        error: str | None = None
         if not self.offline:
             try:
                 req = urllib.request.Request(f"{self.base_url}{path}",
@@ -72,44 +123,155 @@ class BenchmarkClient:
                 tmp = cached.with_suffix(".tmp")
                 tmp.write_bytes(body)
                 tmp.replace(cached)
-                return data
+                now = time.time()
+                return data, Provenance(self.base_url, path, "network", 0.0, now)
             except Exception as exc:  # noqa: BLE001 - any failure means "use the stale copy"
-                self.errors.append(f"{path}: {type(exc).__name__}")
+                error = type(exc).__name__
+                self.errors.append(f"{path}: {error}")
                 log.warning("benchmark API unavailable for %s (%s); using cached copy", path,
-                            type(exc).__name__)
-        if cached.exists():
-            try:
-                return json.loads(cached.read_text())
-            except json.JSONDecodeError:
-                return None
-        return None
+                            error)
+        if fresh_enough:
+            data = self._read(cached)
+            if data is not None:
+                source = "cache" if age < self.ttl else "stale-cache"
+                return data, Provenance(self.base_url, path, source, age, time.time() - age,
+                                        error)
+        reason = error or ("cache expired" if cached.exists() else "no cached copy")
+        return None, Provenance(self.base_url, path, "missing",
+                                None if age == float("inf") else age, None, reason)
+
+    @staticmethod
+    def _read(cached: Path) -> Any | None:
+        try:
+            return json.loads(cached.read_text())
+        except (json.JSONDecodeError, OSError):
+            return None
+
+    def get(self, path: str) -> Any | None:
+        """``fetch`` without the provenance. Returns None when nothing is available."""
+        return self.fetch(path)[0]
 
     # -- domain ------------------------------------------------------------
-    def model(self, bench_id: str) -> dict | None:
-        data = self.get(f"/api/models/{urllib.parse.quote(bench_id, safe=':')}")
-        return (data or {}).get("model")
+    def model_with_provenance(self, bench_id: str) -> tuple[dict | None, Provenance]:
+        data, prov = self.fetch(f"/api/models/{urllib.parse.quote(bench_id, safe=':')}")
+        return (data or {}).get("model"), prov
 
-    def benchmaxxing(self, bench_id: str) -> float | None:
-        data = self.get(f"/api/benchmaxxing?report={urllib.parse.quote(bench_id, safe=':')}")
+    def model(self, bench_id: str) -> dict | None:
+        return self.model_with_provenance(bench_id)[0]
+
+    def benchmaxxing_with_provenance(self, bench_id: str) -> tuple[float | None, Provenance]:
+        """The benchmaxxing penalty and where it came from.
+
+        It is fetched separately from the model document and can be stale while
+        the model document is fresh, so it carries its own provenance rather
+        than inheriting the document's.
+        """
+        data, prov = self.fetch(f"/api/benchmaxxing?report={urllib.parse.quote(bench_id, safe=':')}")
         report = (data or {}).get("report") or {}
         if report.get("status") != "scored":
-            return None
-        score = report.get("score")
-        return float(score) if isinstance(score, (int, float)) else None
+            return None, prov
+        return _number(report.get("score")), prov
+
+    def benchmaxxing(self, bench_id: str) -> float | None:
+        return self.benchmaxxing_with_provenance(bench_id)[0]
 
     def endpoint_stats(self) -> dict:
         data = self.get("/api/price-comparison") or {}
         return ((data.get("efficiency") or {}).get("openrouter_endpoints")) or {}
 
 
-def _pct(value: Any) -> float | None:
-    if not isinstance(value, (int, float)):
+def _number(value: Any) -> float | None:
+    """A finite float, or None.
+
+    Python's JSON decoder happily produces ``NaN`` and ``Infinity``, and both
+    pass ``isinstance(value, float)``. A NaN capability silently poisons every
+    comparison in the policy (``NaN > x`` is always False), so malformed
+    upstream data is rejected here rather than ranked.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    return float(value) * 100.0 if value <= 1.0 else float(value)
+    number = float(value)
+    return number if math.isfinite(number) else None
 
 
-def capability_from_model(model: dict) -> dict[str, float]:
-    """Map a model document onto the router's categories (roughly 0..100).
+def _count(value: Any) -> int:
+    number = _number(value)
+    return int(number) if number is not None else 0
+
+
+def _pct(value: Any) -> float | None:
+    number = _number(value)
+    if number is None:
+        return None
+    return number * 100.0 if number <= 1.0 else number
+
+
+@dataclass(frozen=True)
+class CapabilityEvidence:
+    """One category's capability score and exactly what it rests on.
+
+    ``strength`` is ``direct`` when a benchmark measures this category,
+    ``derived`` when it is computed from a neighbouring headline index, and
+    ``weak`` when the number exists but rests on very little data (for example
+    a design Elo from a handful of battles). The router discounts anything that
+    is not ``direct`` rather than pretending all evidence is equal.
+    """
+
+    value: float
+    basis: str
+    strength: str = "direct"
+
+    def to_dict(self) -> dict:
+        return {"value": round(self.value, 2), "basis": self.basis, "strength": self.strength}
+
+
+#: Elo is centred on 1200 and a 400-point gap is 10:1 odds. The router only
+#: needs a monotone 0..100 axis comparable with the other category scores, so
+#: an Elo is mapped affinely with 1200 == 50 and 400 Elo == 100 points.
+DESIGN_ELO_CENTRE = 1200.0
+DESIGN_ELO_PER_POINT = 4.0
+
+#: Below this many recorded battles a design Elo is reported as weak evidence.
+DESIGN_MIN_BATTLES = 200
+
+
+def design_capability(model: dict) -> CapabilityEvidence | None:
+    """Web/UI-design capability from the served design-arena Elo, or None.
+
+    The router must not hard-code "model X is the design model". This reads
+    whatever the configured benchmark API serves for that model and returns
+    nothing at all when there is no design evidence, which is what triggers the
+    documented fallback. ``frontend`` and ``fullstack`` boards are averaged
+    when both are present.
+    """
+    arena = model.get("designarena")
+    if not isinstance(arena, dict) or not arena:
+        return None
+    elos: list[float] = []
+    battles = 0
+    boards: list[str] = []
+    for board in ("frontend", "fullstack"):
+        entry = arena.get(board)
+        if not isinstance(entry, dict):
+            continue
+        elo = _number(entry.get("elo"))
+        if elo is None:
+            continue
+        elos.append(elo)
+        boards.append(board)
+        battles += _count(entry.get("battles"))
+    if not elos:
+        return None
+    elo = sum(elos) / len(elos)
+    value = max(0.0, min(100.0, 50.0 + (elo - DESIGN_ELO_CENTRE) / DESIGN_ELO_PER_POINT))
+    strength = "direct" if battles >= DESIGN_MIN_BATTLES else "weak"
+    basis = (f"designarena {'+'.join(boards)} elo {elo:.0f} over {battles} battles"
+             f" -> 50+(elo-{DESIGN_ELO_CENTRE:.0f})/{DESIGN_ELO_PER_POINT:.0f}")
+    return CapabilityEvidence(round(value, 2), basis, strength)
+
+
+def capability_evidence(model: dict) -> dict[str, CapabilityEvidence]:
+    """Map a model document onto the router's categories (roughly 0..100), with bases.
 
     Headline indexes (intelligence, coding, coding-agent, long-context
     reasoning) are preferred over per-variant category scores: the latter can
@@ -121,31 +283,73 @@ def capability_from_model(model: dict) -> dict[str, float]:
     cats = model.get("category_scores") or {}
     b = model.get("benchmarks") or {}
 
-    def num(v: Any) -> float | None:
-        return float(v) if isinstance(v, (int, float)) else None
-
-    def first(*vals: Any) -> float | None:
-        for v in vals:
-            if isinstance(v, (int, float)):
-                return float(v)
+    def pick(*options: tuple[str, Any, str]) -> CapabilityEvidence | None:
+        """First option whose value is a finite number. Each option is (basis, value, strength)."""
+        for basis, value, strength in options:
+            number = _number(value)
+            if number is not None:
+                return CapabilityEvidence(number, basis, strength)
         return None
 
-    ii = num(b.get("aa_intelligence_index"))
+    ii = _number(b.get("aa_intelligence_index"))
     general = ii * 1.5 if ii is not None else None
-    tb = num(b.get("aa_terminalbench_v2_1"))
+    general_basis = "aa_intelligence_index x 1.5"
+    tb = _number(b.get("aa_terminalbench_v2_1"))
+    tb_scaled = tb * 72 if tb is not None else None
     tau2 = _pct(b.get("aa_tau2"))
-    out: dict[str, float | None] = {
-        "coding": first(b.get("aa_coding_index"), cats.get("cat_coding")),
-        "agentic": first(b.get("aa_coding_agent_index"), tb * 72 if tb is not None else None,
-                         cats.get("cat_agentic")),
-        "math": first(b.get("aa_math_index"), general, cats.get("cat_science")),
-        "knowledge": first(general, cats.get("cat_science"), _pct(b.get("aa_gpqa"))),
-        "long_context": first(_pct(b.get("aa_lcr")), cats.get("cat_long_context")),
-        "tool_use": first(tau2, general, cats.get("cat_agentic")),
+
+    out: dict[str, CapabilityEvidence | None] = {
+        "coding": pick(("aa_coding_index", b.get("aa_coding_index"), "direct"),
+                       ("category_scores.cat_coding", cats.get("cat_coding"), "direct")),
+        "agentic": pick(("aa_coding_agent_index", b.get("aa_coding_agent_index"), "direct"),
+                        ("aa_terminalbench_v2_1 x 72", tb_scaled, "derived"),
+                        ("category_scores.cat_agentic", cats.get("cat_agentic"), "direct")),
+        "math": pick(("aa_math_index", b.get("aa_math_index"), "direct"),
+                     (general_basis, general, "derived"),
+                     ("category_scores.cat_science", cats.get("cat_science"), "derived")),
+        "knowledge": pick((general_basis, general, "derived"),
+                          ("category_scores.cat_science", cats.get("cat_science"), "direct"),
+                          ("aa_gpqa %", _pct(b.get("aa_gpqa")), "direct")),
+        "long_context": pick(("aa_lcr %", _pct(b.get("aa_lcr")), "direct"),
+                             ("category_scores.cat_long_context", cats.get("cat_long_context"),
+                              "direct")),
+        "tool_use": pick(("aa_tau2 %", tau2, "direct"),
+                         (general_basis, general, "derived"),
+                         ("category_scores.cat_agentic", cats.get("cat_agentic"), "derived")),
     }
-    known = [v for v in out.values() if v is not None]
-    out["general"] = general if general is not None else (sum(known) / len(known) if known else None)
-    return {k: round(v, 2) for k, v in out.items() if v is not None}
+    design = design_capability(model)
+    if design is not None:
+        out["design"] = design
+
+    coding = out["coding"]
+    long_ctx = out["long_context"]
+    # Summarisation has no dedicated public benchmark in this feed. It is a
+    # long-context reading job with a general-writing tail, so it is derived
+    # from both and always reported as derived evidence, never as measured.
+    parts = [e.value for e in (long_ctx, out["knowledge"]) if e is not None]
+    if general is not None:
+        parts.append(general)
+    if parts:
+        out["summarisation"] = CapabilityEvidence(
+            round(sum(parts) / len(parts), 2),
+            "mean(long_context, knowledge, " + general_basis + ")", "derived")
+
+    known = [e.value for e in out.values() if e is not None]
+    if general is not None:
+        out["general"] = CapabilityEvidence(general, general_basis, "derived")
+    elif known:
+        out["general"] = CapabilityEvidence(round(sum(known) / len(known), 2),
+                                            "mean of available category scores", "derived")
+    # Design falls back to coding evidence only when there is no design data at
+    # all; it is explicitly marked derived so the router discounts it.
+    if "design" not in out and coding is not None:
+        out["design"] = CapabilityEvidence(coding.value, "fallback: " + coding.basis, "derived")
+    return {k: v for k, v in out.items() if v is not None}
+
+
+def capability_from_model(model: dict) -> dict[str, float]:
+    """Backwards-compatible view: category -> score, without the evidence bases."""
+    return {k: round(e.value, 2) for k, e in capability_evidence(model).items()}
 
 
 def pick_offer(model: dict, platform: str | None = None, provider: str | None = None) -> dict | None:

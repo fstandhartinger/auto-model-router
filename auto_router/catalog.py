@@ -20,8 +20,21 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 
-#: Capability categories the router reasons about.
-CATEGORIES = ("coding", "agentic", "math", "knowledge", "long_context", "tool_use", "general")
+#: Capability categories the router reasons about. ``design`` (web/UI work) and
+#: ``summarisation`` are specialised categories: which model is best at them is
+#: read from the configured evidence, never hard-coded here.
+CATEGORIES = ("coding", "agentic", "math", "knowledge", "long_context", "tool_use",
+              "design", "summarisation", "general")
+
+#: Basis string for a capability the operator stated directly in the config.
+#: It is current by definition and is never aged out by benchmark staleness.
+CONFIG_OVERRIDE = "config override"
+
+#: How much a capability score is trusted, by the strength of its evidence.
+#: A derived number (a neighbouring index standing in for a category nobody
+#: measured) and a stale one are both pulled toward the pool mean so the policy
+#: does not act on them as if they were measured. See ``ModelInfo.cap``.
+EVIDENCE_WEIGHT = {"direct": 1.0, "derived": 0.6, "weak": 0.4, "none": 0.0}
 
 
 @dataclass(frozen=True)
@@ -110,15 +123,58 @@ class ModelInfo:
     subscription: str | None = None
     #: Where the capability numbers came from ("bench", "config", "none").
     capability_source: str = "none"
+    #: category -> human-readable basis for that capability number.
+    capability_basis: dict[str, str] = field(default_factory=dict)
+    #: category -> "direct" | "derived" | "weak"; missing means "none".
+    capability_strength: dict[str, str] = field(default_factory=dict)
+    #: True when the benchmark document behind these numbers was stale or absent.
+    #: It applies per category: a hand-written config override is a deliberate
+    #: current statement by the operator and is never demoted by a stale
+    #: benchmark document for a *different* category on the same model.
+    evidence_stale: bool = False
+    #: Compact provenance record for the routing explanation (no prompt text).
+    evidence: dict = field(default_factory=dict)
     bench_id: str | None = None
     #: Seconds to first token under normal load; used as a latency tie-breaker.
     latency_s: float = 5.0
 
-    def cap(self, category: str, *, benchmaxxing_weight: float = 0.5) -> float:
+    def evidence_strength(self, category: str) -> str:
+        """How well this model's capability in ``category`` is evidenced."""
+        if category not in self.capability:
+            return "none"
+        if self.capability_basis.get(category) == CONFIG_OVERRIDE:
+            return self.capability_strength.get(category, "direct")
+        if self.evidence_stale:
+            # A stale document may still be right, but it is no longer current
+            # evidence, so nothing derived from it counts as direct.
+            return "weak" if self.capability_strength.get(category) == "direct" else "none"
+        return self.capability_strength.get(category, "derived")
+
+    def evidence_basis(self, category: str) -> str:
+        if category not in self.capability:
+            return f"fallback: general ({self.capability_basis.get('general', 'none')})"
+        return self.capability_basis.get(category, "unrecorded")
+
+    def cap(self, category: str, *, benchmaxxing_weight: float = 0.5,
+            evidence_discount: float = 0.0, neutral: float = 50.0) -> float:
+        """Capability score, optionally shrunk toward ``neutral`` by evidence strength.
+
+        With ``evidence_discount`` at 0 this is the raw score and behaves as it
+        always has. Above 0 a number the router cannot fully vouch for - a
+        derived stand-in, a thin sample, a stale document - is pulled toward a
+        neutral prior in proportion to how weak it is. A confident cheap route
+        therefore needs real evidence before the policy will trust it with a
+        specialised task.
+        """
         base = self.capability.get(category)
         if base is None:
-            base = self.capability.get("general", 50.0)
-        return base - benchmaxxing_weight * max(0.0, self.benchmaxxing)
+            base = self.capability.get("general", neutral)
+        score = base - benchmaxxing_weight * max(0.0, self.benchmaxxing)
+        if evidence_discount > 0.0:
+            weight = EVIDENCE_WEIGHT.get(self.evidence_strength(category), 0.0)
+            shrink = evidence_discount * (1.0 - weight)
+            score = score * (1.0 - shrink) + neutral * shrink
+        return score
 
     def with_(self, **kw) -> "ModelInfo":
         return replace(self, **kw)

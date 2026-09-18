@@ -39,8 +39,8 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
-from .bench import BenchmarkClient, capability_from_model, context_length, pick_offer
-from .catalog import DEFAULT_CACHE_RULES, CacheRules, Catalog, ModelInfo, Prices
+from .bench import BenchmarkClient, capability_evidence, context_length, pick_offer
+from .catalog import CONFIG_OVERRIDE, DEFAULT_CACHE_RULES, CacheRules, Catalog, ModelInfo, Prices
 
 
 @dataclass
@@ -85,16 +85,26 @@ def build_model(entry: dict, providers: dict[str, Provider],
 
     prices: Prices | None = None
     capability: dict[str, float] = {}
+    basis: dict[str, str] = {}
+    strength: dict[str, str] = {}
     ctx: int | None = None
     benchmaxxing = 0.0
     cap_source = "none"
+    evidence: dict = {"source": "none"}
+    stale = True
 
     bench_id = entry.get("bench_id")
     if bench and bench_id:
-        doc = bench.model(bench_id)
+        doc, prov = bench.model_with_provenance(bench_id)
+        evidence = {"bench_id": bench_id, **prov.to_dict()}
+        stale = prov.stale
         if doc:
-            capability = capability_from_model(doc)
+            ev = capability_evidence(doc)
+            capability = {k: round(e.value, 2) for k, e in ev.items()}
+            basis = {k: e.basis for k, e in ev.items()}
+            strength = {k: e.strength for k, e in ev.items()}
             cap_source = "bench" if capability else "none"
+            evidence["release_date"] = doc.get("release_date")
             ctx = context_length(doc)
             offer_sel = entry.get("bench_offer") or {}
             offer = pick_offer(doc, offer_sel.get("platform"), offer_sel.get("provider"))
@@ -105,9 +115,17 @@ def build_model(entry: dict, providers: dict[str, Provider],
                     cache_read=offer.get("cache_read_per_1m"),
                     cache_write=offer.get("cache_write_per_1m"),
                 )
-        score = bench.benchmaxxing(bench_id)
-        if score is not None:
+                evidence["offer"] = {"platform": offer.get("platform"),
+                                     "provider": offer.get("provider")}
+        # Fetched separately from the model document and able to be stale on
+        # its own, so it carries its own provenance and a stale score is not
+        # allowed to silently move a capability that is otherwise current.
+        score, bm_prov = bench.benchmaxxing_with_provenance(bench_id)
+        evidence["benchmaxxing"] = bm_prov.to_dict()
+        if score is not None and not bm_prov.stale:
             benchmaxxing = score
+        elif score is not None:
+            evidence["benchmaxxing_ignored"] = "stale benchmaxxing report; penalty not applied"
 
     if isinstance(entry.get("prices"), dict):
         p = entry["prices"]
@@ -118,8 +136,16 @@ def build_model(entry: dict, providers: dict[str, Provider],
         raise ValueError(f"model {entry.get('name')!r}: no prices (set prices, free, or a bench_id with offers)")
 
     if isinstance(entry.get("capability"), dict):
-        capability = {**capability, **{k: float(v) for k, v in entry["capability"].items()}}
+        # An explicit config number is a deliberate statement by the operator,
+        # so it counts as direct evidence and is never discounted as stale.
+        overrides = {k: float(v) for k, v in entry["capability"].items()}
+        capability = {**capability, **overrides}
+        basis = {**basis, **{k: CONFIG_OVERRIDE for k in overrides}}
+        strength = {**strength, **{k: "direct" for k in overrides}}
         cap_source = "config" if cap_source == "none" else cap_source + "+config"
+        if cap_source == "config":
+            stale = False
+            evidence = {"source": "config", "stale": False}
     if "benchmaxxing" in entry:
         benchmaxxing = float(entry["benchmaxxing"])
 
@@ -137,6 +163,10 @@ def build_model(entry: dict, providers: dict[str, Provider],
         benchmaxxing=benchmaxxing,
         subscription=entry.get("subscription"),
         capability_source=cap_source,
+        capability_basis=basis,
+        capability_strength=strength,
+        evidence_stale=bool(stale and cap_source != "config"),
+        evidence=evidence,
         bench_id=bench_id,
         latency_s=float(entry.get("latency_s", 5.0)),
     )

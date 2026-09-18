@@ -193,6 +193,23 @@ class Policy:
     def choose(self, conv: Conversation, req: TurnRequest, ctx: Context) -> Choice:
         raise NotImplementedError
 
+    def evaluate(self, conv: Conversation, req: TurnRequest, ctx: Context
+                 ) -> list[tuple[ModelInfo, float, float, float]]:
+        """Every candidate this policy would consider, priced.
+
+        Returns ``(model, call_cost, p_success, ranking_value)`` so the router
+        can record what it actually compared without re-deriving it. The
+        default ranks by cost per unit of success; ``ExpectedCostPolicy``
+        overrides it with its own expected-cost value.
+        """
+        d = effective_difficulty(conv, req)
+        out = []
+        for m in candidates(req, ctx, allow_subscription=self.allow_subscription):
+            call = turn_call_cost(m, req, conv.warm_tokens(m, req.now), ctx)
+            p = ctx.success.p(m, req.category, d)
+            out.append((m, call, p, call / max(p, 0.05)))
+        return out
+
     def on_failure(self, conv: Conversation, req: TurnRequest, ctx: Context,
                    failed: str, tried: set[str]) -> Choice | None:
         """Default escalation: the cheapest model that is clearly more capable."""
@@ -361,6 +378,16 @@ class ExpectedCostPolicy(EscalatePolicy):
             follow = turn_call_cost(m, follow_req, follow_req.prompt_tokens, ctx) + (1 - p) * fail
             immediate += (min(self.horizon, req.remaining_turns + 1) - 1) * follow * 0.5
         return immediate, p
+
+    def evaluate(self, conv, req, ctx):
+        floor = self._decayed_floor(conv, req.now)
+        d = req.difficulty + max(0.0, floor - req.difficulty) * req.follow_up
+        pool = candidates(req, ctx, allow_subscription=self.allow_subscription)
+        out = []
+        for m in pool:
+            value, p = self.value(m, conv, req, ctx, d, pool)
+            out.append((m, turn_call_cost(m, req, conv.warm_tokens(m, req.now), ctx), p, value))
+        return out
 
     def choose(self, conv, req, ctx):
         floor = self._decayed_floor(conv, req.now)
