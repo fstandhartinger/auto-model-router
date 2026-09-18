@@ -7,6 +7,37 @@ at the lowest expected cost.
 
 Status: experimental, measured. Full method and numbers: [`EXPERIMENTS.md`](EXPERIMENTS.md).
 
+## Vision
+
+This router is one link in a longer chain, and it is built so the other links can
+be plugged in without changing the routing logic.
+
+1. **Evidence comes from a benchmark API.** Which models and providers exist,
+   how capable each is *per topic*, what a task actually costs there, and what
+   each provider charges for a cache read or write — served by a benchmark API in
+   the [benchmarkheaven.com](https://benchmarkheaven.com) format, cached locally
+   with a TTL, and every number carrying its basis and how strong that basis is
+   ([`auto_router/bench.py`](auto_router/bench.py)). Local measurements override
+   it, because headline scores mis-rank specific models and effort levels.
+2. **[Jev](https://docs.typesafe.ai) classifies the request.** Topic, difficulty,
+   whether it needs tools or a long context, whether it builds on the previous
+   turn, and what a wrong answer would cost. One ~0.6 s call, on a scrubbed and
+   truncated summary of the turn, never the raw prompt.
+3. **Expected cost decides where it goes.** Call cost at the route's real cache
+   state, times the measured chance of success, plus the price of a failure.
+4. **The targets are deliberately heterogeneous.** Free tiers, metered APIs,
+   flat-rate subscriptions through their own official clients — and, as a
+   provider like any other, a **peer-to-peer network of volunteered GPUs**:
+   browsers running a quantised model on WebGPU, reached over an
+   OpenAI-compatible endpoint. Such a network is cheap and slow, which is exactly
+   the shape of route the expected-cost rule is good at placing: it will send an
+   easy turn there and keep a hard one on a strong paid model, because it prices
+   the chance of failure rather than only the call.
+
+Nothing in the router privileges a route by name. A peer-to-peer endpoint enters
+the catalog with a price, a context length, a cache rule and a per-category
+capability basis, and competes on those.
+
 ## Results in short
 
 Eight models on 78 graded tasks, a replay of one week of real coding-agent traffic
