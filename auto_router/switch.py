@@ -440,7 +440,7 @@ def main(argv: list[str] | None = None) -> int:
     if args[:1] == ["decide"]:
         prompt = " ".join(args[1:]) or sys.stdin.read()
         current = os.environ.get("AUTO_ROUTER_SWITCH_MODE", CHEAP)
-        print(json.dumps(asdict(decide(prompt, current, _router_route_job())), indent=2))
+        print(json.dumps(asdict(decide(prompt, current, _lazy(_router_route_job))), indent=2))
         return 0
     start, plan_model, prompt = CHEAP, None, None
     gateway = os.environ.get("AUTO_ROUTER_URL", "http://127.0.0.1:8787")
