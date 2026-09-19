@@ -110,6 +110,10 @@ class Context:
     quota: dict[str, QuotaDecision] = field(default_factory=dict)
     #: subscription name -> list-price reference model name (for shadow pricing)
     subscription_reference: dict[str, str] = field(default_factory=dict)
+    #: where those reference models are looked up; defaults to ``catalog``. A
+    #: reference is a price, not a candidate, so it may be absent from the
+    #: routes on offer.
+    reference_catalog: Catalog | None = None
 
 
 @dataclass
@@ -146,7 +150,7 @@ def _priced(model: ModelInfo, ctx: Context) -> ModelInfo | None:
     if decision is None or not decision.open:
         return None
     ref_name = ctx.subscription_reference.get(model.name)
-    ref = ctx.catalog.get(ref_name) if ref_name else None
+    ref = (ctx.reference_catalog or ctx.catalog).get(ref_name) if ref_name else None
     if ref is None or decision.multiplier == 0:
         return model  # free at the margin
     from .catalog import Prices

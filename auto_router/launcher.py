@@ -234,6 +234,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--json", action="store_true",
                    help="write the decision record as JSON (stdout for --dry-run, else stderr)")
     p.add_argument("--list", action="store_true", help="list the routes that can run a job")
+    p.add_argument("--no-plans", action="store_true",
+                   help="never pick a subscription route (used by the delegate tool, so a "
+                        "plan session hands work only to cheaper routes)")
     p.add_argument("--quiet", action="store_true", help="no summary line on stderr")
     return p
 
@@ -261,7 +264,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.route and lconfig.catalog.get(args.route) is None:
             raise LauncherError(f"no runnable route named {args.route!r}")
         router = Router(lconfig)
-        result = router.route_job(task, steps=args.steps, force=args.route)
+        only = (lambda m: not m.subscription) if args.no_plans else None
+        result = router.route_job(task, steps=args.steps, force=args.route, only=only)
 
         default_clear = {name: list(sub.get("clear_env") or [])
                          for name, sub in (config.subscriptions or {}).items()}

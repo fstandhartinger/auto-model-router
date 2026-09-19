@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import time
+import uuid
 from typing import Any
 
 import httpx
@@ -33,6 +34,7 @@ from .stream_translate import StreamOutcome, translate_stream
 from .translate import (
     TranslationError,
     anthropic_error_sse,
+    anthropic_sse_from_message,
     messages_to_openai,
     openai_response_to_anthropic,
     tool_choice_to_openai,
@@ -162,9 +164,10 @@ async def router_decisions(limit: int = 20) -> dict:
             "data": [d.to_dict() for d in reversed(recent)]}
 
 
-async def _route(messages, system, tools, max_tokens) -> RouteResult:
+async def _route(messages, system, tools, max_tokens, exclude_subscriptions: bool = False) -> RouteResult:
     try:
-        return await asyncio.to_thread(router.route, messages, system, tools, max_tokens)
+        return await asyncio.to_thread(router.route, messages, system, tools, max_tokens, None,
+                                       exclude_subscriptions)
     except NoRouteAvailable as exc:
         # Not a bug and not a 500: the operator's own quota rules closed the
         # last open route. Say which state we are in, so the caller can wait
@@ -476,7 +479,22 @@ async def anthropic_messages(request: Request) -> Any:
         raise HTTPException(400, "messages is required")
     from . import plan_auth
     kind = plan_auth.credential_kind(request.headers)
-    result = await _route(messages, body.get("system"), body.get("tools"), body.get("max_tokens"))
+    from . import switch
+    switch_file = switch.state_path(request.headers.get(switch.SWITCH_HEADER, "").strip())
+    plan_reachable = kind == plan_auth.SUBSCRIPTION
+    result = await _route(messages, body.get("system"), body.get("tools"), body.get("max_tokens"),
+                          exclude_subscriptions=not plan_reachable and switch_file is None)
+    if result.model.subscription == "claude" and not plan_reachable:
+        # A switch-mode session (see switch.py). The hook owns the decision at
+        # the start of a prompt; here the plan can only win as an escalation,
+        # when the cheap route is stuck inside a turn. The plan's login is not
+        # on this request, so the gateway cannot serve it: it ends the turn and
+        # asks the wrapper to resume the conversation in plan mode.
+        if result.turn_start:
+            result = await _route(messages, body.get("system"), body.get("tools"),
+                                  body.get("max_tokens"), exclude_subscriptions=True)
+        else:
+            return switch_to_plan(request, body, result, switch_file)
     if result.model.subscription == "claude":
         return await shim.subscription_passthrough(request, raw, body, result)
     if kind == plan_auth.SUBSCRIPTION and plan_auth.subscription_mode() == "passthrough_only":
@@ -485,6 +503,33 @@ async def anthropic_messages(request: Request) -> Any:
         # what it would have done and changes nothing. See shim.py.
         return await shim.advisory_passthrough(request, raw, result)
     return await proxy_openai_as_anthropic(body, result)
+
+
+def switch_to_plan(request: Request, body: dict, result: RouteResult, path) -> Any:
+    """End a cheap-mode turn and hand the conversation to the plan."""
+    from . import switch
+    reason = result.reason
+    switch.write_state(path, {
+        "session_id": request.headers.get("x-claude-code-session-id"),
+        "prompt": ("Continue with the task. (auto-router moved this conversation to your Claude "
+                   f"plan because the cheap route was stuck: {reason[:200]})"),
+        "target": switch.PLAN, "plan_model": result.model.upstream_id, "reason": reason,
+        "at": time.time(), "by": "gateway"})
+    router.observe(result, ObservedOutcome(
+        model=result.model.name, status="handed_over", http_status=200, latency_ms=0.0,
+        error="switch mode: turn ended so the wrapper can resume it on the plan",
+        cost_basis="not served here: the plan answers after the wrapper resumes the session"))
+    notice = ("auto-router: the cheap route is stuck here, so this conversation continues on "
+              f"your Claude plan in a moment. ({reason[:200]})")
+    message = {"id": f"msg_{uuid.uuid4().hex[:24]}", "type": "message", "role": "assistant",
+               "model": body.get("model") or result.model.name,
+               "content": [{"type": "text", "text": notice}], "stop_reason": "end_turn",
+               "stop_sequence": None, "usage": {"input_tokens": 0, "output_tokens": 0}}
+    headers = {**result.headers, "X-Router-Switch": "plan"}
+    if body.get("stream"):
+        return StreamingResponse(iter(anthropic_sse_from_message(message)),
+                                 media_type="text/event-stream", headers=headers)
+    return JSONResponse(message, headers=headers)
 
 
 async def proxy_openai_as_anthropic(body: dict, result: RouteResult) -> Any:

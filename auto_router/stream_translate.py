@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from typing import AsyncIterator
 
 from .pricing import Usage
-from .translate import STOP_REASON_MAP, TranslationError, _sse
+from .translate import STOP_REASON_MAP, TranslationError, _sse, anthropic_tool_id
 
 
 @dataclass
@@ -118,7 +118,7 @@ async def translate_stream(
             if acc is None:
                 acc = _ToolAccumulator(
                     block_index=next_index,
-                    call_id=call.get("id") or f"toolu_{uuid.uuid4().hex[:24]}",
+                    call_id=anthropic_tool_id(call.get("id")),
                 )
                 next_index += 1
                 tools[oi] = acc

@@ -271,3 +271,47 @@ def test_shim_logging_never_emits_the_token(caplog):
     with caplog.at_level(logging.INFO, logger="auto_router.shim"):
         log.info("headers=%s", redact({"authorization": f"Bearer {FAKE_OAUTH}"}))
     assert "sk-ant" not in caplog.text
+
+
+def test_mid_conversation_system_messages_become_user_context():
+    # Claude Code 2.1.27x sends role "system" inside messages; OpenAI-compatible
+    # hosts reject a system message anywhere but first.
+    from auto_router.translate import messages_to_openai
+    turns = [
+        {"role": "user", "content": [{"type": "text", "text": "hi"}]},
+        {"role": "system", "content": "reminder A"},
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {}}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]},
+        {"role": "system", "content": [{"type": "text", "text": "reminder B"}]},
+    ]
+    out = messages_to_openai(turns, "sys")
+    roles = [m["role"] for m in out]
+    assert roles == ["system", "user", "assistant", "tool", "user"]
+    assert "reminder A" in out[1]["content"] and "hi" in out[1]["content"]
+    assert out[-1]["content"] == "reminder B"
+
+
+def test_tool_ids_from_openai_hosts_are_valid_for_anthropic():
+    # Kimi on one free host returns ids like "functions.Write:0"; Anthropic rejects the
+    # whole conversation on the next plan turn unless they match ^[a-zA-Z0-9_-]+$.
+    import re
+    from auto_router.translate import anthropic_tool_id, openai_response_to_anthropic
+    assert anthropic_tool_id("functions.Write:0") == "functions_Write_0"
+    assert anthropic_tool_id("functions.Write:0") == anthropic_tool_id("functions.Write:0")
+    assert re.fullmatch(r"[a-zA-Z0-9_-]+", anthropic_tool_id(None))
+    data = {"choices": [{"message": {"role": "assistant", "content": None, "tool_calls": [
+        {"id": "functions.Bash:1", "type": "function",
+         "function": {"name": "Bash", "arguments": "{}"}}]}, "finish_reason": "tool_calls"}]}
+    reply = openai_response_to_anthropic(data, "m")
+    ids = [b["id"] for b in reply["content"] if b["type"] == "tool_use"]
+    assert ids == ["functions_Bash_1"]
+
+
+def test_redacted_thinking_is_dropped_like_thinking():
+    from auto_router.translate import messages_to_openai
+    out = messages_to_openai([
+        {"role": "user", "content": "q"},
+        {"role": "assistant", "content": [{"type": "redacted_thinking", "data": "x"},
+                                          {"type": "text", "text": "a"}]},
+        {"role": "user", "content": "q2"}])
+    assert [m["role"] for m in out] == ["user", "assistant", "user"]

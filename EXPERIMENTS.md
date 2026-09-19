@@ -853,6 +853,80 @@ tier, not a new tax on every turn.
 - **Nothing here says the judge improves frontier answers.** It was never asked
   to grade one, and the gate exists precisely to keep it from trying.
 
+## 15. Four ways to combine a plan with the router, run live (19 Sep 2026)
+
+Claude Code 2.1.278, Codex CLI 0.154.0, OpenCode as the free route's client.
+Plan model for the measured runs: Claude Sonnet 5 (to keep plan use small).
+Free route: Kimi K3 on a free host. Every arm is n=1 per task; this measures
+what each mode *does*, not a ranking.
+
+### 15.1 Protocol probes (what breaks, what carries over)
+
+| # | what was tried | result |
+|---|---|---|
+| 1 | Claude Code on its plan login through a local forwarding proxy | works, identical to direct |
+| 2 | same, first turn answered by the free model | **failed**: Claude Code sends `role: "system"` inside `messages`; the host answered `400 System message must be at the beginning`. Fixed in `translate.py` |
+| 3 | free model starts a tool loop, plan continues it mid-loop | **failed**: tool-call id `functions.Write:0` → Anthropic `400 … tool_use.id: String should match pattern`. Fixed (`anthropic_tool_id`) |
+| 4 | after both fixes: free→plan at a turn boundary, free→plan inside a tool loop, plan (with thinking) →free, and back to plan | all work; the plan side recalls what the free side did |
+| 5 | gateway credential (cheap) → `claude -p --resume` with the plan login → back to the gateway | works both ways; context kept |
+| 6 | interactive: `UserPromptSubmit` hook blocks, wrapper stops Claude Code, resumes in the other mode | works; the banner reads "API Usage Billing" before and "Claude Max" after |
+| 7 | Codex with a custom provider on a Responses-API bridge | **failed** (malformed stream / reconnect loop): no Codex cheap mode without a real Responses surface |
+
+Found while wiring switch mode for real, each fixed with a test: `!` is Claude
+Code's shell-mode prefix (overrides are now `~plan`/`~cheap`); a relative
+`AUTO_ROUTER_CONFIG` broke the hook, which runs in the project directory; a
+forced switch bounced straight back because the resumed prompt was routed
+again; a child Claude Code inherits `CLAUDE_CODE_CHILD_SESSION`, which turns
+transcript saving off and with it `--resume`.
+
+### 15.2 Three small tasks, five modes
+
+t1: write `slugify` plus tests. t2: fix two bugs so existing tests pass without
+touching them. t3: a small CLI package plus tests. A hidden check script grades
+each run. Plan use is read from Claude Code's transcripts (responses with
+Anthropic's message-id shape) and priced at list price as an API-equivalent;
+the free route cost $0.
+
+| mode | tasks passed | plan use, API-equivalent $ (t1 / t2 / t3) | wall time s (t1 / t2 / t3) |
+|---|---|---|---|
+| plan only (`claude -p`) | 3/3 | 0.132 / 0.134 / 0.194 | 22 / 17 / 29 |
+| 4. delegate tool, soft hint | 3/3 | 0.143 / 0.140 / 0.189 — never called the tool | 26 / 24 / 41 |
+| 4. delegate tool, "you are the orchestrator" | 3/3 | 0.170 / 0.133 / 0.165 — delegated in t1, t3 | 93 / 23 / 163 |
+| 2. gateway, `route_others` | 3/3 | 0 / 0 / 0 — all 15 turns on the free route | 59 / 87 / 113 |
+| 3. switch mode | 3/3 | 0 / 0 / 0 — the hook kept all three on the cheap side | 52 / 59 / 93 |
+| 1. `route-run` | 3/3 | 0 / 0 / 0 — free route through OpenCode | 102 / 65 / 320 |
+
+Codex on its ChatGPT plan, t2: alone 15,260 tokens, 31 s; with the delegate
+tool 16,269 tokens, 74 s, the fix made by the free route. Both passed.
+
+### 15.3 What a switch costs
+
+The same two-turn conversation (t3, then "review for edge cases and fix them"):
+
+| | plan use, API-equivalent $ | plan cache written | wall s |
+|---|---|---|---|
+| both turns on the plan | 0.247 | 29,516 tokens | 71 |
+| turn 1 cheap, turn 2 switched to the plan | **0.841** | 187,214 tokens | 156 |
+
+After the switch the plan read the whole conversation cold (90,933 tokens,
+nothing cached) and, on its third request, missed the cache again and rewrote
+93,256 tokens; staying on the plan added about 1,000 cached tokens per request.
+The same double write appeared in probe 4. So a switch to the plan in the middle
+of a conversation costs several times what the cheap half saved on these sizes.
+That is why switch mode is sticky and why the decision belongs at the start of a
+conversation.
+
+### 15.4 What these runs do not show
+
+- n=1 per cell, small tasks, one free model. The cheap side's 3/3 says the
+  tasks were easy, not that the free route matches the plan on hard work.
+- The plan's own usage meter could not be sampled around the runs (the usage
+  endpoint answered `rate_limit_error`); plan use is the transcript's token
+  counts at list price.
+- The quota pacing was replaced by a stand-in reader reporting 20 % for the
+  switch and gateway arms: early in a week the real reader projects a few
+  hours' use onto the whole week (5 % after ~3 h → "268 %") and closes the plan.
+
 ## Limits
 
 - Cells hold 4–6 tasks; task difficulty for real traffic is a proxy (calls per turn).

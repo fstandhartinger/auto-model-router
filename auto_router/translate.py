@@ -15,6 +15,7 @@ Three details matter here and differ from most Anthropic-compatible proxies:
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from typing import Any, Iterator
 
@@ -97,6 +98,45 @@ def _coerce_tool_result(content: Any) -> str:
     return json.dumps(content)
 
 
+_TOOL_ID_BAD = re.compile(r"[^a-zA-Z0-9_-]")
+
+
+def anthropic_tool_id(raw: Any, prefix: str = "toolu_") -> str:
+    """A tool-call id Anthropic accepts (``^[a-zA-Z0-9_-]+$``).
+
+    Some OpenAI-compatible hosts return ids like ``functions.Write:0``. Claude
+    Code stores them in its transcript, and the next turn that reaches
+    Anthropic - a plan turn after a cheap one - fails with ``400`` on the
+    whole conversation. The mapping is deterministic, so the id Claude Code
+    echoes back in ``tool_result`` still pairs with its call.
+    """
+    if not raw:
+        return f"{prefix}{uuid.uuid4().hex[:24]}"
+    return _TOOL_ID_BAD.sub("_", str(raw))
+
+
+def _system_message_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        return "\n".join(b.get("text", "") for b in content
+                         if isinstance(b, dict) and b.get("type") == "text").strip()
+    return ""
+
+
+def _append_user_text(out: list[dict], text: str) -> None:
+    """Add ``text`` as user-side context, merged into a trailing user message."""
+    if not text:
+        return
+    last = out[-1] if out else None
+    if last and last.get("role") == "user" and isinstance(last.get("content"), str):
+        last["content"] = f"{last['content']}\n\n{text}"
+    elif last and last.get("role") == "user" and isinstance(last.get("content"), list):
+        last["content"].append({"type": "text", "text": text})
+    else:
+        out.append({"role": "user", "content": text})
+
+
 def messages_to_openai(messages: list[dict], system: Any = None) -> list[dict]:
     out: list[dict] = []
     system_text = extract_system_text(system)
@@ -107,6 +147,13 @@ def messages_to_openai(messages: list[dict], system: Any = None) -> list[dict]:
         role = message.get("role")
         content = message.get("content")
 
+        if role == "system":
+            # Claude Code (2.1.27x) sends mid-conversation system messages
+            # inside ``messages``. Most OpenAI-compatible hosts reject a system
+            # message anywhere but first ("System message must be at the
+            # beginning"), so it travels as user-side context instead.
+            _append_user_text(out, _system_message_text(content))
+            continue
         if isinstance(content, str):
             out.append({"role": role, "content": content})
             continue
@@ -124,7 +171,7 @@ def messages_to_openai(messages: list[dict], system: Any = None) -> list[dict]:
             if btype == "text":
                 if block.get("text"):
                     parts.append({"type": "text", "text": block["text"]})
-            elif btype == "thinking":
+            elif btype in ("thinking", "redacted_thinking"):
                 # Thinking blocks have no OpenAI representation. They are
                 # replayed context, not instructions, so dropping them is safe
                 # and is what every Anthropic-compatible proxy does.
@@ -213,7 +260,7 @@ def openai_response_to_anthropic(data: dict, model_name: str) -> dict:
             args = {}
         blocks.append({
             "type": "tool_use",
-            "id": call.get("id") or f"toolu_{uuid.uuid4().hex[:24]}",
+            "id": anthropic_tool_id(call.get("id")),
             "name": fn.get("name") or "",
             "input": args,
         })

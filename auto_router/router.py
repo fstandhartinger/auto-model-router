@@ -17,7 +17,7 @@ from typing import Any, Callable
 
 from . import jev
 from .cache_index import CalibratedEstimator, estimate_tokens, prefix_hashes
-from .catalog import CATEGORIES, ModelInfo
+from .catalog import CATEGORIES, Catalog, ModelInfo
 from .config import RouterConfig
 from .decision import (
     CacheDecision,
@@ -224,7 +224,8 @@ class Router:
         for entry in self.config.raw.get("models") or []:
             if entry.get("subscription") and entry.get("list_price_model"):
                 refs[entry["name"]] = entry["list_price_model"]
-        return Context(self.config.catalog, self.success, self.quota(), refs)
+        return Context(self.config.catalog, self.success, self.quota(), refs,
+                       reference_catalog=self.config.catalog)
 
     # -- routing -------------------------------------------------------------
     def conversation_id(self, messages: list[dict], system: Any, tools: Any) -> str:
@@ -232,7 +233,16 @@ class Router:
         return hashes[0][:16] if hashes else "anonymous"
 
     def route(self, messages: list[dict], system: Any = None, tools: Any = None,
-              max_tokens: int | None = None, now: float | None = None) -> RouteResult:
+              max_tokens: int | None = None, now: float | None = None,
+              exclude_subscriptions: bool = False) -> RouteResult:
+        """Route one turn.
+
+        ``exclude_subscriptions`` drops every plan route from the candidates.
+        The gateway sets it for traffic that does not carry the plan's own
+        login: a plan can only serve a request its official client
+        authenticated itself, so offering it to anything else would be a
+        decision nobody can carry out.
+        """
         now = now or time.time()
         cid = self.conversation_id(messages, system, tools)
         with self._lock:
@@ -240,6 +250,8 @@ class Router:
         prompt_tokens = self.estimator.estimate(estimate_tokens(messages, system, tools))
         continuation = is_tool_continuation(messages)
         ctx = self.context()
+        if exclude_subscriptions:
+            ctx = replace(ctx, catalog=Catalog([m for m in ctx.catalog.all() if not m.subscription]))
 
         if continuation and conv.current and conv.current in ctx.catalog:
             errors = recent_tool_errors(messages)
@@ -267,7 +279,8 @@ class Router:
                             prefix=self.conversation_id(messages, system, tools))
 
     def route_job(self, task: str, *, steps: int = 12, output_per_step: int = 1200,
-                  force: str | None = None, now: float | None = None) -> RouteResult:
+                  force: str | None = None, now: float | None = None,
+                  only: Callable[[ModelInfo], bool] | None = None) -> RouteResult:
         """Route a whole job rather than one turn: which *tool* should run this.
 
         The difference from :meth:`route` is the shape of the request, not the
@@ -295,6 +308,9 @@ class Router:
         # shell, a file editor and a reader.
         tools = [{"name": "shell"}, {"name": "edit"}, {"name": "read"}]
         ctx = self.context()
+        if only is not None:
+            # ``only`` narrows the candidates; price references stay reachable
+            ctx = replace(ctx, catalog=Catalog([m for m in ctx.catalog.all() if only(m)]))
         cid = self.conversation_id(messages, None, tools)
         conv = Conversation()          # a launched job starts cold, always
         prompt_tokens = self.estimator.estimate(estimate_tokens(messages, None, tools))

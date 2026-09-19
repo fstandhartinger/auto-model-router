@@ -335,13 +335,27 @@ Responses carry `X-Router-Model`, `X-Router-Category`, `X-Router-Difficulty`,
 (0–1 evidence confidence), `X-Router-Cache` and, when one applies,
 `X-Router-Safe-Fallback`.
 
-## Two ways to use a flat-rate plan
+## Four ways to use a flat-rate plan
 
 A coding subscription is the cheapest strong model most people have, and it is
 also the one a router cannot simply call: it is sold for use through its own
-client. There are two honest ways to put a router near it, and this repository
-implements both. [`TERMS.md`](TERMS.md) quotes the vendor documentation behind
-each, including the parts that say no.
+client. There are four honest ways to put a router next to it, and this
+repository implements all four. [`TERMS.md`](TERMS.md) quotes the vendor
+documentation behind each, including the parts that say no.
+
+| | how it works | plan's login touches the router? | Anthropic's position | pick it when |
+|---|---|---|---|---|
+| **1. `route-run`** | decide per job which official CLI to start | no | ordinary use of the client | whole jobs, scripts, agents |
+| **2. gateway** | `ANTHROPIC_BASE_URL` → router; plan turns forwarded unchanged, others answered by cheaper models (`route_others`) | yes, in flight (forwarded, never stored) | forwarding documented; other models "not supported" | your own machine, if you accept maintaining it |
+| **3. switch mode** | one conversation moves between *cheap mode* (router, its own credential) and *plan mode* (Claude Code direct to Anthropic) | **no** | both modes documented | **interactive Claude Code — the recommended way** |
+| **4. delegate tool** | the plan model stays in charge; an MCP tool hands sub-tasks to cheap models | no | ordinary MCP use | long plan sessions with big, separable sub-tasks; also Codex |
+
+Measured on 19 Sep 2026 on three small coding tasks (details in
+[`EXPERIMENTS.md`](EXPERIMENTS.md) §14): every mode finished every task; the
+cheap-side modes spent **no** plan quota and took 2–5× longer; the delegate tool
+did not reduce plan use on small tasks; and **switching one conversation to the
+plan half-way cost 3.4× the plan use of simply having stayed on the plan**,
+because the plan reads the whole conversation cold. Decide early, switch rarely.
 
 ### 1. Route the job, not the request (`route-run`)
 
@@ -417,6 +431,17 @@ What the router does with a subscription-authenticated turn is a setting:
 | `passthrough_only` (default) | Forward every turn unchanged and record the decision the policy *would* have made as `not_taken`. Claude Code behaves exactly as it does with no gateway, and the ledger still answers "how much of this week's plan use could have gone somewhere cheaper". |
 | `route_others` | Additionally let the policy serve a turn from another provider on **your own** API key. It works — but Anthropic "doesn't support routing Claude Code to non-Claude models through any gateway", so you maintain it yourself. |
 
+Use `route_others` only for **your own login on your own machine**: in this mode
+the plan's token passes through the router on every request (forwarded, never
+read or stored), which is the configuration closest to Anthropic's rule that
+developers "may not collect, store, or intermediate Claude.ai credentials or
+session tokens". Switch mode (3) gets the same result without that. "Not
+supported" is also not an empty word: a real session on 19 Sep 2026 broke twice
+until the translation learned that Claude Code now sends `role: "system"`
+messages mid-conversation, and that a tool-call id such as `functions.Write:0`
+from another model makes every later plan turn fail with a `400`. Both are
+fixed; the next such change arrives with a Claude Code release.
+
 Three refusals are built in, and they are code rather than advice:
 
 - A credential that identifies as a claude.ai login is forwarded to
@@ -431,6 +456,65 @@ Three refusals are built in, and they are code rather than advice:
 Nothing is logged that could identify a credential: `redact()` covers every
 header dict that reaches a log line, and the decision records carry no prompt
 text and no token.
+
+### 3. Switch mode: cheap by default, your plan when it matters
+
+```bash
+uvicorn auto_router.server:app --host 127.0.0.1 --port 8787 &   # the gateway
+export AUTO_ROUTER_CONFIG=router.local.yaml   # cheap routes + a `subscription: claude` route
+python -m auto_router.switch                  # instead of `claude`; any claude flags work
+python -m auto_router.switch -p "fix the flaky test"   # headless works the same way
+```
+
+Claude Code starts in **cheap mode**: `ANTHROPIC_BASE_URL` points at the router
+and a gateway credential is set, so "the credential replaces the subscription
+login for that session, and the subscription's usage limits don't apply". The
+router answers each request from free or metered routes on your own keys.
+
+A `UserPromptSubmit` hook asks the router, before any model sees a prompt,
+whether it belongs on the plan. If it does, the hook blocks the prompt (which
+"erases it from context"), the wrapper stops Claude Code and starts it again in
+**plan mode** — no base URL, no credential variable, signed in with your own
+claude.ai login, talking to Anthropic directly — with
+`--resume <session> "<your prompt>"`. The conversation continues where it was,
+including everything the cheap side did. The router is not in the plan's path
+at all, so it never sees the plan's login.
+
+- **Escalation from inside a turn.** When the cheap route gets stuck (by
+  default three failing tool results in a row) and the policy's next rung is
+  the plan, the gateway ends the turn with a one-line notice and hands the
+  conversation over the same way. The wrapper tags cheap-mode requests with a
+  random token (`ANTHROPIC_CUSTOM_HEADERS`) so the gateway knows which session
+  to hand over; without that header a gateway credential can never reach a plan
+  route.
+- **Overrides.** Start a prompt with `~plan` or `~cheap` to force the mode.
+  (`!` would be Claude Code's own shell mode.)
+- **Switching is not free.** The side you switch to reads the whole
+  conversation without a warm cache. The hook therefore leaves the plan only
+  for a clearly easy prompt (`AUTO_ROUTER_SWITCH_STICKY`, default 0.35), and a
+  tie between the plan and a free route goes to the free route.
+- **Failing open.** If the router is down or misconfigured, the hook lets the
+  prompt through in the current mode; if the gateway is down, the wrapper
+  starts on the plan and says so.
+- Claude Code only. Codex has no cheap mode yet: it needs an OpenAI Responses
+  API endpoint, which this router does not implement.
+
+### 4. The delegate tool: the plan orchestrates, cheap models do the legwork
+
+```bash
+claude mcp add auto-router-delegate -- env AUTO_ROUTER_CONFIG=$PWD/router.local.yaml python -m auto_router.delegate
+codex mcp add auto-router-delegate -- env AUTO_ROUTER_CONFIG=$PWD/router.local.yaml python -m auto_router.delegate
+```
+
+The official client runs unchanged on its plan. It gains one tool,
+`delegate(task, cwd)`, which runs the job launcher restricted to non-plan routes
+(`--no-plans`): the cheapest route expected to do the job starts its own agent
+CLI in `cwd` and returns what it printed. The plan model then checks the result.
+Codex needs `default_tools_approval_mode = "approve"` on the server to call it in
+`codex exec`. Measured: with a soft hint the model never delegated a small
+task; with an explicit "you are the orchestrator" instruction it did, and plan
+use stayed about the same — the tool pays off only when the delegated part is
+large compared with Claude Code's own fixed prompt.
 
 ### Install it with a coding agent
 
@@ -507,6 +591,8 @@ that gap for the next run and cannot close it retroactively for an old one.
 | `auto_router/server.py`, `shim.py` | HTTP API and Claude Code passthrough |
 | `auto_router/plan_auth.py` | which credential is on a request, and where it may go |
 | `auto_router/launcher.py`, `scripts/route-run` | job-level launcher: pick the tool, start its own client |
+| `auto_router/switch.py` | switch mode: one Claude Code conversation between cheap mode and plan mode |
+| `auto_router/delegate.py` | MCP `delegate` tool: a plan session hands sub-tasks to cheap routes |
 | `auto_router/translate.py`, `stream_translate.py` | Anthropic ↔ OpenAI translation |
 | `experiments/sandbox.py` | Bubblewrap isolation for executing model-produced code |
 | `experiments/heldout.py` | pre-registered held-out evaluation across six categories |
