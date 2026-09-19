@@ -112,7 +112,37 @@ def plan_digest() -> str:
         json.dumps(ANALYSIS_PLAN, sort_keys=True).encode()).hexdigest()
 
 
-def preregister(out_dir: Path, seed: int = 20260918) -> dict:
+def _identity_fields(config_path: Path) -> dict:
+    """Freeze what the *routing arm* actually is, not just what it is asked.
+
+    Hashing the task list and the experiment files leaves the thing under test
+    unhashed: the arm labelled "router" is whatever policy the config resolves
+    to over whatever catalog the config resolves to, and both can move without
+    a single registered digest changing. The supplement registration learned
+    that from an independent review; this one reuses the same helpers rather
+    than growing a second, subtly different copy of them.
+    """
+    from experiments import supplement                 # lazy: supplement imports this module
+
+    identity = supplement.policy_identity(supplement.load_frozen_config(config_path))
+    return {
+        "config_path": str(Path(config_path).resolve()),
+        "config_sha256": digest(Path(config_path)),
+        "config_sha256_note": ("the digest of the secret-bearing runtime file itself. It is "
+                               "recorded, not verifiable by a reader who does not hold that "
+                               "file; the credential-free projection beside it is what a reader "
+                               "can check."),
+        "policy_identity": identity,
+        "policy_identity_sha256": identity["sha256"],
+        "product_sha256": supplement._product_digests(),
+        "repo_git_sha": supplement._repo_git_sha(),
+        "repo_git_sha_note": ("the checkout at registration time. Recorded, not enforced: "
+                              "committing this run necessarily changes it."),
+    }
+
+
+def preregister(out_dir: Path, seed: int = 20260918, note: str | None = None,
+                config_path: str | Path | None = None) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
     tasks = build_tasks(random.Random(seed))
     task_file = out_dir / "tasks.jsonl"
@@ -134,12 +164,14 @@ def preregister(out_dir: Path, seed: int = 20260918) -> dict:
         "grader_by_category": {c: graders.GRADER_KIND[
             next(t["grader"] for t in tasks if t["category"] == c)] for c in counts},
         "task_ids": [t["id"] for t in tasks],
+        **(_identity_fields(Path(config_path)) if config_path else {}),
         "analysis_plan": ANALYSIS_PLAN,
         "note": ("Written before any model was called. The runner and the report both verify "
                  "these digests. Note the limit of a self-certifying file: someone with write "
                  "access can change a task and update the digest here in the same edit. The "
                  "external anchor is the copy of these digests in the run's evidence file and "
-                 "in the git commit message, which are written once and not rewritten."),
+                 "in the git commit message, which are written once and not rewritten."
+                 + ("\n\n" + note if note else "")),
     }
     (out_dir / "preregistration.json").write_text(json.dumps(record, indent=1))
     return record
@@ -374,6 +406,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("command",
                         choices=["preregister", "verify", "run", "report", "sandbox", "amend"])
     parser.add_argument("--reason", help="why the harness is being amended (for `amend`)")
+    parser.add_argument("--seed", type=int, default=20260918,
+                        help="seed that fixes the task ORDER (never the task bodies)")
+    parser.add_argument("--note", help="appended to the registration's note; use it to say what "
+                                       "an earlier registration this one supersedes, and what it "
+                                       "does not")
     parser.add_argument("--dir", type=Path, default=DEFAULT_DIR)
     parser.add_argument("--config", type=Path, help="router config for a live run")
     parser.add_argument("--budget", type=float, default=0.0, help="hard USD cap for a live run")
@@ -390,7 +427,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "preregister":
-        record = preregister(args.dir)
+        record = preregister(args.dir, seed=args.seed, note=args.note,
+                             config_path=args.config)
         print(json.dumps({k: v for k, v in record.items() if k != "task_ids"}, indent=1))
         return 0
     if args.command == "verify":

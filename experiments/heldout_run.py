@@ -123,6 +123,40 @@ def control_model(router: Router, name: str | None = None) -> ModelInfo:
     return max(pool, key=lambda m: m.cap("general"))
 
 
+def _assert_registered_policy(prereg: dict, config, router) -> None:
+    """Refuse to run when the routing arm is no longer the one that was registered.
+
+    A registration that froze only the tasks and the experiment code leaves the
+    arm under test free to move: a route gaining capability, losing its price
+    or going stale changes what "the router" means without changing a single
+    registered digest. Registrations written before this check exist carry no
+    ``policy_identity``; those run as before and say so.
+    """
+    identity = prereg.get("policy_identity")
+    if not identity:
+        print("! this registration froze no policy/catalog identity; the routing arm is "
+              "not pinned by it", file=sys.stderr)
+        return
+    from experiments import supplement
+
+    current = supplement.policy_identity(config)
+    if current["sha256"] != identity["sha256"]:
+        registered = {r["name"]: r for r in identity.get("catalog") or []}
+        now = {r["name"]: r for r in current.get("catalog") or []}
+        moved = sorted(set(registered) ^ set(now)) or sorted(
+            name for name in registered if registered[name] != now.get(name))
+        raise SystemExit(
+            "the policy/catalog identity has moved since registration\n"
+            f"  registered: {identity['sha256'][:16]} (policy {identity['policy_name']})\n"
+            f"  now:        {current['sha256'][:16]} (policy {current['policy_name']})\n"
+            f"  differs at: {', '.join(moved) or 'the policy settings'}\n"
+            "Re-register the run deliberately; this is the arm under test, not the harness "
+            "around it, so it is not something an amendment can absorb.")
+    if router.policy.name != identity["policy_name"]:
+        raise SystemExit(f"policy drift: registered {identity['policy_name']}, "
+                         f"resolved {router.policy.name}")
+
+
 def run_live(args) -> int:
     out_dir: Path = args.dir
     prereg = load_preregistration(out_dir)
@@ -143,6 +177,7 @@ def run_live(args) -> int:
 
     config = load_config(args.config)
     router = Router(config)
+    _assert_registered_policy(prereg, config, router)
     control = control_model(router, getattr(args, "control", None))
     client = Client(config, out_dir / "calls.jsonl", budget_usd=args.budget)
     client.router_catalog = {m.name: m for m in config.catalog.all()}
