@@ -961,6 +961,49 @@ That figure is a harness artifact. The run directory carries `READ-FIRST-harness
 and the corrected pooled count is **9 valid pairs**. The rows were not retried. The next
 run needs a new registration and a credential-presence check before its first call.
 
+## 17. The design floor, second supplement: credential-gated (19 Sep 2026)
+
+A third registration, `runs/design-supplement2-20260919T1450Z`, adds two new compact design
+tasks (`ds3-design-easy-opening-hours`, `ds3-design-easy-recipe-card`). It uses the same two
+arms, the same 12,000-token budget and the same grader. Every graded rule is demanded
+verbatim by its prompt, and `tests/test_design_supplement2.py` enforces that. Both earlier
+runs stay immutable, and this registration pins every file of both by sha256.
+
+What is new is a **credential preflight** (`experiments/design_supplement2.py`). Before a
+client exists, the runner checks in its own process that the key variable of every
+provider the catalog can route to is set, including the control's. It records one boolean
+per variable and never a value. If any variable is missing it writes a refusal record and
+exits, with no HTTP request and no ledger row. The same check is also a standalone command
+(`preflight`). The registered exclusion rule now also counts a call rejected for its
+credential with no tokens (HTTP 401/403) as a **harness failure**: it is excluded, never
+treated as a quality outcome, and the run stops at that point. The combined report applies
+that rule to both supplements, so the first supplement contributes 0 valid pairs.
+
+```
+python experiments/design_supplement2.py preflight --runs runs --config my.local.yaml
+python experiments/design_supplement2.py preregister --dir runs/design-supplement2-<ts> --runs runs --config my.local.yaml
+python experiments/design_supplement2.py verify|run --dir ... --runs runs --config my.local.yaml
+python experiments/design_supplement2.py readback|report --dir ... --runs runs
+```
+
+**Result.** The preflight passed. The four rows ran once each, in order, with no retries.
+Router (kimi-k3, free) passed both tasks, and gpt-5.6-sol passed both. Spend was $0.0213
+billed ($0.0106 list), against a $0.75 cap.
+
+| design | valid pairs | router | control-metered | discordant r/c | sign p |
+|---|---:|---|---|---|---:|
+| extended run | 9 | 7/9 | 6/9 | 1/0 | 1.000 |
+| first supplement (credential failure) | 0 | – | – | – | – |
+| second supplement | 2 | 2/2 | 2/2 | 0/0 | – |
+| **pooled** | **11** | 9/11 | 8/11 | 1/0 | 1.000 |
+
+The floor of ten valid design pairs is now met. **No difference is demonstrated**: the
+sign test gives p = 1.0, and the paired interval is −0.39 to +0.41. This is not
+equivalence, because no margin was registered. Without the two historical pairs decided by
+a rule their prompt never demanded, both arms stand at 8/9. With truncation counted as
+failure, the router has 9/16 and the control 11/16. Both supplements are adaptive
+additions made after the shortfall was known.
+
 ## Limits
 
 - Cells hold 4–6 tasks; task difficulty for real traffic is a proxy (calls per turn).
