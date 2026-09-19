@@ -927,6 +927,40 @@ conversation.
   switch and gateway arms: early in a week the real reader projects a few
   hours' use onto the whole week (5 % after ~3 h → "268 %") and closes the plan.
 
+## 16. The design floor: a two-task supplement, and a missing credential (19 Sep 2026)
+
+The extended held-out run (`runs/heldout-extended-20260919T062948Z`, 70 tasks, router
+vs metered gpt-5.6-sol) reached ten valid pairs in every category except design, which
+has **nine**. Five router design answers hit the 12,000-token budget. That run is not
+touched again.
+
+`experiments/design_supplement.py` registers a separate **supplement** that replaces
+nothing. It adds two new compact design tasks (`experiments/tasks_design_supplement.py`)
+and keeps the same arms, the same output budget and the same grader. Every rule the
+grader checks is demanded verbatim by its prompt, and a test enforces it. The two
+historical design tasks that graded something their prompt never asked for are the
+reason. The registration pins the historical run's ten files by sha256, and the runner
+refuses to call a model if one of them changes. Four calls run in a fixed order, with no
+retries and a fail-closed $0.75 cap.
+
+```
+python experiments/design_supplement.py preregister --dir runs/design-supplement-<ts> \
+    --historical runs/heldout-extended-20260919T062948Z --config my.local.yaml
+python experiments/design_supplement.py verify   --dir ... --historical ... --config my.local.yaml
+python experiments/design_supplement.py run      --dir ... --historical ... --config my.local.yaml
+python experiments/design_supplement.py readback --dir ... --historical ...
+python experiments/design_supplement.py report   --dir ... --historical ...
+```
+
+**Result: the floor is still not met.** Both router answers finished (kimi-k3, 634 and
+3,922 output tokens) and met every rule. Both control calls were rejected with HTTP 401
+before any model ran: the provider's key variable was absent from the runner's
+environment. Those calls used 0 tokens and cost $0. The registered rule counts a failed
+call as the route's failure, so the registered report prints 11 pairs and "floor met".
+That figure is a harness artifact. The run directory carries `READ-FIRST-harness-failure.md`,
+and the corrected pooled count is **9 valid pairs**. The rows were not retried. The next
+run needs a new registration and a credential-presence check before its first call.
+
 ## Limits
 
 - Cells hold 4–6 tasks; task difficulty for real traffic is a proxy (calls per turn).
