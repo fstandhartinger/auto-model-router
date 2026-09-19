@@ -180,6 +180,11 @@ class RouteSelection:
     evidence_confidence: float = 1.0
     safe_fallback: str | None = None
     turn_start: bool = True
+    #: Set only when observed length stops on comparable requests met the
+    #: evidence rule for the policy's choice (``outcome_memory.py``): the
+    #: flagged route, the counts behind it, and whether a fallback was taken.
+    #: Counts and route names only; it is a decision input, not an estimate.
+    truncation_memory: dict | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -192,6 +197,7 @@ class RouteSelection:
             "evidence_confidence": _r(self.evidence_confidence, 3),
             "safe_fallback": self.safe_fallback,
             "turn_start": self.turn_start,
+            "truncation_memory": dict(self.truncation_memory) if self.truncation_memory else None,
         }
 
 

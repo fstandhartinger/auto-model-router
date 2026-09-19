@@ -206,14 +206,36 @@ Three limits are deliberate:
   "it reads as cut off" is an inference this router will not make, and acting
   on it would mean reading content the decision record deliberately excludes
   ([`auto_router/truncation.py`](auto_router/truncation.py)).
-- **Nothing is written back into capability.** The observation is recorded and
-  goes no further; no score is invented from it.
+- **Nothing is written back into capability.** No score or success estimate is
+  invented from the observation; it only reaches the next *selection*, below.
 - **A stream is recorded, never retried.** Its bytes are already on the wire.
   The `/v1/messages` surface has no attempt loop, so it records too.
 
 The tokens a truncated attempt spent were really billed, so it is committed and
 metered like any other call; `total_requests` therefore counts attempts, not
 turns, on a turn that truncated.
+
+**Repeated truncation changes the next comparable request.** The retry above
+fixes one turn; without memory the next similar request would go straight back
+to the route that just ran out of budget. The router therefore keeps a small
+in-process memory of *observed* statuses
+([`auto_router/outcome_memory.py`](auto_router/outcome_memory.py)): per route
+and per *comparable request* - same category, same output-budget bucket
+(`<=1024`, `<=4096`, `<=16384`, `<=65536`, larger, or no `max_tokens`). At the
+start of a turn, after the policy has chosen, the choice is replaced only when:
+
+- that route has at least **2** provider-flagged length stops for this key, and
+  they are at least **50 %** of its last **8** observed `ok`/`truncated`
+  outcomes within **24 h** (`policy.truncation_memory`: `min_truncations`,
+  `min_rate`, `window`, `ttl_s`, `enabled`); and
+- a usable route exists that is not itself flagged. It is the policy's own best
+  remaining route by expected cost. With none, the policy's choice stands.
+
+The decision record says which happened in `selection.truncation_memory`
+(route, key, counts, basis, fallback, applied) - counts and route names only.
+Errors, `not_taken` records and launched jobs are not counted; a tool loop feeds
+the memory but never switches mid-loop; the memory starts empty, so a fresh
+router routes exactly as before. It is not persisted across restarts.
 
 ## Four things the router never mixes up
 

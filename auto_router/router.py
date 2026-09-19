@@ -30,6 +30,7 @@ from .decision import (
 )
 from .economics import SuccessModel, turn_cost
 from .ledger import RoutingLedger
+from .outcome_memory import AvoidanceRule, OutcomeKey, OutcomeMemory, budget_bucket
 from .policies import (POLICIES, Context, Conversation, ExpectedCostPolicy, Policy, TurnRequest,
                        turn_call_cost)
 from .quota import (PacingRule, QuotaDecision, decide as quota_decide, from_budget_file,
@@ -133,6 +134,10 @@ class RouteResult:
     tried: set[str] = field(default_factory=set)
     #: Full separated decision record. See decision.py.
     explanation: RoutingExplanation | None = None
+    #: Which requests this one is comparable to, for the observed-outcome
+    #: memory. ``None`` for anything whose outcome says nothing about whether
+    #: a route finishes (a launched job). See ``outcome_memory.py``.
+    outcome_key: OutcomeKey | None = None
 
     @property
     def headers(self) -> dict[str, str]:
@@ -194,6 +199,9 @@ class Router:
         self.decisions: deque[RoutingExplanation] = deque(
             maxlen=int((config.policy or {}).get("decision_history", 200)))
         self.ledger = ledger or RoutingLedger.from_env()
+        #: Observed length stops per route and comparable request, used to
+        #: route around a route that repeatedly fails to finish.
+        self.outcomes = OutcomeMemory(AvoidanceRule.from_config(config.policy or {}))
 
     # -- quota ---------------------------------------------------------------
     def _read_quota(self) -> dict[str, QuotaDecision]:
@@ -257,16 +265,19 @@ class Router:
             errors = recent_tool_errors(messages)
             base = TurnRequest(category="agentic", difficulty=conv.floor, prompt_tokens=prompt_tokens,
                                output_tokens=max_tokens or 2000, now=now, needs_tools=True)
+            key = OutcomeKey(base.category, budget_bucket(max_tokens))
             if errors >= self.escalate_after_tool_errors:
                 retry = self.policy.on_failure(conv, base, ctx, conv.current, {conv.current})
                 if retry:
                     reason = f"{errors} failing tool results in a row: {retry.reason}"
-                    return self._result(ctx, conv, cid, ctx.catalog[retry.model], reason, base,
-                                        None, now, 0.0, turn_start=False,
-                                        switched_from=conv.current)
-            return self._result(ctx, conv, cid, ctx.catalog[conv.current],
-                                "inside a tool loop: stay on the turn's model", base, None, now,
-                                0.0, turn_start=False)
+                    return self._keyed(self._result(ctx, conv, cid, ctx.catalog[retry.model], reason,
+                                                     base, None, now, 0.0, turn_start=False,
+                                                     switched_from=conv.current), key)
+            # Inside a tool loop the turn's model stays put - switching mid-loop
+            # throws the cache away - so the memory is only fed here, not consulted.
+            return self._keyed(self._result(ctx, conv, cid, ctx.catalog[conv.current],
+                                            "inside a tool loop: stay on the turn's model", base,
+                                            None, now, 0.0, turn_start=False), key)
 
         text = last_user_text(messages)
         started = time.perf_counter()
@@ -274,9 +285,63 @@ class Router:
         cls_ms = (time.perf_counter() - started) * 1000
         req = self._turn_request(cls, prompt_tokens, max_tokens, now, bool(tools), messages)
         choice = self.policy.choose(conv, req, ctx)
-        return self._result(ctx, conv, cid, ctx.catalog[choice.model], choice.reason, req, cls, now,
-                            cls_ms, turn_start=True, switched_from=conv.current,
-                            prefix=self.conversation_id(messages, system, tools))
+        key = OutcomeKey(req.category, budget_bucket(max_tokens))
+        model, reason, memory = self._avoid_repeated_truncation(
+            conv, req, ctx, key, ctx.catalog[choice.model], choice.reason)
+        result = self._result(ctx, conv, cid, model, reason, req, cls, now,
+                              cls_ms, turn_start=True, switched_from=conv.current,
+                              prefix=self.conversation_id(messages, system, tools))
+        if memory is not None and result.explanation is not None:
+            note = memory.pop("note")
+            result.explanation.selection = replace(result.explanation.selection,
+                                                   truncation_memory=memory)
+            result.explanation.notes.append(note)
+        return self._keyed(result, key)
+
+    @staticmethod
+    def _keyed(result: RouteResult, key: OutcomeKey | None) -> RouteResult:
+        result.outcome_key = key
+        return result
+
+    def _avoid_repeated_truncation(self, conv: Conversation, req: TurnRequest, ctx: Context,
+                                   key: OutcomeKey, chosen: ModelInfo, reason: str
+                                   ) -> tuple[ModelInfo, str, dict | None]:
+        """Route around a route observed to run out of budget on comparable requests.
+
+        Applied after the policy has chosen, so the policy, its estimate and
+        every capability score stay exactly as they were: this only ever acts
+        on *observed* outcomes, and only when ``OutcomeMemory`` finds they meet
+        the configured evidence rule. The fallback is the policy's own best
+        remaining route by expected cost among routes that are not flagged
+        themselves; with no such route the choice stands and the record says
+        so. Returns ``(model, reason, record-or-None)``.
+        """
+        record = self.outcomes.should_avoid(chosen.name, key, req.now)
+        if record is None:
+            return chosen, reason, None
+        flagged = {chosen.name}
+        usable = []
+        for m, _call, _p, value in self.policy.evaluate(conv, req, ctx):
+            if m.name == chosen.name or not math.isfinite(value):
+                continue
+            if self.outcomes.should_avoid(m.name, key, req.now) is not None:
+                flagged.add(m.name)
+                continue
+            usable.append((value, m.name, m))
+        memory = {"key": key.label(), "route": chosen.name, "basis": record.basis(),
+                  "observed": record.observed, "truncated": record.truncated,
+                  "flagged_routes": sorted(flagged)}
+        if not usable:
+            memory.update(applied=False, fallback=None,
+                          note=(f"{chosen.name} repeatedly ran out of output budget on "
+                                f"{key.label()}, but no usable unflagged route exists; "
+                                f"the policy's choice stands."))
+            return chosen, reason, memory
+        value, _name, fallback = min(usable, key=lambda t: (t[0], t[1]))
+        memory.update(applied=True, fallback=fallback.name,
+                      note=(f"Avoided {chosen.name} on observed evidence: {record.basis()}."))
+        return fallback, (f"avoid {chosen.name}: repeated observed length stops on {key.label()}; "
+                          f"next usable route by expected cost (${value:.4f})"), memory
 
     def route_job(self, task: str, *, steps: int = 12, output_per_step: int = 1200,
                   force: str | None = None, now: float | None = None,
@@ -358,7 +423,13 @@ class Router:
         return result
 
     def observe(self, result: RouteResult, outcome: ObservedOutcome) -> None:
-        """Attach what actually happened. Estimates are never overwritten by it."""
+        """Attach what actually happened. Estimates are never overwritten by it.
+
+        The status - and only the status - also feeds the outcome memory, so a
+        later comparable request can see that this route did not finish.
+        """
+        self.outcomes.record(outcome.model, result.outcome_key, outcome.status,
+                             result.started_at)
         if result.explanation is None:
             return
         result.explanation.observed = outcome
@@ -659,7 +730,7 @@ class Router:
                              result.request, result.classification, time.time(), 0.0,
                              turn_start=result.turn_start, switched_from=result.model.name)
         retry.tried = tried
-        return retry
+        return self._keyed(retry, result.outcome_key)
 
     @staticmethod
     def _attach_verdict(result: RouteResult, verdict: Verdict) -> None:
@@ -693,7 +764,7 @@ class Router:
                                     turn_start=result.turn_start,
                                     switched_from=result.model.name)
         retry_result.tried = tried
-        return retry_result
+        return self._keyed(retry_result, result.outcome_key)
 
     def _next_available(self, conv: Conversation, req: TurnRequest, ctx: Context,
                         tried: set[str]) -> tuple[ModelInfo | None, str]:
@@ -718,6 +789,7 @@ class Router:
             "evidence_discount": self.success.evidence_discount,
             "decisions_retained": len(self.decisions),
             "ledger": self.ledger.stats,
+            "truncation_memory": self.outcomes.stats,
             "stale_evidence_models": sorted(m.name for m in self.config.catalog.all()
                                             if m.evidence_stale),
             "models": [m.name for m in self.config.catalog.all()],
