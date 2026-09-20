@@ -187,6 +187,9 @@ async def _watch_for_length_stop(source: AsyncIterator[bytes],
     ``server._anthropic_stream`` records a metered stream in. Only whole
     ``data:`` lines are parsed and only for the stop flag; at most one
     unfinished line is held, and nothing read here is kept.
+
+    A stream can also stop without ever saying how, which is a third outcome
+    and not a success: see the ``except`` below.
     """
     label: str | None = None
     partial = ""
@@ -211,8 +214,18 @@ async def _watch_for_length_stop(source: AsyncIterator[bytes],
                 if found:
                     label = found
                     break
-    finally:
-        record(label)
+    except BaseException as exc:  # noqa: BLE001 - re-raised; only the record is added
+        # A stream that did not reach its end never said how it stopped, and
+        # "no flag seen" is not "it finished". The headers were a 200, so
+        # recording ``ok`` here would call a broken turn a success *and* add it
+        # to the ``ok`` side of the denominator ``outcome_memory`` divides
+        # truncations by. ``server._anthropic_stream`` already calls this a
+        # ``transport_error``, which that memory deliberately does not count.
+        # A flag read before the break still stands: it is the provider's own
+        # word about the turn, which nothing later can unsay.
+        record(label, f"transport:{type(exc).__name__}")
+        raise
+    record(label, None)
 
 
 async def subscription_passthrough(request: Request, raw: bytes, body: dict,
@@ -235,7 +248,7 @@ async def subscription_passthrough(request: Request, raw: bytes, body: dict,
     if served:
         router.commit(result)
 
-    def record(cut: str | None) -> None:
+    def record(cut: str | None, broke: str | None = None) -> None:
         # A 200 the plan itself flagged as a length stop spent plan quota
         # without finishing the answer. Calling that ``ok`` would hide the
         # failure *and* pad the denominator the avoidance rule reads
@@ -243,12 +256,27 @@ async def subscription_passthrough(request: Request, raw: bytes, body: dict,
         # so this surface reads the same machine-readable flag every metered
         # surface already reads. The plan is still charged either way, which is
         # why ``commit`` above does not depend on it.
+        #
+        # ``ok`` is therefore the narrowest of the four: it means the response
+        # was delivered to its end and the plan's own flag said nothing. A
+        # stream that broke on the way (``broke``) is a ``transport_error``,
+        # which the memory does not count - but a length stop already read
+        # outranks it, because that one was really observed.
+        if not served:
+            status, error = "upstream_error", None
+        elif cut:
+            status, error = "truncated", cut
+        elif broke:
+            status, error = "transport_error", broke
+        else:
+            status, error = "ok", None
         router.observe(result, ObservedOutcome(
             model=result.model.name,
-            status=("truncated" if cut else "ok") if served else "upstream_error",
+            status=status,
+            # What the headers really said, even when the body did not arrive.
             http_status=response.status_code,
             latency_ms=(time.perf_counter() - started) * 1000,
-            error=cut if served else None,
+            error=error,
             cost_basis="subscription route: no per-token charge; the plan's own usage limits apply"))
 
     if isinstance(response, StreamingResponse):

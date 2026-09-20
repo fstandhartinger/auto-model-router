@@ -26,6 +26,7 @@ import importlib
 import json
 import time
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -312,6 +313,71 @@ def test_an_error_from_the_plan_still_reads_as_an_upstream_error(gateway, monkey
     assert status == 529
     observed = _record(gateway).observed
     assert (observed.status, observed.http_status, observed.error) == ("upstream_error", 529, None)
+
+
+# ---------------------------------------------------------------------------
+# a stream that never reached its end
+# ---------------------------------------------------------------------------
+class _BrokenStream(_Stream):
+    """200 headers, then the socket dies part way through the body."""
+
+    def __init__(self, chunks: list[bytes], at: int):
+        super().__init__(chunks)
+        self.at = at
+
+    async def aiter_raw(self):
+        for index, chunk in enumerate(self.chunks):
+            if index == self.at:
+                raise httpx.ReadError("connection reset by peer")
+            yield chunk
+
+
+def _broken_call(gateway, monkeypatch, response):
+    """One streamed turn whose body fails, with the client's exception kept."""
+    try:
+        _call(gateway, monkeypatch, response, stream=True)
+    except Exception as exc:      # noqa: BLE001 - the failure is the subject here
+        return type(exc).__name__
+    raise AssertionError("the broken stream did not fail the client")
+
+
+def test_a_plan_stream_that_dies_mid_body_is_not_recorded_as_a_success(gateway, monkeypatch):
+    """A stream that stopped early said nothing; absence of a flag is not ``ok``.
+
+    The headers really were 200, so the old reading was "no length stop, so the
+    turn succeeded" - for a turn the client received in pieces or not at all.
+    ``server._anthropic_stream`` has always called this ``transport_error``.
+    """
+    _broken_call(gateway, monkeypatch, _BrokenStream(_sse("end_turn"), at=3))
+
+    observed = _record(gateway).observed
+    assert observed.status == "transport_error"
+    assert observed.error == "transport:ReadError"    # a class name, never a body
+    assert observed.http_status == 200                # what the headers really said
+
+
+def test_a_broken_plan_stream_is_kept_out_of_the_outcome_memory(gateway, monkeypatch):
+    """The worse half of the same error: it must not pad the denominator.
+
+    ``outcome_memory`` counts ``ok`` and ``truncated`` and divides one by the
+    other, so a transport failure banked as ``ok`` would lower the observed
+    truncation rate the avoidance rule reads.
+    """
+    _broken_call(gateway, monkeypatch, _BrokenStream(_sse("max_tokens"), at=2))
+
+    key = OutcomeKey(category=_record(gateway).classification.category,
+                     budget=budget_bucket(BUDGET))
+    assert gateway.router.outcomes.evidence("plan-claude", key) is None
+    assert gateway.router.outcomes.stats["observations"] == 0
+
+
+def test_a_length_stop_already_read_survives_a_broken_stream(gateway, monkeypatch):
+    """The provider's own flag outranks the transport: it was really observed."""
+    chunks = _sse("max_tokens")
+    _broken_call(gateway, monkeypatch, _BrokenStream(chunks, at=len(chunks) - 1))
+
+    observed = _record(gateway).observed
+    assert (observed.status, observed.error) == ("truncated", "stop_reason:max_tokens")
 
 
 # ---------------------------------------------------------------------------
