@@ -21,6 +21,12 @@ subscriptions:
 
 policy:
   name: F_expected
+  # Default: private CPU inference. `hosted` uses TypeSafe/Jev with
+  # TYPESAFE_API_KEY; `heuristic` makes no classifier call.
+  classifier:
+    backend: local
+    model: convaiinnovations/laya
+    threads: 4
   escalate_after_tool_errors: 3
   # Jev reports difficulty on a compressed scale; map it back to 0..1 (measured on our task set)
   jev_difficulty_calibration: [0.27, 0.51]

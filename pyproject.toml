@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "auto-model-router"
+version = "0.2.0"
+description = "A cost-, cache- and quota-aware LLM router"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+dependencies = ["fastapi>=0.110", "uvicorn[standard]>=0.29", "httpx>=0.27", "pyyaml>=6.0"]
+
+[project.optional-dependencies]
+local = ["laya>=0.3.4", "torch>=2.0"]
+test = ["pytest>=8.0", "pytest-asyncio>=0.23"]
+
+[project.scripts]
+auto-model-router = "auto_router.server:main"
+
+[tool.setuptools.packages.find]
+include = ["auto_router*"]

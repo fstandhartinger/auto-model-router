@@ -1,0 +1,60 @@
+{
+  "date": "2026-09-20",
+  "method": "Exact frozen per-task replay through F_expected on 78 calibration tasks; no new LLM answers",
+  "reproduce": "python experiments/compare_classifiers.py --tasks experiments/tasks/tasks.jsonl --matrix runs/matrix.jsonl --local runs/laya_classify.jsonl --hosted runs/jev_classify.jsonl --out comparison.json",
+  "local_laya": {
+    "model": "convaiinnovations/laya",
+    "parameters": 421000000,
+    "threads": 4,
+    "tasks": 78,
+    "solved": 66,
+    "solve_rate": 0.8462,
+    "category_accuracy": 0.1923,
+    "classifier_latency_p50_s": 15.335,
+    "classifier_latency_p95_s": 21.35,
+    "classifier_cost_usd": 0.0,
+    "target_cost_usd": 1.51349,
+    "total_cost_usd": 1.51349,
+    "cost_per_solved_turn_usd": 0.022932,
+    "peak_rss_bytes": 2975494144,
+    "weight_download_bytes_approx": 1700000000,
+    "routes": {"dsv4-flash": 43, "glm-5.3-flash": 8, "gpt-5.6-luna": 1, "gpt-5.6-sol": 26}
+  },
+  "hosted_jev": {
+    "tasks": 78,
+    "solved": 65,
+    "solve_rate": 0.8333,
+    "category_accuracy": 0.8462,
+    "classifier_latency_p50_s": 0.62,
+    "classifier_latency_p95_s": 0.84,
+    "classifier_cost_usd": 0.00312,
+    "target_cost_usd": 0.171711,
+    "total_cost_usd": 0.174831,
+    "cost_per_solved_turn_usd": 0.00269,
+    "routes": {"dsv4-flash": 40, "glm-5.3-flash": 9, "gpt-5.6-luna": 25, "gpt-5.6-sol": 4}
+  },
+  "heuristic": {
+    "tasks": 78,
+    "solved": 68,
+    "solve_rate": 0.8718,
+    "classifier_latency_p50_s": 0.0,
+    "classifier_latency_p95_s": 0.0,
+    "classifier_cost_usd": 0.0,
+    "total_cost_usd": 0.263974,
+    "cost_per_solved_turn_usd": 0.003882,
+    "routes": {"glm-5.3-flash": 48, "gpt-5.6-luna": 30}
+  },
+  "always_opus": {
+    "tasks": 78,
+    "solved": 71,
+    "solve_rate": 0.9103,
+    "total_cost_usd": 9.07895,
+    "cost_per_solved_turn_usd": 0.127873
+  },
+  "limits": [
+    "Routing outcomes are exact for frozen answers but are not fresh LLM generations.",
+    "The 78-task set is small and was also used to calibrate expected-cost beliefs.",
+    "Local marginal cost excludes electricity and amortised hardware.",
+    "Hosted Jev uses the observed mean per-decision cost rounded to $0.00004."
+  ]
+}

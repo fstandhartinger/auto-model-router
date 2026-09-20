@@ -188,7 +188,7 @@ class Router:
         self.success = success or success_model_from_config(config.policy or {})
         cal = (config.policy or {}).get("jev_difficulty_calibration") or [0.0, 1.0]
         self.jev_offset, self.jev_scale = float(cal[0]), float(cal[1]) or 1.0
-        self.classifier = classifier or (jev.classify if os.environ.get("TYPESAFE_API_KEY") else None)
+        self.classifier = classifier if classifier is not None else jev.classifier_from_config(config.policy)
         self.quota_reader = quota_reader or self._read_quota
         self.conversations: dict[str, Conversation] = {}
         self.estimator = CalibratedEstimator()

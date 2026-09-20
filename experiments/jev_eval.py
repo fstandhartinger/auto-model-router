@@ -48,15 +48,18 @@ def classify(args):
                "tool_use": "Agent with order-management tools (find_customer, list_orders, refund, ...).",
                }
 
+    classifier = (jev.LocalLayaClassifier(args.model, args.threads)
+                  if args.backend == "local" else jev.classify)
+
     def one(task):
-        c = jev.classify(task_request(task), context.get(task["category"], ""))
+        c = classifier(task_request(task), context.get(task["category"], ""))
         return {"task": task["id"], "category": task["category"], "level": task["difficulty"],
                 "jev_category": c.category, "difficulty": c.difficulty, "confidence": c.difficulty_confidence,
                 "needs_tools": c.needs_tools, "needs_long_context": c.needs_long_context, "stakes": c.stakes,
                 "latency_s": round(c.latency_s, 2), "input_tokens": c.input_tokens,
                 "output_tokens": c.output_tokens, "failed": c.failed}
 
-    with ThreadPoolExecutor(8) as pool:
+    with ThreadPoolExecutor(args.workers) as pool:
         rows = list(pool.map(one, tasks))
     Path(args.out).write_text("".join(json.dumps(r) + "\n" for r in rows))
     print(f"{len(rows)} classified, {sum(r['failed'] for r in rows)} failures")
@@ -102,6 +105,11 @@ if __name__ == "__main__":
     c = sub.add_parser("classify")
     c.add_argument("--tasks", default="experiments/tasks/tasks.jsonl")
     c.add_argument("--out", required=True)
+    c.add_argument("--backend", choices=("local", "hosted"), default="hosted")
+    c.add_argument("--model", default="convaiinnovations/laya")
+    c.add_argument("--threads", type=int, default=4)
+    c.add_argument("--workers", type=int, default=1,
+                   help="parallel requests (keep 1 for repeatable local CPU latency)")
     j = sub.add_parser("judge")
     j.add_argument("--tasks", default="experiments/tasks/tasks.jsonl")
     j.add_argument("--config", required=True)

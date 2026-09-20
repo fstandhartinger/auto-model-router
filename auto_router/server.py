@@ -687,3 +687,9 @@ async def catch_all(path: str, request: Request) -> Response:
     from . import shim
     body = await request.body()
     return await shim.passthrough(request, body, f"/{path}")
+
+
+def main() -> None:
+    """Console entry point installed by the one-line local installer."""
+    import uvicorn
+    uvicorn.run("auto_router.server:app", host="127.0.0.1", port=8787)

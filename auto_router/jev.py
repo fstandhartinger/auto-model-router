@@ -33,6 +33,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -243,10 +244,11 @@ class Classification:
     output_tokens: int = 0
     failed: bool = False
     raw: dict = field(default_factory=dict, repr=False)
+    source_name: str = "jev"
 
     @property
     def source(self) -> str:
-        return "fallback" if self.failed else "jev"
+        return "fallback" if self.failed else self.source_name
 
     def traits(self) -> dict:
         """Compact, prompt-free view of the classification for the explanation."""
@@ -449,6 +451,82 @@ def classify(request: str, context: str = "", *, api_key: str | None = None,
         )
     except (urllib.error.URLError, KeyError, TypeError, ValueError, RuntimeError, TimeoutError, OSError):
         return FALLBACK
+
+
+class LocalLayaClassifier:
+    """Lazy CPU-only Laya classifier with the same result shape as hosted Jev.
+
+    The optional dependency is imported only on the first request.  The model
+    weights are then fetched by Hugging Face once and cached in the user's
+    normal model cache.  Import, download, and inference failures degrade to
+    ``FALLBACK`` just like a hosted classifier outage does.
+    """
+
+    def __init__(self, model: str = "convaiinnovations/laya", threads: int = 4):
+        self.model = model
+        self.threads = max(1, int(threads))
+        self._agent = None
+        self._load_lock = threading.Lock()
+
+    def _load(self):
+        if self._agent is None:
+            with self._load_lock:
+                if self._agent is None:
+                    import laya
+                    import torch
+                    torch.set_num_threads(self.threads)
+                    self._agent = laya.load(self.model)
+        return self._agent
+
+    def __call__(self, request: str, context: str = "") -> Classification:
+        started = time.perf_counter()
+        try:
+            state = {"request": scrub(request, REQUEST_CHARS),
+                     "context": scrub(context, CONTEXT_CHARS) or "(new conversation)"}
+            payload = self._load().predict(state, QUESTIONS)
+            a = payload["answers"]
+            usage = payload.get("usage") or {}
+            return Classification(
+                category=a["category"]["choice"],
+                category_probs=a["category"].get("probabilities") or {},
+                category_confidence=_confidence(a["category"]),
+                difficulty=_score01(a["difficulty"], len(QUESTIONS["difficulty"]["criteria"])),
+                difficulty_confidence=_confidence(a["difficulty"]),
+                needs_tools=float(a["needs_tools"]["noul"]),
+                needs_vision=float(a["needs_vision"]["noul"]),
+                needs_long_context=float(a["needs_long_context"]["noul"]),
+                follow_up=float(a["follow_up"]["noul"]),
+                stakes=_score01(a["stakes"], len(QUESTIONS["stakes"]["criteria"])),
+                latency_s=time.perf_counter() - started,
+                model=str(payload.get("model") or self.model),
+                input_tokens=int(usage.get("input_tokens") or 0),
+                output_tokens=int(usage.get("output_tokens") or 0),
+                raw=a,
+                source_name="local-laya",
+            )
+        except Exception:  # backend/model failures must not take down the routed LLM call
+            return FALLBACK
+
+
+def classifier_from_config(policy: dict | None):
+    """Build the selected classifier backend from ``policy.classifier``.
+
+    ``local`` uses Laya on CPU, ``hosted`` uses the existing TypeSafe/Jev API,
+    and ``heuristic`` disables model inference.  Returning ``None`` preserves
+    the router's existing cautious heuristic path.
+    """
+    cfg = (policy or {}).get("classifier") or {}
+    backend = str(cfg.get("backend") or "").lower()
+    if not backend:
+        return classify if os.environ.get("TYPESAFE_API_KEY") else None
+    if backend == "local":
+        return LocalLayaClassifier(str(cfg.get("model") or "convaiinnovations/laya"),
+                                   int(cfg.get("threads") or 4))
+    if backend in {"hosted", "jev"}:
+        return classify
+    if backend in {"heuristic", "none", "disabled"}:
+        return None
+    raise ValueError(f"unknown classifier backend {backend!r}; use local, hosted, or heuristic")
 
 
 @dataclass

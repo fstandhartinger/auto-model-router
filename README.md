@@ -21,10 +21,13 @@ be plugged in without changing the routing logic.
    with a TTL, and every number carrying its basis and how strong that basis is
    ([`auto_router/bench.py`](auto_router/bench.py)). Local measurements override
    it, because headline scores mis-rank specific models and effort levels.
-2. **[Jev](https://docs.typesafe.ai) classifies the request.** Topic, difficulty,
+2. **A Jev-class model classifies the request.** Local Laya on CPU is the
+   sample configuration's default; hosted [Jev](https://docs.typesafe.ai) and
+   a no-model heuristic are selectable. Topic, difficulty,
    whether it needs tools or a long context, whether it builds on the previous
-   turn, and what a wrong answer would cost. One ~0.6 s call, on a scrubbed and
-   truncated summary of the turn, never the raw prompt.
+   turn, and what a wrong answer would cost. Hosted Jev took about 0.6 s; the
+   current local CPU backend is much slower (measured below). Both receive only
+   a scrubbed and truncated summary of the turn, never the raw transcript.
 3. **Expected cost decides where it goes.** Call cost at the route's real cache
    state, times the measured chance of success, plus the price of a failure.
 4. **The targets are deliberately heterogeneous.** Free tiers, metered APIs,
@@ -322,14 +325,58 @@ key.
 
 ## Running
 
+One-line local install (Python 3.10+, CPU-only wheels; no compiler or GPU):
+
 ```bash
-pip install -r requirements.txt
+curl -fsSL https://raw.githubusercontent.com/fstandhartinger/auto-model-router/main/scripts/install-local.sh | sh
+```
+
+The first local request downloads about 1.7 GB of Laya weights. On the measured
+x86-64 Linux machine it peaked at 2.9 GB RAM. Then:
+
+```bash
 cp examples/config.example.yaml my.local.yaml   # describe your providers
-export AUTO_ROUTER_CONFIG=my.local.yaml TYPESAFE_API_KEY=...
-uvicorn auto_router.server:app --host 127.0.0.1 --port 8787
+export AUTO_ROUTER_CONFIG=my.local.yaml
+auto-model-router
 pytest -q
 python experiments/calibrate.py --matrix runs/matrix.jsonl --out success.json   # after run_matrix.py
 ```
+
+Choose the routing classifier under `policy.classifier`:
+
+```yaml
+classifier: {backend: local, model: convaiinnovations/laya, threads: 4}
+# classifier: {backend: hosted}    # set TYPESAFE_API_KEY
+# classifier: {backend: heuristic} # zero inference cost and latency
+```
+
+Local means the scrubbed routing input stays on the machine. Hosted uses the
+existing Jev API path. If local inference or model loading fails, routing falls
+back cautiously instead of failing the user's LLM call.
+
+### Measured classifier comparison (20 September 2026)
+
+Exact replay through `F_expected` on the router's own 78-task calibration set;
+the chosen model's frozen per-task result and list-price cost are used, so no
+new LLM answers were generated. These are small-sample results, not production
+traffic savings.
+
+| classifier | solved | added latency p50 / p95 | classifier cost | end-to-end cost | cost / solved turn |
+|---|---:|---:|---:|---:|---:|
+| local Laya 421M, 4 CPU threads | 66/78 (84.6%) | 15.34 / 21.35 s | $0 marginal API cost | $1.5135 | $0.02293 |
+| hosted Jev | 65/78 (83.3%) | 0.62 / 0.84 s | $0.00312 | $0.1748 | $0.00269 |
+| heuristic | 68/78 (87.2%) | 0 / 0 s | $0 | $0.2640 | $0.00388 |
+| always Opus 5 | 71/78 (91.0%) | 0 / 0 s | $0 | $9.0790 | $0.12787 |
+
+The local model did not lose solve rate to hosted Jev on this replay, but it
+misclassified task category badly (19.2% versus Jev's 84.6%) and compensated by
+sending 26 tasks to the expensive Sol route (Jev sent 4). It was therefore
+8.7x as expensive end-to-end and about 25x slower at p50 than hosted Jev. Local
+is useful for privacy/offline routing, but hosted Jev remains the practical
+learned default; the heuristic was strongest on this small exact replay. The
+reproducible aggregate is in
+[`evaluation/jev-router-20260920.json`](evaluation/jev-router-20260920.json),
+and the replay command is documented there.
 
 A measured success table from our run ships as `examples/success.measured.json`; point
 `policy.success.table` at it or at your own.
@@ -349,7 +396,7 @@ Point OpenAI clients at `http://127.0.0.1:8787/v1`, or Claude Code at it with
 | `AUTO_ROUTER_PLAN_MODELS` | models your own plan includes; bounds the rewrite on subscription traffic |
 | `AUTO_ROUTER_ALLOW_UPSTREAM_HOSTS` | extra hosts a subscription credential may reach (default: none) |
 | `AUTO_ROUTER_LEDGER` | JSONL file for decision records; unset disables the ledger |
-| `TYPESAFE_API_KEY` | Jev classifier; without it a cautious default is used |
+| `TYPESAFE_API_KEY` | Hosted Jev classifier key; not needed for local or heuristic mode |
 
 Responses carry `X-Router-Model`, `X-Router-Category`, `X-Router-Difficulty`,
 `X-Router-Reason`, `X-Router-Conversation`, `X-Router-Turn-Start`,
