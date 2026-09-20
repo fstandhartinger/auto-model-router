@@ -381,6 +381,97 @@ def test_a_length_stop_already_read_survives_a_broken_stream(gateway, monkeypatc
 
 
 # ---------------------------------------------------------------------------
+# a stream the plan itself declared failed
+# ---------------------------------------------------------------------------
+#: What Anthropic sends when a turn fails after the 200 headers: an ``error``
+#: event, and then the stream ends. The message echoes request text here on
+#: purpose, so the privacy test can see that none of it is carried over.
+ERROR_EVENT = {"type": "error",
+               "error": {"type": "overloaded_error", "message": f"Overloaded: {PROMPT} {FAKE_OAUTH}"}}
+
+
+def _sse_failing(after: int, stop_reason: str = "end_turn") -> list[bytes]:
+    """The first ``after`` events of a real stream, then the plan's error event."""
+    error = f"event: error\ndata: {json.dumps(ERROR_EVENT)}\n\n".encode()
+    return _sse(stop_reason)[:after] + [error]
+
+
+def test_a_plan_stream_that_declares_an_error_is_not_recorded_as_a_success(gateway, monkeypatch):
+    """The provider said the turn failed; "no length flag" does not make it ``ok``."""
+    chunks = _sse_failing(after=3)
+    status, body, _upstream = _call(gateway, monkeypatch, _Stream(chunks), stream=True)
+
+    assert status == 200
+    assert body == b"".join(chunks)                   # the client sees exactly what was sent
+    observed = _record(gateway).observed
+    assert (observed.status, observed.error) == ("upstream_error", "stream:error")
+    assert observed.http_status == 200                # what the headers really said
+
+
+def test_a_declared_stream_error_is_kept_out_of_the_outcome_memory(gateway, monkeypatch):
+    _call(gateway, monkeypatch, _Stream(_sse_failing(after=3)), stream=True)
+
+    key = OutcomeKey(category=_record(gateway).classification.category,
+                     budget=budget_bucket(BUDGET))
+    assert gateway.router.outcomes.evidence("plan-claude", key) is None
+    assert gateway.router.outcomes.stats["observations"] == 0
+
+
+def test_a_length_stop_already_read_outranks_a_later_error_event(gateway, monkeypatch):
+    """Same precedence as a broken socket: the flag was really observed."""
+    chunks = _sse("max_tokens")
+    chunks.insert(-1, f"event: error\ndata: {json.dumps(ERROR_EVENT)}\n\n".encode())
+    _call(gateway, monkeypatch, _Stream(chunks), stream=True)
+
+    observed = _record(gateway).observed
+    assert (observed.status, observed.error) == ("truncated", "stop_reason:max_tokens")
+
+
+def test_a_declared_error_outranks_the_break_that_follows_it(gateway, monkeypatch):
+    """The plan said why it stopped before the socket went; that is the better record."""
+    chunks = _sse_failing(after=3) + [b"never delivered"]
+    _broken_call(gateway, monkeypatch, _BrokenStream(chunks, at=len(chunks) - 1))
+
+    observed = _record(gateway).observed
+    assert (observed.status, observed.error) == ("upstream_error", "stream:error")
+
+
+def test_a_declared_stream_error_writes_no_prompt_or_provider_text(gateway, monkeypatch, tmp_path):
+    """Only a fixed label is kept - never the error's type or message."""
+    _call(gateway, monkeypatch, _Stream(_sse_failing(after=3)), stream=True)
+
+    written = (tmp_path / "ledger.jsonl").read_text()
+    assert '"status":"upstream_error"' in written
+    for leak in (PROMPT.strip(), ANSWER, FAKE_OAUTH, "sk-ant", "Overloaded", "overloaded_error"):
+        assert leak not in written
+
+
+def test_an_answer_that_merely_talks_about_an_error_is_not_one(gateway, monkeypatch):
+    """Answer text is never read for an error, even text shaped like an event."""
+    fake = 'event: error\ndata: {"type": "error", "error": {"type": "api_error"}}\n\n'
+    chunks = _sse("end_turn")
+    chunks[2] = chunks[2].replace(json.dumps(ANSWER).encode(), json.dumps(fake).encode())
+    _call(gateway, monkeypatch, _Stream(chunks), stream=True)
+
+    assert _record(gateway).observed.status == "ok"
+
+
+@pytest.mark.parametrize("error_chunk", [
+    b"event: error\ndata: not json\n\n",                               # malformed: says nothing
+    b'data: {"error": {"message": "upstream failed", "code": 500}}\n\n',  # not Anthropic's shape
+    b'data: ["error"]\n\n',
+])
+def test_an_error_that_is_not_the_plan_s_own_event_is_not_read_as_one(
+        gateway, monkeypatch, error_chunk):
+    """Only the plan's machine-readable ``type: error`` counts; silence is not evidence."""
+    chunks = _sse("end_turn")
+    chunks.insert(-1, error_chunk)
+    _call(gateway, monkeypatch, _Stream(chunks), stream=True)
+
+    assert _record(gateway).observed.status == "ok"
+
+
+# ---------------------------------------------------------------------------
 # the reader itself
 # ---------------------------------------------------------------------------
 @pytest.mark.parametrize("payload,expected", [
@@ -403,3 +494,17 @@ def test_the_length_stop_reader_answers_only_what_it_was_told(payload, expected)
 def test_a_body_that_says_nothing_is_not_a_truncation(blob):
     """Silence is not evidence - a malformed body may not become a length stop."""
     assert shim._length_stop_in(blob) is None
+
+
+@pytest.mark.parametrize("payload,expected", [
+    ({"type": "error", "error": {"type": "overloaded_error"}}, True),
+    ({"type": "error"}, True),
+    ({"error": {"type": "api_error"}}, False),        # not Anthropic's discriminator
+    ({"type": "message_stop"}, False),
+    ({"type": "content_block_delta", "delta": {"type": "text_delta", "text": "error"}}, False),
+    ("error", False),
+    (["error"], False),
+    (None, False),
+])
+def test_the_stream_error_reader_answers_only_what_it_was_told(payload, expected):
+    assert shim._declares_error(payload) is expected

@@ -170,6 +170,22 @@ def _length_stop(payload: Any) -> str | None:
     return truncation_label(payload) or truncation_label(payload.get("delta"))
 
 
+def _declares_error(payload: Any) -> bool:
+    """Whether one stream event is the plan's own ``error`` event.
+
+    Anthropic ends a stream it could not finish with ``{"type": "error", ...}``
+    after the 200 headers have already gone out. Only that machine-readable
+    discriminator is read - never the error's type or message, which can echo
+    the request - and a line that does not parse says nothing.
+    """
+    return isinstance(payload, dict) and payload.get("type") == "error"
+
+
+#: The only label a declared stream error is recorded under. Fixed, so nothing
+#: from the provider's error event reaches the decision record or the ledger.
+STREAM_ERROR = "stream:error"
+
+
 def _length_stop_in(blob: bytes) -> str | None:
     """Same judgement for a body that arrived in one piece."""
     try:
@@ -179,7 +195,7 @@ def _length_stop_in(blob: bytes) -> str | None:
 
 
 async def _watch_for_length_stop(source: AsyncIterator[bytes],
-                                 record: Callable[[str | None], None]) -> AsyncIterator[bytes]:
+                                 record: Callable[..., None]) -> AsyncIterator[bytes]:
     """Forward an SSE body byte for byte, and record the outcome when it ends.
 
     A stream says how it stopped last, so here the observation can only be made
@@ -189,9 +205,12 @@ async def _watch_for_length_stop(source: AsyncIterator[bytes],
     unfinished line is held, and nothing read here is kept.
 
     A stream can also stop without ever saying how, which is a third outcome
-    and not a success: see the ``except`` below.
+    and not a success: see the ``except`` below. Or it can say it failed, with
+    an ``error`` event after the 200 headers - a fourth, and not a success
+    either. Both are only recorded; the bytes still reach the client unchanged.
     """
     label: str | None = None
+    declared = False
     partial = ""
     try:
         async for chunk in source:
@@ -208,9 +227,13 @@ async def _watch_for_length_stop(source: AsyncIterator[bytes],
                 if not line.startswith("data:"):
                     continue
                 try:
-                    found = _length_stop(json.loads(line[5:]))
+                    payload = json.loads(line[5:])
                 except json.JSONDecodeError:
                     continue
+                if _declares_error(payload):
+                    declared = True
+                    continue
+                found = _length_stop(payload)
                 if found:
                     label = found
                     break
@@ -223,9 +246,9 @@ async def _watch_for_length_stop(source: AsyncIterator[bytes],
         # ``transport_error``, which that memory deliberately does not count.
         # A flag read before the break still stands: it is the provider's own
         # word about the turn, which nothing later can unsay.
-        record(label, f"transport:{type(exc).__name__}")
+        record(label, f"transport:{type(exc).__name__}", declared)
         raise
-    record(label, None)
+    record(label, None, declared)
 
 
 async def subscription_passthrough(request: Request, raw: bytes, body: dict,
@@ -248,7 +271,7 @@ async def subscription_passthrough(request: Request, raw: bytes, body: dict,
     if served:
         router.commit(result)
 
-    def record(cut: str | None, broke: str | None = None) -> None:
+    def record(cut: str | None, broke: str | None = None, declared: bool = False) -> None:
         # A 200 the plan itself flagged as a length stop spent plan quota
         # without finishing the answer. Calling that ``ok`` would hide the
         # failure *and* pad the denominator the avoidance rule reads
@@ -261,11 +284,16 @@ async def subscription_passthrough(request: Request, raw: bytes, body: dict,
         # was delivered to its end and the plan's own flag said nothing. A
         # stream that broke on the way (``broke``) is a ``transport_error``,
         # which the memory does not count - but a length stop already read
-        # outranks it, because that one was really observed.
+        # outranks it, because that one was really observed. A stream the plan
+        # itself declared failed (``declared``) is an ``upstream_error``, like
+        # the same failure arriving before the headers would have been; it
+        # outranks a break that follows it, because it says why the turn ended.
         if not served:
             status, error = "upstream_error", None
         elif cut:
             status, error = "truncated", cut
+        elif declared:
+            status, error = "upstream_error", STREAM_ERROR
         elif broke:
             status, error = "transport_error", broke
         else:
