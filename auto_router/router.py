@@ -30,7 +30,8 @@ from .decision import (
 )
 from .economics import SuccessModel, turn_cost
 from .ledger import RoutingLedger
-from .outcome_memory import AvoidanceRule, OutcomeKey, OutcomeMemory, budget_bucket
+from .outcome_memory import (AvoidanceRule, OutcomeKey, OutcomeMemory, budget_bucket,
+                             explicit_budget)
 from .policies import (POLICIES, Context, Conversation, ExpectedCostPolicy, Policy, TurnRequest,
                        turn_call_cost)
 from .quota import (PacingRule, QuotaDecision, decide as quota_decide, from_budget_file,
@@ -287,7 +288,8 @@ class Router:
         choice = self.policy.choose(conv, req, ctx)
         key = OutcomeKey(req.category, budget_bucket(max_tokens))
         model, reason, memory = self._avoid_repeated_truncation(
-            conv, req, ctx, key, ctx.catalog[choice.model], choice.reason)
+            conv, req, ctx, key, ctx.catalog[choice.model], choice.reason,
+            required_output=explicit_budget(max_tokens))
         result = self._result(ctx, conv, cid, model, reason, req, cls, now,
                               cls_ms, turn_start=True, switched_from=conv.current,
                               prefix=self.conversation_id(messages, system, tools))
@@ -304,7 +306,8 @@ class Router:
         return result
 
     def _avoid_repeated_truncation(self, conv: Conversation, req: TurnRequest, ctx: Context,
-                                   key: OutcomeKey, chosen: ModelInfo, reason: str
+                                   key: OutcomeKey, chosen: ModelInfo, reason: str,
+                                   required_output: int | None = None
                                    ) -> tuple[ModelInfo, str, dict | None]:
         """Route around a route observed to run out of budget on comparable requests.
 
@@ -315,11 +318,25 @@ class Router:
         remaining route by expected cost among routes that are not flagged
         themselves; with no such route the choice stands and the record says
         so. Returns ``(model, reason, record-or-None)``.
+
+        A fallback must also be able to *write* at least as much as the route
+        it replaces. ``Catalog.eligible`` filters on context, vision and tools,
+        never on ``max_output_tokens``, so without this floor the rule could
+        move a length-stop-prone request onto a route with a smaller output
+        ceiling - and on the Anthropic path the gateway then clamps the
+        caller's own ``max_tokens`` down to that smaller ceiling
+        (``server.proxy_openai_as_anthropic``), making the very failure this
+        rule exists to avoid *more* likely. ``required_output`` is the caller's
+        explicit output budget when it stated one; the floor is the larger of
+        the two. Routes below the floor are not flagged - nothing was observed
+        about them - so they are recorded separately from ``flagged_routes``.
         """
         record = self.outcomes.should_avoid(chosen.name, key, req.now)
         if record is None:
             return chosen, reason, None
+        floor = max(chosen.max_output_tokens, required_output or 0)
         flagged = {chosen.name}
+        too_small = set()
         usable = []
         for m, _call, _p, value in self.policy.evaluate(conv, req, ctx):
             if m.name == chosen.name or not math.isfinite(value):
@@ -327,21 +344,31 @@ class Router:
             if self.outcomes.should_avoid(m.name, key, req.now) is not None:
                 flagged.add(m.name)
                 continue
+            if m.max_output_tokens < floor:
+                too_small.add(m.name)
+                continue
             usable.append((value, m.name, m))
         memory = {"key": key.label(), "route": chosen.name, "basis": record.basis(),
                   "observed": record.observed, "truncated": record.truncated,
-                  "flagged_routes": sorted(flagged)}
+                  "flagged_routes": sorted(flagged),
+                  "output_floor_tokens": floor,
+                  "below_output_floor": sorted(too_small)}
         if not usable:
+            blocked = "no usable unflagged route exists"
+            if too_small:
+                blocked = (f"no usable unflagged route can write {floor} output tokens "
+                           f"(the routes that are left have a smaller output ceiling)")
             memory.update(applied=False, fallback=None,
                           note=(f"{chosen.name} repeatedly ran out of output budget on "
-                                f"{key.label()}, but no usable unflagged route exists; "
+                                f"{key.label()}, but {blocked}; "
                                 f"the policy's choice stands."))
             return chosen, reason, memory
         value, _name, fallback = min(usable, key=lambda t: (t[0], t[1]))
         memory.update(applied=True, fallback=fallback.name,
                       note=(f"Avoided {chosen.name} on observed evidence: {record.basis()}."))
         return fallback, (f"avoid {chosen.name}: repeated observed length stops on {key.label()}; "
-                          f"next usable route by expected cost (${value:.4f})"), memory
+                          f"next usable route by expected cost (${value:.4f}) that can write at "
+                          f"least {floor} output tokens"), memory
 
     def route_job(self, task: str, *, steps: int = 12, output_per_step: int = 1200,
                   force: str | None = None, now: float | None = None,

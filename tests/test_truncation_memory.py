@@ -11,22 +11,27 @@ These tests pin what happens on the *next comparable* request, through
 * privacy - the memory and the decision record hold route names, fixed labels
   and counts, never prompt, answer, provider body or credential;
 * cold start - with no observations routing is unchanged and deterministic;
-* fallback - avoidance never removes the last usable route.
+* fallback - avoidance never removes the last usable route, and never moves a
+  request to a route that can write *less* than the one it replaces;
+* budget integrity - a stated ``max_tokens`` that is not a positive integer is
+  rejected at the edge instead of being pooled with the unknown-budget bucket.
 
 Everything is local and deterministic: the upstream is an in-process
 ``httpx.MockTransport``; no socket is opened and no provider is called.
 """
 
 import json
+from dataclasses import replace
 
 import pytest
 
+from auto_router import server
 from auto_router.catalog import Catalog
 from auto_router.config import Provider, RouterConfig
 from auto_router.decision import ObservedOutcome
 from auto_router.ledger import RoutingLedger
 from auto_router.outcome_memory import (AvoidanceRule, OutcomeKey, OutcomeMemory,
-                                        budget_bucket)
+                                        budget_bucket, explicit_budget)
 from auto_router.router import Router
 
 from .test_truncation import SECRET, _ask, _complete, _model, _truncated, harness  # noqa: F401
@@ -71,6 +76,18 @@ def test_budget_buckets_are_a_fixed_vocabulary():
     assert budget_bucket(500) == "<=1024"
     assert budget_bucket(12000) == "<=16384"
     assert budget_bucket(10 ** 6) == ">65536"
+
+
+def test_only_a_positive_integer_is_a_stated_budget():
+    """The one predicate the bucket, the output floor and the edge all share."""
+    assert explicit_budget(12000) == 12000 and explicit_budget(1) == 1
+    for value in (None, 0, -5, True, False, 12000.0, 0.5, "12000", "", [], {},
+                  float("inf"), float("nan")):
+        assert explicit_budget(value) is None, value
+    # ...and every one of those buckets as the unknown budget, which is why the
+    # edge must not let a stated-but-malformed value get this far.
+    for value in (12000.0, "12000", True, 0, -5):
+        assert budget_bucket(value) == "default"
 
 
 def test_one_truncation_is_not_a_pattern():
@@ -277,4 +294,199 @@ def test_nothing_identifying_reaches_the_memory_or_the_ledger(harness):  # noqa:
                if r["selection"]["truncation_memory"]]
     assert applied
     assert set(applied[0]) == {"key", "route", "basis", "observed", "truncated",
-                               "flagged_routes", "applied", "fallback"}
+                               "flagged_routes", "applied", "fallback",
+                               "output_floor_tokens", "below_output_floor"}
+
+
+# ---------------------------------------------------------------------------
+# the fallback's own output ceiling (REVIEW 2026-09-20 finding B1)
+# ---------------------------------------------------------------------------
+# ``Catalog.eligible`` filters candidates on context, vision and tools, never on
+# ``max_output_tokens``. Running out of output budget is the one failure this
+# rule exists to avoid, so a fallback that can write *less* than the route it
+# replaces would make that failure more likely - and on the Anthropic path the
+# gateway clamps the caller's own ``max_tokens`` down to the served route's
+# ceiling, so the caller would silently get a smaller budget than it asked for.
+BASE, SMALL, BIG = "base-route", "small-out", "big-out"
+
+
+def _ceiling(name, inp, out, ceiling, cap=70):
+    return replace(_model(name, inp, out, cap), max_output_tokens=ceiling)
+
+
+def test_the_fallback_never_has_a_smaller_output_ceiling_than_the_flagged_route():
+    """The cheaper unflagged route is skipped because it can write less."""
+    router = _router(models=[_ceiling(BASE, 0.5, 2.0, 8000),
+                             _ceiling(SMALL, 1.0, 4.0, 4096)])
+    for i in range(2):
+        result = _route(router, i)
+        assert result.model.name == BASE
+        _observe(router, result, "truncated")
+    after = _route(router, 2)
+    assert after.model.name == BASE, "routed onto a route with a smaller output ceiling"
+    memory = after.explanation.selection.truncation_memory
+    assert memory["applied"] is False and memory["fallback"] is None
+    # Truthful evidence: SMALL was never observed, so it is not "flagged".
+    assert memory["flagged_routes"] == [BASE]
+    assert memory["below_output_floor"] == [SMALL]
+    assert memory["output_floor_tokens"] == 12000        # the caller asked for 12000
+    assert any("can write 12000 output tokens" in n for n in after.explanation.notes)
+
+
+def test_a_dearer_route_is_preferred_when_the_cheaper_one_cannot_write_as_much():
+    """The rule still applies - it just skips past the too-small route."""
+    router = _router(models=[_ceiling(BASE, 0.5, 2.0, 32000),
+                             _ceiling(SMALL, 1.0, 4.0, 4096),
+                             _ceiling(BIG, 2.0, 8.0, 32000)])
+    for i in range(2):
+        result = _route(router, i)
+        assert result.model.name == BASE
+        _observe(router, result, "truncated")
+    after = _route(router, 2)
+    assert after.model.name == BIG, "picked the cheap route with the smaller ceiling"
+    memory = after.explanation.selection.truncation_memory
+    assert memory["applied"] is True and memory["fallback"] == BIG
+    assert memory["below_output_floor"] == [SMALL] and memory["flagged_routes"] == [BASE]
+    assert "at least 32000 output tokens" in after.reason
+
+
+def test_an_explicit_budget_above_the_fallbacks_ceiling_keeps_the_policys_choice():
+    """The floor is the caller's stated budget when that is the larger number."""
+    router = _router(models=[_ceiling(BASE, 0.5, 2.0, 8000),
+                             _ceiling(SMALL, 1.0, 4.0, 10000)])
+    for i in range(2):
+        _observe(router, _route(router, i, max_tokens=12000), "truncated")
+    after = _route(router, 2, max_tokens=12000)
+    # SMALL clears the flagged route's own 8000 ceiling but not the caller's 12000.
+    assert after.model.name == BASE
+    memory = after.explanation.selection.truncation_memory
+    assert memory["output_floor_tokens"] == 12000
+    assert memory["applied"] is False and memory["below_output_floor"] == [SMALL]
+
+
+def test_without_an_explicit_budget_the_floor_is_the_flagged_routes_ceiling():
+    """No stated budget, so only the route's own ceiling constrains the fallback."""
+    router = _router(models=[_ceiling(BASE, 0.5, 2.0, 8000),
+                             _ceiling(SMALL, 1.0, 4.0, 10000)])
+    for i in range(2):
+        _observe(router, _route(router, i, max_tokens=None), "truncated")
+    after = _route(router, 2, max_tokens=None)
+    assert after.model.name == SMALL
+    memory = after.explanation.selection.truncation_memory
+    assert memory["output_floor_tokens"] == 8000 and memory["applied"] is True
+    assert memory["below_output_floor"] == []
+
+
+def test_equal_ceilings_route_exactly_as_they_did_before_the_floor_existed():
+    """Every shipped example leaves max_output_tokens at the default: no change."""
+    router = _router()
+    for i in range(2):
+        _observe(router, _route(router, i), "truncated")
+    after = _route(router, 2)
+    assert after.model.name == OTHER
+    memory = after.explanation.selection.truncation_memory
+    assert memory["applied"] is True and memory["below_output_floor"] == []
+    assert memory["output_floor_tokens"] == 32000        # the catalog default
+
+
+def test_the_output_floor_adds_no_prompt_or_answer_text_to_the_record():
+    router = _router(models=[_ceiling(BASE, 0.5, 2.0, 8000),
+                             _ceiling(SMALL, 1.0, 4.0, 4096)])
+    for i in range(2):
+        _observe(router, _route(router, i), "truncated")
+    memory = _route(router, 2).explanation.selection.truncation_memory
+    blob = json.dumps(memory)
+    assert "analytics dashboard" not in blob and "Request 1" not in blob
+    assert isinstance(memory["output_floor_tokens"], int)
+    assert all(n in (BASE, SMALL) for n in memory["below_output_floor"])
+
+
+# ---------------------------------------------------------------------------
+# an explicit budget is a positive integer, or the request is rejected (B2)
+# ---------------------------------------------------------------------------
+# ``budget_bucket`` maps everything that is not a positive int to ``"default"``,
+# the bucket documented as "no explicit budget: the provider's own default,
+# which the router does not know". Silently dropping a *stated* budget into
+# that bucket pools observations the module says are not comparable, and the
+# same value goes on into ``TurnRequest.output_tokens`` and the cost
+# arithmetic. The edge rejects it instead.
+BAD_BUDGETS = [12000.0, 0.5, "12000", "", True, False, 0, -5, [], {},
+               float("inf"), float("-inf"), float("nan")]
+
+
+@pytest.mark.parametrize("value", BAD_BUDGETS)
+def test_an_invalid_max_tokens_is_not_an_explicit_budget(value):
+    with pytest.raises(ValueError):
+        server.explicit_max_tokens({"max_tokens": value})
+
+
+@pytest.mark.parametrize("body", [{}, {"max_tokens": None}])
+def test_an_absent_or_null_max_tokens_stays_the_unknown_budget(body):
+    assert server.explicit_max_tokens(body) is None
+
+
+def test_a_valid_max_tokens_passes_through_unchanged():
+    assert server.explicit_max_tokens({"max_tokens": 1}) == 1
+    assert server.explicit_max_tokens({"max_tokens": 12000}) == 12000
+
+
+@pytest.mark.parametrize("value", [12000.0, "12000", True, 0, -5])
+def test_the_openai_edge_rejects_an_invalid_budget(harness, value):  # noqa: F811
+    client, router, upstream, _ = harness(_complete)
+    response = client.post("/v1/chat/completions", json={
+        "model": "auto", "max_tokens": value,
+        "messages": [{"role": "user", "content": _topic(0)}]})
+    assert response.status_code == 400, response.text
+    assert "max_tokens" in response.json()["detail"]
+    # Nothing was routed, nothing was called, nothing was remembered.
+    assert upstream.calls == []
+    assert list(router.decisions) == []
+    assert router.outcomes.stats["observations"] == 0
+
+
+@pytest.mark.parametrize("value", [12000.0, "12000", True, 0, -5])
+def test_the_anthropic_edge_rejects_an_invalid_budget_in_its_own_envelope(harness, value):  # noqa: F811
+    client, router, upstream, _ = harness(_complete)
+    response = client.post("/v1/messages", json={
+        "model": "auto", "max_tokens": value,
+        "messages": [{"role": "user", "content": _topic(0)}]})
+    assert response.status_code == 400, response.text
+    payload = response.json()
+    assert payload["type"] == "error"
+    assert payload["error"]["type"] == "invalid_request_error"
+    assert payload["error"]["message"] == server.MAX_TOKENS_ERROR
+    assert upstream.calls == [] and list(router.decisions) == []
+
+
+def test_a_stated_budget_is_never_pooled_with_the_unknown_budget_population(harness):  # noqa: F811
+    """The whole point of B2: a rejected request cannot flag a route."""
+    client, router, upstream, _ = harness(_cheap_truncates)
+    for i in range(4):
+        rejected = client.post("/v1/chat/completions", json={
+            "model": "auto", "max_tokens": "12000",
+            "messages": [{"role": "user", "content": _topic(i)}]})
+        assert rejected.status_code == 400
+    assert router.outcomes.stats["keys"] == 0
+    # An honest request with no budget at all still uses the "default" bucket.
+    assert client.post("/v1/chat/completions", json={
+        "model": "auto", "messages": [{"role": "user", "content": _topic(9)}]}).status_code == 200
+    assert {k.budget for _m, k in router.outcomes._seen} == {"default"}
+
+
+def test_a_valid_budget_still_reaches_the_right_bucket_end_to_end(harness):  # noqa: F811
+    client, router, _upstream, _ = harness(_complete)
+    assert _ask(client, _topic(0)).status_code == 200
+    assert [k.budget for _m, k in router.outcomes._seen] == ["<=16384"]
+
+
+def test_a_non_finite_max_tokens_is_rejected_rather_than_bucketed(harness):  # noqa: F811
+    """``NaN`` is not JSON-compliant output but every JSON *parser* here accepts it."""
+    client, router, upstream, _ = harness(_complete)
+    for literal in ("NaN", "Infinity", "-Infinity"):
+        raw = json.dumps({"model": "auto", "messages": [{"role": "user", "content": "hi"}]})
+        raw = raw[:-1] + f', "max_tokens": {literal}}}'
+        response = client.post("/v1/chat/completions", content=raw.encode(),
+                               headers={"Content-Type": "application/json"})
+        assert response.status_code == 400, (literal, response.text)
+        assert "max_tokens" in response.json()["detail"]
+    assert upstream.calls == [] and router.outcomes.stats["keys"] == 0

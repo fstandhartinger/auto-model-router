@@ -18,6 +18,10 @@ This module is that missing memory, kept deliberately small and conservative:
 * **Comparable means the same category and the same output-budget bucket.**
   Running out of budget is a property of a route *and* a budget; a route that
   cannot finish a page in 12,000 tokens says nothing about a 500-token answer.
+  The ``"default"`` bucket means the caller stated no budget at all, so only a
+  request that really stated none may land in it: the server edge rejects a
+  malformed ``max_tokens`` outright rather than let it fall through
+  (``explicit_budget`` below, ``server.explicit_max_tokens``).
 * **A stated evidence basis, or no effect.** A route is avoided only after
   ``min_truncations`` observed length stops that are at least ``min_rate`` of
   its recent observed outcomes for that key, within ``ttl_s``. One truncation is
@@ -49,9 +53,24 @@ COUNTED_STATUSES = frozenset({"ok", "truncated"})
 BUDGET_BUCKETS = (1024, 4096, 16384, 65536)
 
 
+def explicit_budget(max_tokens: object) -> int | None:
+    """The caller's stated output budget, or ``None`` when it stated none.
+
+    Only a positive ``int`` is a budget. A ``bool`` is an ``int`` in Python but
+    is not one here; a float, a numeric string, zero and a negative number are
+    not budgets either. Everything this returns ``None`` for is the *unknown*
+    budget - the ``"default"`` bucket - so the server edge rejects such a value
+    outright rather than let a stated budget be pooled with the unknown ones
+    (``server.explicit_max_tokens``).
+    """
+    if isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens <= 0:
+        return None
+    return max_tokens
+
+
 def budget_bucket(max_tokens: int | None) -> str:
     """A coarse, fixed label for the caller's output budget."""
-    if not isinstance(max_tokens, int) or isinstance(max_tokens, bool) or max_tokens <= 0:
+    if explicit_budget(max_tokens) is None:
         return "default"
     for upper in BUDGET_BUCKETS:
         if max_tokens <= upper:

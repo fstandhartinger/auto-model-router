@@ -27,6 +27,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from .config import Provider, RouterConfig, for_http, load_config
 from .decision import ObservedOutcome
 from .metrics import metrics
+from .outcome_memory import explicit_budget
 from .policies import NoRouteAvailable
 from .pricing import Usage, cost_usd, parse_openai_usage
 from .router import RouteResult, Router
@@ -164,6 +165,35 @@ async def router_decisions(limit: int = 20) -> dict:
             "data": [d.to_dict() for d in reversed(recent)]}
 
 
+#: Rejected rather than coerced. Both the OpenAI and the Anthropic API define
+#: ``max_tokens`` as a positive integer, so a float, a numeric string or a bool
+#: is a malformed request, and guessing what the caller meant would be worse
+#: than saying so: the value decides the ``outcome_memory`` budget bucket, and
+#: everything that is not a positive int falls into ``"default"``, the bucket
+#: that means *"no explicit budget, the provider's own default, which the
+#: router does not know"*. Silently pooling a stated 12000-token budget with
+#: that population mixes evidence the module documents as not comparable, and
+#: can make the avoidance rule fire - or fail to fire - on it. The same value
+#: also reaches ``TurnRequest.output_tokens`` and from there the cost
+#: arithmetic, where a string would raise deep inside the policy instead.
+MAX_TOKENS_ERROR = "max_tokens must be a positive integer"
+
+
+def explicit_max_tokens(body: dict) -> int | None:
+    """The caller's stated output budget, or ``None`` when it stated none.
+
+    Raises :class:`ValueError` for a present-but-invalid value. ``None`` and an
+    absent key both mean "no explicit budget" and are unchanged behaviour.
+    """
+    value = (body or {}).get("max_tokens")
+    if value is None:
+        return None
+    budget = explicit_budget(value)
+    if budget is None:
+        raise ValueError(MAX_TOKENS_ERROR)
+    return budget
+
+
 async def _route(messages, system, tools, max_tokens, exclude_subscriptions: bool = False) -> RouteResult:
     try:
         return await asyncio.to_thread(router.route, messages, system, tools, max_tokens, None,
@@ -184,9 +214,13 @@ async def chat_completions(request: Request) -> Any:
     messages = body.get("messages") or []
     if not messages:
         raise HTTPException(400, "messages is required")
+    try:
+        max_tokens = explicit_max_tokens(body)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     system = next((m.get("content") for m in messages if m.get("role") == "system"), None)
     convo = [m for m in messages if m.get("role") != "system"]
-    result = await _route(convo, system, body.get("tools"), body.get("max_tokens"))
+    result = await _route(convo, system, body.get("tools"), max_tokens)
 
     if body.get("stream"):
         return StreamingResponse(_openai_stream(body, result), media_type="text/event-stream",
@@ -477,12 +511,19 @@ async def anthropic_messages(request: Request) -> Any:
     messages = body.get("messages") or []
     if not messages:
         raise HTTPException(400, "messages is required")
+    try:
+        max_tokens = explicit_max_tokens(body)
+    except ValueError as exc:
+        # Anthropic's own error envelope, so a client that already handles a
+        # 400 from api.anthropic.com handles this one unchanged.
+        return JSONResponse({"type": "error", "error": {"type": "invalid_request_error",
+                                                        "message": str(exc)}}, status_code=400)
     from . import plan_auth
     kind = plan_auth.credential_kind(request.headers)
     from . import switch
     switch_file = switch.state_path(request.headers.get(switch.SWITCH_HEADER, "").strip())
     plan_reachable = kind == plan_auth.SUBSCRIPTION
-    result = await _route(messages, body.get("system"), body.get("tools"), body.get("max_tokens"),
+    result = await _route(messages, body.get("system"), body.get("tools"), max_tokens,
                           exclude_subscriptions=not plan_reachable and switch_file is None)
     if result.model.subscription == "claude" and not plan_reachable:
         # A switch-mode session (see switch.py). The hook owns the decision at
@@ -492,7 +533,7 @@ async def anthropic_messages(request: Request) -> Any:
         # asks the wrapper to resume the conversation in plan mode.
         if result.turn_start:
             result = await _route(messages, body.get("system"), body.get("tools"),
-                                  body.get("max_tokens"), exclude_subscriptions=True)
+                                  max_tokens, exclude_subscriptions=True)
         else:
             return switch_to_plan(request, body, result, switch_file)
     if result.model.subscription == "claude":
