@@ -43,7 +43,7 @@ import json
 import logging
 import os
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, AsyncIterator, Callable
 
 import httpx
 from fastapi import Request
@@ -51,6 +51,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from . import plan_auth
 from .decision import ObservedOutcome
+from .truncation import truncation_label
 
 if TYPE_CHECKING:
     from .router import RouteResult
@@ -150,6 +151,70 @@ def may_rewrite_model(target: str, kind: str) -> bool:
     return target in plan_auth.plan_models()
 
 
+#: One ``data:`` line of an Anthropic stream is small. A body that never sends
+#: a newline is not one a stop flag can be read out of, so the unfinished line
+#: is dropped rather than grown without bound.
+MAX_SSE_LINE = 1 << 16
+
+
+def _length_stop(payload: Any) -> str | None:
+    """The plan's own length-stop flag in one message, or ``None``.
+
+    Anthropic states the stop reason at the top level of a message and inside
+    the ``delta`` of a stream's ``message_delta`` event. Both are read through
+    ``truncation.truncation_label``, so the label can only ever be built from
+    that module's fixed vocabularies - never from a fragment of the body.
+    """
+    if not isinstance(payload, dict):
+        return None
+    return truncation_label(payload) or truncation_label(payload.get("delta"))
+
+
+def _length_stop_in(blob: bytes) -> str | None:
+    """Same judgement for a body that arrived in one piece."""
+    try:
+        return _length_stop(json.loads(blob))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None
+
+
+async def _watch_for_length_stop(source: AsyncIterator[bytes],
+                                 record: Callable[[str | None], None]) -> AsyncIterator[bytes]:
+    """Forward an SSE body byte for byte, and record the outcome when it ends.
+
+    A stream says how it stopped last, so here the observation can only be made
+    after the client already has the text - the same order
+    ``server._anthropic_stream`` records a metered stream in. Only whole
+    ``data:`` lines are parsed and only for the stop flag; at most one
+    unfinished line is held, and nothing read here is kept.
+    """
+    label: str | None = None
+    partial = ""
+    try:
+        async for chunk in source:
+            yield chunk
+            if label is not None:
+                continue
+            partial += chunk.decode("utf-8", "replace")
+            lines = partial.split("\n")
+            partial = lines.pop()
+            if len(partial) > MAX_SSE_LINE:
+                partial = ""
+            for line in lines:
+                line = line.strip()
+                if not line.startswith("data:"):
+                    continue
+                try:
+                    found = _length_stop(json.loads(line[5:]))
+                except json.JSONDecodeError:
+                    continue
+                if found:
+                    label = found
+                    break
+    finally:
+        record(label)
+
+
 async def subscription_passthrough(request: Request, raw: bytes, body: dict,
                                    result: "RouteResult") -> Response:
     """The routed Claude turn: forward it, and book it against the plan."""
@@ -166,12 +231,30 @@ async def subscription_passthrough(request: Request, raw: bytes, body: dict,
              result.model.name, kind, redact(dict(request.headers)))
     started = time.perf_counter()
     response = await passthrough(request, forward_body, "/v1/messages")
-    if response.status_code < 400:
+    served = response.status_code < 400
+    if served:
         router.commit(result)
-    router.observe(result, ObservedOutcome(
-        model=result.model.name, status="ok" if response.status_code < 400 else "upstream_error",
-        http_status=response.status_code, latency_ms=(time.perf_counter() - started) * 1000,
-        cost_basis="subscription route: no per-token charge; the plan's own usage limits apply"))
+
+    def record(cut: str | None) -> None:
+        # A 200 the plan itself flagged as a length stop spent plan quota
+        # without finishing the answer. Calling that ``ok`` would hide the
+        # failure *and* pad the denominator the avoidance rule reads
+        # (``outcome_memory.COUNTED_STATUSES`` counts ``ok`` and ``truncated``),
+        # so this surface reads the same machine-readable flag every metered
+        # surface already reads. The plan is still charged either way, which is
+        # why ``commit`` above does not depend on it.
+        router.observe(result, ObservedOutcome(
+            model=result.model.name,
+            status=("truncated" if cut else "ok") if served else "upstream_error",
+            http_status=response.status_code,
+            latency_ms=(time.perf_counter() - started) * 1000,
+            error=cut if served else None,
+            cost_basis="subscription route: no per-token charge; the plan's own usage limits apply"))
+
+    if isinstance(response, StreamingResponse):
+        response.body_iterator = _watch_for_length_stop(response.body_iterator, record)
+    else:
+        record(_length_stop_in(response.body) if served else None)
     for key, value in headers.items():
         response.headers[key] = value
     return response
