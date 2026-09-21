@@ -33,7 +33,7 @@ from .ledger import RoutingLedger
 from .outcome_memory import (AvoidanceRule, OutcomeKey, OutcomeMemory, budget_bucket,
                              explicit_budget)
 from .policies import (POLICIES, Context, Conversation, ExpectedCostPolicy, Policy, TurnRequest,
-                       turn_call_cost)
+                       _priced, candidates, turn_call_cost)
 from .quota import (PacingRule, QuotaDecision, decide as quota_decide, from_budget_file,
                     from_codex_rollouts, from_command)
 from .verify import (VerifyPolicy, Verdict, bump_floor, escalation_choice, not_verified,
@@ -372,7 +372,8 @@ class Router:
 
     def route_job(self, task: str, *, steps: int = 12, output_per_step: int = 1200,
                   force: str | None = None, now: float | None = None,
-                  only: Callable[[ModelInfo], bool] | None = None) -> RouteResult:
+                  only: Callable[[ModelInfo], bool] | None = None,
+                  tier: str = "auto") -> RouteResult:
         """Route a whole job rather than one turn: which *tool* should run this.
 
         The difference from :meth:`route` is the shape of the request, not the
@@ -392,7 +393,15 @@ class Router:
         row - and says in one line which route the policy would have picked
         instead. An override the ledger describes as a routing decision would
         be the one lie that makes every later comparison worthless.
+
+        ``tier`` (``cheap`` or ``strong``) is a caller's preference *within*
+        the policy's own eligible routes - the same tool, context-window,
+        vision and quota filters the policy applied - so a tier can never
+        launch a route the policy had ruled out, such as a plan whose quota is
+        closed. It is recorded as a tier choice, not as an operator override.
         """
+        if tier not in ("auto", "cheap", "strong"):
+            raise ValueError(f"unknown tier {tier!r}")
         now = now or time.time()
         messages = [{"role": "user", "content": task}]
         # Truthful, and the only tool information available before the client
@@ -424,10 +433,46 @@ class Router:
             reason = (f"operator override (--route {force}); "
                       f"the policy would have picked {model.name}")
             model = forced
+        elif not force and tier != "auto":
+            model, reason, note = self._tier_choice(tier, req, ctx, model, reason)
         result = self._result(ctx, conv, cid, model, reason, req, cls, now, cls_ms, turn_start=True)
         if note and result.explanation is not None:
             result.explanation.notes.append(note)
         return result
+
+    #: Below this classifier difficulty the cheap tier prefers the lowest
+    #: price; above it the expected-cost choice stands.
+    CHEAP_TIER_MAX_DIFFICULTY = 0.65
+
+    def _tier_choice(self, tier: str, req: TurnRequest, ctx: Context, chosen: ModelInfo,
+                     reason: str) -> tuple[ModelInfo, str, str | None]:
+        """Apply a worker tier inside the routes the policy itself would allow."""
+        fits = {m.name for m in ctx.catalog.eligible(needs_vision=req.needs_vision,
+                                                     needs_tools=req.needs_tools,
+                                                     prompt_tokens=req.prompt_tokens)}
+        pool = [m for m in candidates(req, ctx, allow_subscription=self.policy.allow_subscription)
+                if m.name in fits]
+        if not pool:
+            return chosen, f"{reason}; tier {tier}: no route passes the policy's filters, kept", None
+        category = req.category
+        if tier == "strong":
+            pick = max(pool, key=lambda m: (m.cap(category), -m.latency_s))
+            why = "most capable"
+        elif req.difficulty < self.CHEAP_TIER_MAX_DIFFICULTY:
+            def price(m: ModelInfo) -> float:
+                priced = _priced(m, ctx) or m
+                return priced.prices.input + priced.prices.output
+            pick = min(pool, key=lambda m: (price(m), -m.cap(category)))
+            why = "lowest list price for an easy job"
+        else:
+            return chosen, f"{reason}; tier cheap: hard job, the expected-cost choice stands", None
+        if pick.name == chosen.name:
+            return chosen, f"{reason}; tier {tier} agrees", None
+        note = (f"Chosen by worker tier '{tier}' among the routes the policy allows "
+                f"(tools, context window, quota); not an operator override. "
+                f"The policy's own choice was {chosen.name}.")
+        return pick, (f"worker tier {tier}: {why} among {len(pool)} policy-eligible routes; "
+                      f"the policy would have picked {chosen.name}"), note
 
     @staticmethod
     def _job_summary(task: str, steps: int) -> str:

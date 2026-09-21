@@ -2,31 +2,75 @@
 
 The planner's client remains unchanged. Workers are launched through the normal
 job router, never through a subscription route, and the response distinguishes
-the router's pre-run cost estimate from measured cost (which most agent CLIs do
-not report).
+the router's pre-run cost estimate from measured cost. No launched agent CLI
+reports token usage back to the launcher, so ``cost_usd`` is always ``null``.
+
+Boundaries the server enforces, because a worker is usually a cheap
+third-party model with a shell:
+
+- **Arguments** are validated against the tool schema before anything runs; a
+  malformed call gets a structured error and the server keeps serving.
+- **The brief is data.** It follows ``--`` on the launcher's command line, so a
+  brief that starts with ``-`` cannot become a launcher option.
+- **Working directory.** ``cwd`` must lie inside the delegation root:
+  ``AUTO_ROUTER_DELEGATE_ROOT``, or else the directory the server was started
+  in (the project the planner's client opened). A root of ``/``, ``$HOME`` or
+  a parent of ``$HOME`` is refused as too broad.
+- **Environment.** The launcher starts the worker with an allowlist, not the
+  planner's environment (``launcher.EnvPolicy``).
+- **Time.** ``timeout_s`` ends the launcher's whole session - the launcher,
+  the agent and everything the agent started - not just the direct child.
+- **Concurrency.** More than one worker never shares a tree: each gets a
+  disposable copy of ``cwd``, and the result carries the copy's path and a
+  diff against the state the copies started from. Nothing is applied to
+  ``cwd`` and nothing a worker wrote is executed by this server; the planner
+  reviews the diff and applies what it accepts. A single worker runs in
+  ``cwd`` itself. Tool calls are served one at a time.
 """
 
 from __future__ import annotations
 
+import difflib
+import filecmp
 import json
 import os
+import shutil
+import signal
 import subprocess
 import sys
+import tempfile
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Callable
 
+from . import procs
+
 ROOT = Path(__file__).resolve().parents[1]
 PROTOCOL = "2025-06-18"
 MAX_OUTPUT = 12000
+MAX_PATCH = 60000
 MAX_PARALLEL = 8
+MAX_TASKS = 32
+MAX_TASK_CHARS = 100_000
+MAX_CONTEXT_CHARS = 200_000
+#: A per-worker copy larger than this is refused rather than made eight times.
+COPY_LIMIT_BYTES = int(os.environ.get("AUTO_ROUTER_DELEGATE_COPY_LIMIT_MB", "200")) * 1024 * 1024
+COPY_LIMIT_FILES = 50_000
+#: Left out of per-worker copies: large, machine-specific or version control.
+COPY_IGNORE = (".git", ".hg", ".svn", ".venv", "venv", "node_modules", "__pycache__",
+               ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox")
 
 _COMMON_PROPERTIES = {
-    "context": {"type": "string", "description": "only the task-local context the worker needs"},
-    "cwd": {"type": "string", "description": "working directory (default: the server's)"},
+    "context": {"type": "string", "maxLength": MAX_CONTEXT_CHARS,
+                "description": "only the task-local context the worker needs"},
+    "cwd": {"type": "string",
+            "description": "working directory inside the delegation root (default: the root)"},
     "tier": {"type": "string", "enum": ["cheap", "auto", "strong"], "default": "cheap",
-             "description": "cheap prefers a low-cost worker unless the router judges the task hard; auto uses expected cost; strong uses the most capable non-plan worker"},
+             "description": "applied among the routes the policy allows: cheap prefers a low-cost "
+                            "worker unless the router judges the task hard; auto keeps the policy's "
+                            "choice; strong prefers the most capable non-plan worker"},
     "timeout_s": {"type": "integer", "minimum": 1, "maximum": 7200, "default": 900},
 }
 
@@ -34,12 +78,15 @@ DELEGATE_TOOL = {
     "name": "delegate",
     "description": (
         "Run a self-contained sub-task on routed worker agents. Use cheap for mechanical work; "
-        "the router may choose a stronger worker when the task is hard. parallel>1 asks independent "
-        "workers for results. Give only task-local context and verify their output before using it."),
+        "the router may choose a stronger worker when the task is hard. parallel>1 runs "
+        "independent attempts, each in its own disposable copy of cwd, and returns each copy's "
+        "diff; nothing is applied to cwd. Give only task-local context and verify worker output "
+        "before using it."),
     "inputSchema": {
         "type": "object",
         "properties": {
-            "task": {"type": "string", "description": "complete, self-contained worker brief"},
+            "task": {"type": "string", "minLength": 1, "maxLength": MAX_TASK_CHARS,
+                     "description": "complete, self-contained worker brief"},
             **_COMMON_PROPERTIES,
             "parallel": {"type": "integer", "minimum": 1, "maximum": MAX_PARALLEL, "default": 1},
         },
@@ -51,13 +98,15 @@ DELEGATE_TOOL = {
 DELEGATE_MANY_TOOL = {
     "name": "delegate_many",
     "description": (
-        "Run different independent worker briefs concurrently. Keep dependencies with the planner; "
-        "use this only when every task can finish without another worker's result."),
+        "Run different independent worker briefs concurrently. With more than one brief, each "
+        "worker gets its own disposable copy of cwd and the result carries its diff; nothing is "
+        "applied to cwd. Keep dependencies with the planner; use this only when every task can "
+        "finish without another worker's result."),
     "inputSchema": {
         "type": "object",
         "properties": {
-            "tasks": {"type": "array", "minItems": 1, "maxItems": 32,
-                      "items": {"type": "string"},
+            "tasks": {"type": "array", "minItems": 1, "maxItems": MAX_TASKS,
+                      "items": {"type": "string", "minLength": 1, "maxLength": MAX_TASK_CHARS},
                       "description": "self-contained worker briefs"},
             **_COMMON_PROPERTIES,
             "parallel": {"type": "integer", "minimum": 1, "maximum": MAX_PARALLEL, "default": 4},
@@ -70,6 +119,102 @@ DELEGATE_MANY_TOOL = {
 TOOLS = [DELEGATE_TOOL, DELEGATE_MANY_TOOL]
 
 
+class ArgumentError(ValueError):
+    """A tool call whose arguments do not match the tool's schema."""
+
+
+# ---------------------------------------------------------------------------
+# argument validation
+# ---------------------------------------------------------------------------
+def _check(name: str, value: Any, spec: dict) -> Any:
+    kind = spec.get("type")
+    if kind == "string":
+        if not isinstance(value, str):
+            raise ArgumentError(f"{name} must be a string")
+        if len(value.strip()) < spec.get("minLength", 0):
+            raise ArgumentError(f"{name} must not be empty")
+        if "maxLength" in spec and len(value) > spec["maxLength"]:
+            raise ArgumentError(f"{name} is longer than {spec['maxLength']} characters")
+        if "enum" in spec and value not in spec["enum"]:
+            raise ArgumentError(f"{name} must be one of {', '.join(spec['enum'])}")
+    elif kind == "integer":
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ArgumentError(f"{name} must be an integer")
+        if not spec.get("minimum", value) <= value <= spec.get("maximum", value):
+            raise ArgumentError(f"{name} must be between {spec['minimum']} and {spec['maximum']}")
+    elif kind == "array":
+        if not isinstance(value, list):
+            raise ArgumentError(f"{name} must be a list")
+        if not spec.get("minItems", 0) <= len(value) <= spec.get("maxItems", len(value)):
+            raise ArgumentError(f"{name} must have {spec.get('minItems', 0)} to "
+                                f"{spec.get('maxItems')} items")
+        for i, item in enumerate(value):
+            _check(f"{name}[{i}]", item, spec.get("items") or {})
+    return value
+
+
+def validate(tool: dict, arguments: Any) -> dict[str, Any]:
+    """Arguments checked against ``tool``'s input schema, defaults filled in."""
+    schema = tool["inputSchema"]
+    if not isinstance(arguments, dict):
+        raise ArgumentError("arguments must be an object")
+    unknown = sorted(set(arguments) - set(schema["properties"]))
+    if unknown:
+        raise ArgumentError(f"unknown argument(s): {', '.join(unknown)}")
+    missing = [key for key in schema["required"] if arguments.get(key) is None]
+    if missing:
+        raise ArgumentError(f"missing required argument(s): {', '.join(missing)}")
+    out: dict[str, Any] = {}
+    for key, spec in schema["properties"].items():
+        value = arguments.get(key)
+        out[key] = spec.get("default") if value is None else _check(key, value, spec)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# boundaries: working directory and environment
+# ---------------------------------------------------------------------------
+_START_DIR = os.getcwd()
+
+
+def delegation_root() -> Path:
+    """The directory every ``cwd`` must lie in; refused when it is too broad."""
+    raw = os.environ.get("AUTO_ROUTER_DELEGATE_ROOT") or _START_DIR
+    root = Path(os.path.expanduser(raw)).resolve()
+    home = Path.home().resolve()
+    if root == Path(root.anchor) or root == home or root in home.parents:
+        raise ArgumentError(
+            f"delegation root {str(root)!r} is too broad; start the server in a project directory "
+            f"or set AUTO_ROUTER_DELEGATE_ROOT to one")
+    return root
+
+
+def resolve_cwd(cwd: str | None) -> str:
+    root = delegation_root()
+    target = Path(cwd).expanduser().resolve() if cwd else root
+    if target != root and root not in target.parents:
+        raise ArgumentError(f"cwd {str(target)!r} is outside the delegation root {str(root)!r}")
+    if not target.is_dir():
+        raise ArgumentError(f"no such directory: {str(target)!r}")
+    return str(target)
+
+
+def launcher_env(environ: dict[str, str] | None = None) -> dict[str, str]:
+    """The launcher process's environment.
+
+    The launcher is this package's own code: it needs its configuration, the
+    quota readers and the classifier key the configuration names. The worker
+    it starts receives only the launcher's allowlist (``EnvPolicy``); nothing
+    here is passed on to the worker unless the configuration names it.
+    """
+    env = dict(os.environ if environ is None else environ)
+    env["PYTHONPATH"] = os.pathsep.join(p for p in (str(ROOT), env.get("PYTHONPATH", "")) if p)
+    return env
+
+
+# ---------------------------------------------------------------------------
+# running workers
+# ---------------------------------------------------------------------------
 def _brief(task: str, context: str | None) -> str:
     task = task.strip()
     if not context or not context.strip():
@@ -82,7 +227,8 @@ def launcher_argv(task: str, cwd: str | None, tier: str = "cheap") -> list[str]:
             "--tier", tier]
     if cwd:
         argv += ["--cwd", cwd]
-    return argv + [task]
+    # ``--`` ends the options: a brief such as "--list" is a task, not a flag.
+    return argv + ["--", task]
 
 
 def _decision(stderr: str) -> dict[str, Any]:
@@ -96,26 +242,32 @@ def _decision(stderr: str) -> dict[str, Any]:
     return {}
 
 
+def _run_launcher(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+    """Run the launcher in a session of its own, so a timeout ends all of it."""
+    return procs.run(argv, scope="session", **kwargs)
+
+
 def run_delegate(task: str, context: str | None = None, cwd: str | None = None,
                  tier: str = "cheap", timeout_s: int = 900,
-                 run: Callable[..., Any] = subprocess.run) -> dict[str, Any]:
+                 run: Callable[..., Any] = _run_launcher) -> dict[str, Any]:
     """Run one worker and return a truthful, machine-readable result."""
     started = time.perf_counter()
-    if not task.strip():
+    if not isinstance(task, str) or not task.strip():
         return {"ok": False, "error": "empty task"}
     if cwd and not Path(cwd).is_dir():
         return {"ok": False, "error": f"no such directory: {cwd}"}
     if tier not in {"cheap", "auto", "strong"}:
         return {"ok": False, "error": f"unknown tier: {tier}"}
-    timeout_s = max(1, min(int(timeout_s), 7200))
+    if isinstance(timeout_s, bool) or not isinstance(timeout_s, int):
+        return {"ok": False, "error": "timeout_s must be an integer"}
+    timeout_s = max(1, min(timeout_s, 7200))
     full_brief = _brief(task, context)
-    env = dict(os.environ)
-    env["PYTHONPATH"] = os.pathsep.join(p for p in (str(ROOT), env.get("PYTHONPATH", "")) if p)
     try:
-        proc = run(launcher_argv(full_brief, cwd, tier), cwd=cwd or None, env=env,
+        proc = run(launcher_argv(full_brief, cwd, tier), cwd=cwd or None, env=launcher_env(),
                    capture_output=True, text=True, timeout=timeout_s, stdin=subprocess.DEVNULL)
     except subprocess.TimeoutExpired:
-        return {"ok": False, "error": f"worker timed out after {timeout_s}s",
+        return {"ok": False, "error": f"worker timed out after {timeout_s}s; the worker and "
+                                      f"every process it started were stopped",
                 "tier": tier, "wall_time_s": round(time.perf_counter() - started, 3),
                 "brief_chars": len(full_brief), "brief_tokens_estimate": (len(full_brief) + 3) // 4}
     decision = _decision(proc.stderr or "")
@@ -124,7 +276,7 @@ def run_delegate(task: str, context: str | None = None, cwd: str | None = None,
     if truncated:
         output = "[... earlier output cut ...]\n" + output[-MAX_OUTPUT:]
     estimate = ((decision.get("decision") or {}).get("estimated_outcome") or {}).get("cost_usd")
-    return {
+    result = {
         "ok": proc.returncode == 0,
         "model": decision.get("route"),
         "tier": tier,
@@ -132,25 +284,111 @@ def run_delegate(task: str, context: str | None = None, cwd: str | None = None,
         "exit_code": proc.returncode,
         "wall_time_s": round(time.perf_counter() - started, 3),
         "cost_usd": None,
-        "cost_basis": "not measured: the launched agent CLI did not report token usage",
+        "cost_basis": "not measured: the launched agent CLI does not report token usage",
         "estimated_cost_usd": estimate,
         "estimated_cost_basis": "router estimate before the worker ran" if estimate is not None else None,
         "brief_chars": len(full_brief),
         "brief_tokens_estimate": (len(full_brief) + 3) // 4,
         "output_truncated": truncated,
     }
+    if proc.returncode != 0 and not decision:
+        # The launcher refused before any worker started (bad config, a
+        # --cwd outside launcher.cwd_root, no route): say why.
+        result["error"] = ((proc.stderr or "").strip().splitlines() or ["launcher failed"])[-1][:500]
+    return result
+
+
+def _tree(root: Path) -> dict[str, Path]:
+    out: dict[str, Path] = {}
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in COPY_IGNORE]
+        for name in filenames:
+            path = Path(dirpath) / name
+            out[str(path.relative_to(root))] = path
+    return out
+
+
+def _copy_size(source: Path) -> tuple[int, int]:
+    files = size = 0
+    for path in _tree(source).values():
+        files += 1
+        try:
+            size += path.lstat().st_size
+        except OSError:
+            pass
+        if files > COPY_LIMIT_FILES or size > COPY_LIMIT_BYTES:
+            break
+    return files, size
+
+
+def _copy(source: Path, target: Path) -> None:
+    shutil.copytree(source, target, symlinks=True,
+                    ignore=shutil.ignore_patterns(*COPY_IGNORE))
+
+
+def diff_trees(before: Path, after: Path, limit: int = MAX_PATCH) -> dict[str, Any]:
+    """What a worker changed in its copy: file lists and a unified diff."""
+    old, new = _tree(before), _tree(after)
+    added = sorted(set(new) - set(old))
+    deleted = sorted(set(old) - set(new))
+    modified = sorted(rel for rel in set(old) & set(new)
+                      if not filecmp.cmp(old[rel], new[rel], shallow=False))
+    chunks: list[str] = []
+    binary: list[str] = []
+    for rel in sorted({*added, *deleted, *modified}):
+        texts = []
+        for tree in (old, new):
+            path = tree.get(rel)
+            if path is None or path.is_symlink():
+                texts.append([] if path is None else [f"-> {os.readlink(path)}\n"])
+                continue
+            try:
+                texts.append(path.read_text(encoding="utf-8").splitlines(keepends=True))
+            except (UnicodeDecodeError, OSError):
+                texts.append(None)
+        if texts[0] is None or texts[1] is None:
+            binary.append(rel)
+            continue
+        chunks.extend(difflib.unified_diff(texts[0], texts[1], f"a/{rel}", f"b/{rel}"))
+    patch = "".join(chunks)
+    return {"added": added, "modified": modified, "deleted": deleted, "binary_changed": binary,
+            "patch": patch[:limit], "patch_truncated": len(patch) > limit}
 
 
 def run_many(tasks: list[str], *, context: str | None = None, cwd: str | None = None,
              tier: str = "cheap", parallel: int = 4, timeout_s: int = 900,
              runner: Callable[..., dict[str, Any]] = run_delegate) -> dict[str, Any]:
-    if not tasks or any(not isinstance(task, str) or not task.strip() for task in tasks):
-        return {"ok": False, "error": "tasks must contain non-empty strings"}
-    workers = max(1, min(int(parallel), MAX_PARALLEL, len(tasks)))
+    """Run several workers; with more than one, each works in its own copy of ``cwd``."""
+    if (not isinstance(tasks, list) or not tasks or len(tasks) > MAX_TASKS
+            or any(not isinstance(task, str) or not task.strip() for task in tasks)):
+        return {"ok": False, "error": f"tasks must be a list of 1 to {MAX_TASKS} non-empty strings"}
+    if isinstance(parallel, bool) or not isinstance(parallel, int):
+        return {"ok": False, "error": "parallel must be an integer"}
+    workers = max(1, min(parallel, MAX_PARALLEL, len(tasks)))
     started = time.perf_counter()
+    source = Path(cwd or os.getcwd()).resolve()
+    isolated = len(tasks) > 1
+    scratch: Path | None = None
+    workdirs: list[str | None] = [cwd] * len(tasks)
+    if isolated:
+        files, size = _copy_size(source)
+        if files > COPY_LIMIT_FILES or size > COPY_LIMIT_BYTES:
+            return {"ok": False, "error": (
+                f"{source} is too large to copy once per worker (limit {COPY_LIMIT_FILES} files, "
+                f"{COPY_LIMIT_BYTES // 2**20} MB, without {', '.join(COPY_IGNORE[:6])}...); "
+                f"use a smaller cwd or run one worker at a time")}
+        scratch = Path(tempfile.mkdtemp(prefix="auto-router-delegate-"))
+        try:
+            _copy(source, scratch / "base")
+            for i in range(len(tasks)):
+                _copy(source, scratch / f"worker-{i + 1}")
+                workdirs[i] = str(scratch / f"worker-{i + 1}")
+        except OSError as exc:
+            shutil.rmtree(scratch, ignore_errors=True)
+            return {"ok": False, "error": f"could not copy {source} for the workers: {exc}"}
     results: list[dict[str, Any] | None] = [None] * len(tasks)
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        pending = {pool.submit(runner, task, context, cwd, tier, timeout_s): i
+        pending = {pool.submit(runner, task, context, workdirs[i], tier, timeout_s): i
                    for i, task in enumerate(tasks)}
         for future in as_completed(pending):
             i = pending[future]
@@ -159,60 +397,94 @@ def run_many(tasks: list[str], *, context: str | None = None, cwd: str | None = 
             except Exception as exc:  # a broken worker must not lose its siblings
                 results[i] = {"ok": False, "error": f"worker failed: {type(exc).__name__}: {exc}"}
     finished = [r or {"ok": False, "error": "worker produced no result"} for r in results]
+    if isolated and scratch is not None:
+        for i, item in enumerate(finished):
+            workdir = Path(workdirs[i] or "")
+            try:
+                changes = diff_trees(scratch / "base", workdir)
+            except OSError as exc:
+                changes = {"error": f"could not diff the worker copy: {exc}"}
+            changed = any(changes.get(k) for k in ("added", "modified", "deleted"))
+            if not changed and not changes.get("error"):
+                shutil.rmtree(workdir, ignore_errors=True)
+            finished[i] = {**item, "workspace": str(workdir) if changed else None,
+                           "changes": changes}
+        shutil.rmtree(scratch / "base", ignore_errors=True)
+        if not any(r.get("workspace") for r in finished):
+            shutil.rmtree(scratch, ignore_errors=True)
     known_costs = [r.get("cost_usd") for r in finished if r.get("cost_usd") is not None]
     estimates = [r.get("estimated_cost_usd") for r in finished
                  if r.get("estimated_cost_usd") is not None]
-    return {
+    out = {
         "ok": all(r.get("ok") for r in finished),
         "results": finished,
         "wall_time_s": round(time.perf_counter() - started, 3),
         "parallel": workers,
+        "isolation": "per-worker copy" if isolated else "in place (one worker)",
         "cost_usd": round(sum(known_costs), 8) if len(known_costs) == len(finished) else None,
         "estimated_cost_usd": round(sum(estimates), 8) if len(estimates) == len(finished) else None,
         "brief_tokens_estimate": sum(int(r.get("brief_tokens_estimate") or 0) for r in finished),
     }
+    if isolated:
+        out["note"] = ("Each worker ran in its own copy of cwd; nothing was applied to cwd. Review "
+                       "each result's changes and apply what you accept.")
+    return out
 
 
+# ---------------------------------------------------------------------------
+# MCP
+# ---------------------------------------------------------------------------
 def _text_result(data: dict[str, Any]) -> tuple[str, bool, dict[str, Any]]:
     return json.dumps(data, ensure_ascii=False, indent=2), not bool(data.get("ok")), data
 
 
-def _call(name: str, arguments: dict) -> tuple[str, bool, dict[str, Any]]:
-    common = {
-        "context": arguments.get("context"), "cwd": arguments.get("cwd"),
-        "tier": arguments.get("tier") or "cheap",
-        "timeout_s": int(arguments.get("timeout_s") or 900),
-    }
+def _call(name: str, arguments: Any) -> tuple[str, bool, dict[str, Any]]:
+    tool = next((t for t in TOOLS if t["name"] == name), None)
+    if tool is None:
+        return _text_result({"ok": False, "error": f"unknown tool {name!r}"})
+    try:
+        args = validate(tool, arguments)
+        cwd = resolve_cwd(args["cwd"])
+    except ArgumentError as exc:
+        return _text_result({"ok": False, "error": f"invalid arguments: {exc}"})
+    common = {"context": args["context"], "cwd": cwd, "tier": args["tier"],
+              "timeout_s": args["timeout_s"]}
     if name == "delegate":
-        copies = max(1, min(int(arguments.get("parallel") or 1), MAX_PARALLEL))
-        if copies == 1:
-            return _text_result(run_delegate(str(arguments.get("task") or ""), **common))
-        return _text_result(run_many([str(arguments.get("task") or "")] * copies,
-                                     parallel=copies, **common))
-    if name == "delegate_many":
-        return _text_result(run_many(list(arguments.get("tasks") or []),
-                                     parallel=int(arguments.get("parallel") or 4), **common))
-    return json.dumps({"error": f"unknown tool {name!r}"}), True, {}
+        if args["parallel"] == 1:
+            return _text_result(run_delegate(args["task"], **common))
+        return _text_result(run_many([args["task"]] * args["parallel"],
+                                     parallel=args["parallel"], **common))
+    return _text_result(run_many(args["tasks"], parallel=args["parallel"], **common))
 
 
-def handle(message: dict, run_tool: Callable[[str, dict], tuple[str, bool, dict]]) -> dict | None:
+def handle(message: Any, run_tool: Callable[[str, Any], tuple[str, bool, dict]]) -> dict | None:
+    if not isinstance(message, dict):
+        return {"jsonrpc": "2.0", "id": None,
+                "error": {"code": -32600, "message": "invalid request: not an object"}}
     method, mid = message.get("method"), message.get("id")
     if mid is None:
         return None
     if method == "initialize":
-        version = (message.get("params") or {}).get("protocolVersion") or PROTOCOL
+        params = message.get("params") if isinstance(message.get("params"), dict) else {}
+        version = params.get("protocolVersion") or PROTOCOL
         result = {"protocolVersion": version, "capabilities": {"tools": {}},
-                  "serverInfo": {"name": "auto-router-delegate", "version": "0.2.0"}}
+                  "serverInfo": {"name": "auto-router-delegate", "version": "0.4.0"}}
     elif method == "ping":
         result = {}
     elif method == "tools/list":
         result = {"tools": TOOLS}
     elif method == "tools/call":
-        params = message.get("params") or {}
-        if params.get("name") not in {tool["name"] for tool in TOOLS}:
+        params = message.get("params")
+        if not isinstance(params, dict) or params.get("name") not in {t["name"] for t in TOOLS}:
+            name = params.get("name") if isinstance(params, dict) else None
             return {"jsonrpc": "2.0", "id": mid,
-                    "error": {"code": -32602, "message": f"unknown tool {params.get('name')!r}"}}
-        text, is_error, structured = run_tool(params["name"], params.get("arguments") or {})
+                    "error": {"code": -32602, "message": f"unknown tool {name!r}"}}
+        arguments = params.get("arguments")
+        try:
+            text, is_error, structured = run_tool(params["name"], {} if arguments is None else arguments)
+        except Exception as exc:  # noqa: BLE001 - one bad call must not end the server
+            return {"jsonrpc": "2.0", "id": mid,
+                    "error": {"code": -32603, "message": f"internal error: {type(exc).__name__}"}}
         result = {"content": [{"type": "text", "text": text}], "isError": is_error,
                   "structuredContent": structured}
     else:
@@ -221,7 +493,27 @@ def handle(message: dict, run_tool: Callable[[str, dict], tuple[str, bool, dict]
     return {"jsonrpc": "2.0", "id": mid, "result": result}
 
 
+def _exit_on_signal(signum, _frame):
+    # Running workers (possibly in pool threads) are stopped before the server
+    # goes, instead of carrying on unsupervised.
+    procs.terminate_all()
+    raise SystemExit(128 + signum)
+
+
 def main(stdin=sys.stdin, stdout=sys.stdout) -> int:
+    previous = {}
+    if threading.current_thread() is threading.main_thread():
+        for sig in (signal.SIGTERM, signal.SIGHUP):
+            previous[sig] = signal.signal(sig, _exit_on_signal)
+    try:
+        return _serve(stdin, stdout)
+    finally:
+        procs.terminate_all()
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+
+
+def _serve(stdin, stdout) -> int:
     for line in stdin:
         line = line.strip()
         if not line:

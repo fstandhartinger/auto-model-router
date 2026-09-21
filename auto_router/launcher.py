@@ -41,6 +41,24 @@ Configuration is the ordinary model config with a ``runner`` block per route::
 a credential variable left in the environment silently moves the run from the
 plan to per-token billing. The launcher clears the named variables for the
 child process only, and records that it did.
+
+The child does **not** inherit the launcher's environment. It gets an
+allowlist - :data:`BASE_ENV_ALLOW` (locale, ``PATH``, ``HOME`` and the like,
+no credential), plus the names a route asks for with ``env_pass`` or
+``env_from``, plus anything the operator adds for every route::
+
+    launcher:
+      env_allow: [HTTPS_PROXY]     # passed to every launched route
+      cwd_root: ~/code             # --cwd must lie inside this directory
+      inherit_env: false           # true = pre-0.4 behaviour: the whole environment
+
+A worker is often a cheap third-party model with a shell; whatever is in its
+environment is one prompt injection away from being printed. So a key only
+reaches the route that names it.
+
+The child runs in a process group of its own, and a timeout, ``Ctrl-C`` or a
+``SIGTERM`` to the launcher ends that whole group, not just the child
+(:mod:`auto_router.procs`).
 """
 
 from __future__ import annotations
@@ -49,12 +67,15 @@ import argparse
 import json
 import os
 import shlex
+import signal
 import subprocess
 import sys
 import time
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 from typing import Any
 
+from . import procs
 from .catalog import Catalog, ModelInfo
 from .config import RouterConfig, load_config
 from .decision import ObservedOutcome
@@ -63,6 +84,48 @@ from .router import RouteResult, Router
 
 #: Placeholder replaced with the task text in a runner's argument list.
 TASK_PLACEHOLDER = "{task}"
+
+#: Variables every launched route receives, when set. None of them carries a
+#: credential: they locate the user's own files and tools and set the locale.
+#: Deliberately absent: provider keys, ``SSH_AUTH_SOCK``, ``DBUS_*`` and
+#: ``XDG_RUNTIME_DIR`` (both reach a keyring), cloud and proxy settings.
+BASE_ENV_ALLOW = (
+    "PATH", "HOME", "USER", "LOGNAME", "SHELL", "TERM", "COLORTERM", "NO_COLOR", "TZ", "TMPDIR",
+    "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "LC_MESSAGES", "LC_NUMERIC", "LC_TIME",
+    "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME",
+)
+
+
+@dataclass(frozen=True)
+class EnvPolicy:
+    """Which of the launcher's variables a launched route may see."""
+
+    allow: tuple[str, ...] = BASE_ENV_ALLOW
+    inherit: bool = False
+
+    @classmethod
+    def from_config(cls, config: RouterConfig) -> "EnvPolicy":
+        section = (config.raw or {}).get("launcher") or {}
+        extra = [str(name) for name in section.get("env_allow") or []]
+        return cls(allow=tuple(dict.fromkeys([*BASE_ENV_ALLOW, *extra])),
+                   inherit=bool(section.get("inherit_env", False)))
+
+
+def cwd_root(config: RouterConfig) -> Path | None:
+    value = ((config.raw or {}).get("launcher") or {}).get("cwd_root")
+    return Path(os.path.expanduser(str(value))).resolve() if value else None
+
+
+def check_cwd(cwd: str | None, root: Path | None) -> None:
+    """Refuse a working directory outside the configured root."""
+    if cwd and not Path(cwd).is_dir():
+        raise LauncherError(f"--cwd {cwd!r} is not a directory")
+    if root is None:
+        return
+    target = Path(cwd or os.getcwd()).resolve()
+    if target != root and root not in target.parents:
+        raise LauncherError(f"working directory {str(target)!r} is outside launcher.cwd_root "
+                            f"({str(root)!r})")
 
 
 class LauncherError(RuntimeError):
@@ -116,11 +179,15 @@ def launcher_config(config: RouterConfig) -> RouterConfig:
 
 def build_command(model: ModelInfo, task: str, *, cwd: str | None = None,
                   environ: dict[str, str] | None = None,
-                  default_clear: dict[str, list[str]] | None = None) -> Command:
+                  default_clear: dict[str, list[str]] | None = None,
+                  env_policy: EnvPolicy | None = None) -> Command:
     """Resolve a route's ``runner`` block into a child process.
 
     ``cmd`` is a literal argument list - never a shell string - so a task that
     contains quotes, newlines or a stray ``$(...)`` is data, not code.
+
+    The child's environment is built from an allowlist (:class:`EnvPolicy`),
+    never copied wholesale, unless the operator set ``inherit_env``.
     """
     spec: dict[str, Any] = dict(model.runner or {})
     argv_template = spec.get("cmd")
@@ -134,9 +201,15 @@ def build_command(model: ModelInfo, task: str, *, cwd: str | None = None,
             f"route {model.name!r}: the task would never reach the tool - put {TASK_PLACEHOLDER} "
             f"in runner.cmd or set runner.stdin: true")
 
-    env = dict(os.environ if environ is None else environ)
+    source = dict(os.environ if environ is None else environ)
+    policy = env_policy or EnvPolicy()
+    if policy.inherit:
+        env = source
+    else:
+        wanted = [*policy.allow, *(str(n) for n in spec.get("env_pass") or [])]
+        env = {name: source[name] for name in wanted if name in source}
     clear = list(spec.get("clear_env") or (default_clear or {}).get(model.subscription or "", []))
-    cleared = [name for name in clear if env.get(name)]
+    cleared = [name for name in clear if source.get(name)]
     for name in clear:
         # Emptied rather than deleted: an empty value is what both major
         # coding CLIs read as "no key here, use the signed-in plan", while an
@@ -155,15 +228,17 @@ def build_command(model: ModelInfo, task: str, *, cwd: str | None = None,
 
 
 def execute(command: Command, *, cwd: str | None = None, capture: bool = False) -> RunOutcome:
-    """Run the child, streaming its output unless the caller wants it back."""
+    """Run the child, streaming its output unless the caller wants it back.
+
+    The child and everything it starts share a process group; a timeout ends
+    all of them, so no writer outlives the job it belonged to.
+    """
     started = time.time()
     try:
-        proc = subprocess.run(
-            command.argv, env=command.env, cwd=cwd,
+        proc = procs.run(
+            command.argv, env=command.env, cwd=cwd, scope="group",
             input=command.stdin_text if command.stdin_text is not None else "",
-            text=True, timeout=command.timeout_s,
-            stdout=subprocess.PIPE if capture else None,
-            stderr=subprocess.PIPE if capture else None)
+            text=True, timeout=command.timeout_s, capture_output=capture)
     except subprocess.TimeoutExpired:
         return RunOutcome(exit_code=124, duration_s=time.time() - started, timed_out=True)
     except FileNotFoundError as exc:
@@ -205,6 +280,7 @@ def decision_document(result: RouteResult, command: Command,
         "reason": result.reason,
         "command": command.display,
         "cleared_env": command.cleared,
+        "env_names": sorted(command.env),
     }
     if result.explanation is not None:
         doc["decision"] = result.explanation.to_dict()
@@ -238,8 +314,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="never pick a subscription route (used by the delegate tool, so a "
                         "plan session hands work only to cheaper routes)")
     p.add_argument("--tier", choices=("cheap", "auto", "strong"), default="auto",
-                   help="worker tier: cheap prefers low price for easy work, auto uses the "
-                        "policy, strong forces the most capable eligible non-plan route")
+                   help="worker tier, applied among the routes the policy allows (tools, "
+                        "context, quota): cheap prefers the lowest price for easy work, auto "
+                        "keeps the policy's choice, strong prefers the most capable")
     p.add_argument("--quiet", action="store_true", help="no summary line on stderr")
     return p
 
@@ -252,8 +329,29 @@ def read_task(value: str | None) -> str:
     return text
 
 
+def _exit_on_signal(signum, _frame):
+    # The agent's process group is ended on the way out instead of being left
+    # running without a supervisor.
+    procs.terminate_all()
+    raise SystemExit(128 + signum)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    previous = {}
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        try:
+            previous[sig] = signal.signal(sig, _exit_on_signal)
+        except ValueError:  # not the main thread; nothing to install
+            pass
+    try:
+        return _main(args)
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+
+
+def _main(args: argparse.Namespace) -> int:
     try:
         config = load_config(args.config) if args.config else load_config()
         lconfig = launcher_config(config)
@@ -266,37 +364,33 @@ def main(argv: list[str] | None = None) -> int:
         task = read_task(args.task)
         if args.route and lconfig.catalog.get(args.route) is None:
             raise LauncherError(f"no runnable route named {args.route!r}")
+        check_cwd(args.cwd, cwd_root(config))
         router = Router(lconfig)
         only = (lambda m: not m.subscription) if args.no_plans else None
-        result = router.route_job(task, steps=args.steps, force=args.route, only=only)
-        if not args.route and args.tier in ("cheap", "strong"):
-            eligible = [m for m in lconfig.catalog.all()
-                        if (not args.no_plans or not m.subscription)]
-            category = result.request.category
-            if args.tier == "strong":
-                forced = max(eligible, key=lambda m: (m.cap(category), -m.latency_s))
-                if forced.name != result.model.name:
-                    result = router.route_job(task, steps=args.steps, force=forced.name, only=only)
-            elif result.request.difficulty < 0.65:
-                # For easy work, prefer the lowest blended list price. Hard work keeps the
-                # expected-cost policy's choice, which may be a stronger worker.
-                forced = min(eligible, key=lambda m: (m.prices.input + m.prices.output, -m.cap(category)))
-                if forced.name != result.model.name:
-                    result = router.route_job(task, steps=args.steps, force=forced.name, only=only)
+        # One routing pass. A tier only chooses among the routes the policy
+        # itself allows, so it can never reopen a closed plan or pick a route
+        # without tools, and it is recorded as a tier, not an override.
+        result = router.route_job(task, steps=args.steps, force=args.route, only=only,
+                                  tier=args.tier)
 
         default_clear = {name: list(sub.get("clear_env") or [])
                          for name, sub in (config.subscriptions or {}).items()}
-        command = build_command(result.model, task, cwd=args.cwd, default_clear=default_clear)
+        command = build_command(result.model, task, cwd=args.cwd, default_clear=default_clear,
+                                env_policy=EnvPolicy.from_config(config))
         if not args.quiet:
             print(summary_line(result, command), file=sys.stderr)
         if args.dry_run:
-            print(json.dumps(decision_document(result, command), indent=2))
+            doc = decision_document(result, command)
+            doc["tier"] = args.tier
+            print(json.dumps(doc, indent=2))
             return 0
 
         outcome = execute(command, cwd=args.cwd)
         observe(router, result, outcome, command)
         if args.json:
-            print(json.dumps(decision_document(result, command, outcome)), file=sys.stderr)
+            doc = decision_document(result, command, outcome)
+            doc["tier"] = args.tier
+            print(json.dumps(doc), file=sys.stderr)
         return outcome.exit_code
     except NoRouteAvailable as exc:
         print(f"route-run: {exc}", file=sys.stderr)

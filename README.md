@@ -2,10 +2,11 @@
 
 A cost-, cache- and quota-aware LLM router. It sits in front of any number of
 OpenAI-compatible providers and picks a model per user turn so that tasks get
-solved at the lowest expected cost. Run it locally in front of Claude Code,
-Codex, opencode or Cursor: it uses requests included with your plans when they
-fit, and sends easy turns to cheaper models on your own keys. It can also route
-*whole jobs* to a coding agent's official CLI. What
+solved at the lowest expected cost. As a local gateway it sits in front of
+Claude Code (Codex, opencode and Cursor have no gateway mode here yet; see
+"Four ways to use a flat-rate plan"). It can also route *whole jobs* to a coding
+agent's official CLI, and it offers an MCP tool through which Claude Code, Codex,
+opencode or Cursor can hand bounded sub-tasks to cheaper routed workers. What
 the vendors allow there is quoted, with links, in [`TERMS.md`](TERMS.md).
 
 Status: experimental, measured. Full method and numbers: [`EXPERIMENTS.md`](EXPERIMENTS.md).
@@ -421,7 +422,7 @@ documentation behind each, including the parts that say no.
 | **4. delegate tool** | the plan model stays in charge; an MCP tool hands sub-tasks to cheap models | no | ordinary MCP use | long plan sessions with big, separable sub-tasks; also Codex |
 
 Measured on 19 Sep 2026 on three small coding tasks (details in
-[`EXPERIMENTS.md`](EXPERIMENTS.md) §14): every mode finished every task; the
+[`EXPERIMENTS.md`](EXPERIMENTS.md) §15): every mode finished every task; the
 cheap-side modes spent **no** plan quota and took 2–5× longer; the delegate tool
 did not reduce plan use on small tasks; and **switching one conversation to the
 plan half-way cost 3.4× the plan use of simply having stayed on the plan**,
@@ -572,43 +573,103 @@ at all, so it never sees the plan's login.
 ### 4. Use it as a subagent layer
 
 Keep a strong model as planner and reviewer, and route bounded mechanical work
-to workers. The MCP server exposes:
+to workers. The MCP server (`auto-router-delegate`) exposes:
 
-- `delegate(task, context, tier="cheap"|"auto"|"strong", parallel=n)` for one
-  brief, optionally with independent duplicate attempts;
-- `delegate_many(tasks, context, tier, parallel)` for different independent briefs.
+- `delegate(task, context, cwd, tier="cheap"|"auto"|"strong", parallel=n, timeout_s)`
+  for one brief, optionally as `n` independent attempts;
+- `delegate_many(tasks, context, cwd, tier, parallel, timeout_s)` for up to 32
+  different independent briefs.
 
-`cheap` is the default: easy work prefers the lowest-price non-plan worker, while
-hard work keeps the router's expected-cost choice. `strong` explicitly selects
-the most capable non-plan worker. Every response names the selected model, wall
-time, brief size, and actual cost when the launched CLI reports usage. If it does
-not, actual cost is `null` and the router's pre-run estimate is separate and
-clearly labeled.
+Workers never run on a subscription route (`--no-plans`). The tier is applied
+**among the routes the policy itself allows** - the same tool, context-window
+and quota filters - so it can never launch a route the policy ruled out:
+`cheap` (the default) prefers the lowest list price for work the classifier
+rates easy and keeps the expected-cost choice for hard work, `auto` keeps the
+policy's choice, `strong` prefers the most capable allowed worker. The decision
+record says which tier chose the route; it is not recorded as an operator
+override.
+
+Every response names the selected model, wall time, brief size and the router's
+pre-run cost estimate, labelled as an estimate. `cost_usd` is always `null`: no
+launched agent CLI reports its token usage back to the launcher, so no actual
+cost is measured.
+
+What the server enforces, because a worker is usually a cheap third-party model
+with a shell:
+
+- **Arguments** are checked against the tool schema (types, ranges, at most 32
+  briefs, a list of strings for `delegate_many`). A malformed call gets a
+  structured error and the server keeps serving. The brief follows `--` on the
+  launcher's command line, so a brief such as `--list` is a task, not an option.
+- **Environment.** A launched worker gets an allowlist, not your environment:
+  `PATH`, `HOME`, the locale, `TERM`, `TMPDIR` and the XDG directories, plus what
+  its route names (`env_pass: [NAME]`, `env_from: {NAME: SOURCE}`, `env: {...}`)
+  and what you add for every route under `launcher.env_allow`. Provider keys,
+  `SSH_AUTH_SOCK`, `DBUS_*` and `XDG_RUNTIME_DIR` are not passed unless you name
+  them. `launcher.inherit_env: true` restores the old pass-everything behaviour;
+  it is not recommended. This covers environment variables only: a worker still
+  runs as your user and can read files your user can read, including agent
+  logins under `HOME`. Run workers in a container or sandbox if that matters.
+- **Working directory.** `cwd` must lie inside the delegation root:
+  `AUTO_ROUTER_DELEGATE_ROOT`, else the directory the server was started in
+  (the project your client opened). A root of `/`, `$HOME` or a parent of it is
+  refused. `route-run` itself accepts `launcher.cwd_root` for the same purpose.
+- **Timeouts** end the whole job: the launcher runs in a session of its own and
+  the agent in a process group of its own, and on a timeout, `Ctrl-C` or a stop
+  signal everything in them gets `SIGTERM`, then `SIGKILL`. A background process
+  an agent leaves behind after exiting is stopped too. A descendant that
+  detaches with `setsid()` after its parent exited cannot be seen by a process;
+  containing that needs a cgroup or sandbox.
+- **Parallel work never shares a tree.** With more than one worker, each works in
+  its own disposable copy of `cwd` (without `.git`, virtualenvs,
+  `node_modules` and caches; at most 200 MB / 50,000 files, see
+  `AUTO_ROUTER_DELEGATE_COPY_LIMIT_MB`). The result carries each copy's path and a
+  diff against the starting state; nothing is applied to `cwd` and nothing a
+  worker wrote is executed by the server. You review the diffs and apply what you
+  accept. A single worker runs in `cwd` itself, and tool calls are served one at
+  a time.
 
 The included `plan-with-cheap-workers` skill tells the main model to retain
 judgement, security-sensitive work and final review; send only task-local context;
 parallelise only independent work; and verify every worker result.
 
-Measured on three small agentic coding tasks, this did **not** save cost: Claude
-quality stayed 3/3, API-equivalent strong-model cost rose 1.7%, and wall time was
-4.1× longer. On one repeated Codex task, quality stayed 1/1, plan tokens rose
-6.6%, and wall time was 2.4× longer. The cold worker brief was estimated at 179
-tokens in that run. See [`DELEGATION_EVALUATION.md`](DELEGATION_EVALUATION.md).
-Delegation may fit larger separable work; this sample does not demonstrate that.
+**Evaluation: no saving.** The only numbers are derived from the 19 September
+runs in [`EXPERIMENTS.md`](EXPERIMENTS.md) §15, re-tabulated on 21 September in
+[`DELEGATION_EVALUATION.md`](DELEGATION_EVALUATION.md); nothing new was run, and
+the tier, parallel and isolation code described above did not exist yet when
+they were measured. On three small agentic coding tasks, quality stayed 3/3 with
+and without delegation; the plan model (Claude Sonnet 5) used 1.7 % more at
+API-equivalent list prices, and wall time was 4.1× longer. On one repeated Codex
+task, quality stayed 1/1, plan tokens rose 6.6 %, and wall time was 2.4× longer.
+The worker brief was *estimated* by the router at 179 prompt tokens; the worker's
+actual usage was not reported. Which free model the Codex run's worker used is
+recorded inconsistently (the ledger says Qwen3.8 27B, the run's notes say Kimi
+K3); see the evaluation file. Delegation may fit larger separable work; this
+sample does not show that.
 
-One-line install (replace the last word):
+**Install.** Pick a commit you have reviewed, read the installer at that commit,
+then run it with that commit's full SHA. It refuses a branch name or short SHA,
+never overwrites an existing MCP entry, skill, Cursor rule or command link
+without `--force` (and backs up what it replaces), writes JSON settings
+atomically, refuses JSONC it cannot round-trip, and reads or writes no
+credential:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/fstandhartinger/auto-model-router/main/scripts/install-delegation.sh | sh -s -- claude
-curl -fsSL https://raw.githubusercontent.com/fstandhartinger/auto-model-router/main/scripts/install-delegation.sh | sh -s -- codex
-curl -fsSL https://raw.githubusercontent.com/fstandhartinger/auto-model-router/main/scripts/install-delegation.sh | sh -s -- opencode
-curl -fsSL https://raw.githubusercontent.com/fstandhartinger/auto-model-router/main/scripts/install-delegation.sh | sh -s -- cursor
+REF=<full 40-character commit SHA you reviewed>
+git clone https://github.com/fstandhartinger/auto-model-router.git && cd auto-model-router
+git checkout --detach "$REF" && less scripts/install-delegation.sh scripts/install-delegation.py
+sh scripts/install-delegation.sh claude "$REF" --config ~/router.local.yaml   # or codex, opencode, cursor
 ```
 
-Set `AUTO_ROUTER_CONFIG` to a launcher configuration with worker `runner`
-blocks. Claude Code and Codex receive a global skill and stdio MCP entry;
-OpenCode receives its global skill and local MCP entry; Cursor receives an MCP
-entry and a project rule in the directory where the installer is run.
+`--config` (or `AUTO_ROUTER_CONFIG` set when you install) is recorded in the MCP
+entry only if that file exists; without it the entry records no path and the
+server reads `AUTO_ROUTER_CONFIG` from the environment it starts in. Claude Code
+and Codex get a user-level skill and MCP entry through their own `mcp` commands;
+opencode gets its skill and an entry in `~/.config/opencode/opencode.json`;
+Cursor gets an entry in `~/.cursor/mcp.json`, and the project rule only with
+`--project DIR`. The shell script installs into its own virtualenv under
+`~/.auto-router`; Python dependencies come from PyPI at the versions
+`pyproject.toml` allows.
 
 ### Install it with a coding agent
 
@@ -686,7 +747,8 @@ that gap for the next run and cannot close it retroactively for an old one.
 | `auto_router/plan_auth.py` | which credential is on a request, and where it may go |
 | `auto_router/launcher.py`, `scripts/route-run` | job-level launcher: pick the tool, start its own client |
 | `auto_router/switch.py` | switch mode: one Claude Code conversation between cheap mode and plan mode |
-| `auto_router/delegate.py` | MCP `delegate` tool: a plan session hands sub-tasks to cheap routes |
+| `auto_router/delegate.py` | MCP `delegate` tools: a plan session hands sub-tasks to cheap routes, with argument checks, a cwd root and per-worker copies |
+| `auto_router/procs.py` | runs a launched agent so a timeout ends its whole process group or session |
 | `auto_router/translate.py`, `stream_translate.py` | Anthropic ↔ OpenAI translation |
 | `experiments/sandbox.py` | Bubblewrap isolation for executing model-produced code |
 | `experiments/heldout.py` | pre-registered held-out evaluation across six categories |

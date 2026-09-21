@@ -8,6 +8,15 @@
 # Nothing here contains a credential. `env_from` copies a value from a named
 # environment variable; `clear_env` empties the variables that would move a
 # subscription run onto per-token billing.
+#
+# A launched route does NOT inherit your environment. It gets PATH, HOME, the
+# locale, TERM, TMPDIR and the XDG directories, plus what it names itself:
+# `env_pass: [NAME]` (same name), `env_from: {TARGET: SOURCE}` or `env: {...}`.
+
+launcher:
+  env_allow: []          # extra variable names for every route, e.g. [HTTPS_PROXY]
+  inherit_env: false     # true = pass the whole environment (old behaviour; not recommended)
+  # cwd_root: ~/code     # refuse --cwd outside this directory
 
 providers:
   # Needed so a subscription route has a provider entry; the launcher never
@@ -59,6 +68,7 @@ models:
     latency_s: 8
     runner:
       cmd: [your-cli, run, -m, vendor/small-model, "{task}"]
+      env_pass: [EXAMPLE_API_KEY]         # only this route sees the free host's key
       timeout_s: 1800
 
   # 2. The Claude plan through its own client. `-p` prints and exits;

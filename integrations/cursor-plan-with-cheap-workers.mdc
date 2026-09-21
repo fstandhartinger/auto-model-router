@@ -6,5 +6,8 @@ alwaysApply: false
 Act as planner and reviewer. Keep judgement, security-sensitive work, irreversible actions and final
 review in this agent. Give `delegate` or `delegate_many` self-contained briefs containing only the
 task-local context a worker needs. Default to `tier="cheap"`; use stronger tiers only when task
-difficulty warrants them. Parallelise only independent work. Inspect diffs or evidence and run the
-relevant checks before using any worker result. Report measured and estimated cost separately.
+difficulty warrants them. Parallelise only independent work: with more than one worker, each works
+in its own copy of the project and returns a diff that you review and apply yourself. Read diffs or
+evidence and run the relevant checks before using any worker result, and do not run worker-written
+code you have not read. Report the router's cost estimate as an estimate; no actual cost is
+measured.

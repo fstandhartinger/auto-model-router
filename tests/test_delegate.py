@@ -49,6 +49,7 @@ def test_a_worker_never_uses_a_plan_and_reports_model_cost_basis_and_brief(tmp_p
 
     result = delegate.run_delegate("write tests", "only parser.py", str(tmp_path), run=fake_run)
     assert "--no-plans" in seen["argv"] and seen["argv"][-1].endswith("only parser.py")
+    assert seen["argv"][-2] == "--"
     assert seen["cwd"] == str(tmp_path) and seen["stdin"] is subprocess.DEVNULL
     assert result["ok"] and result["model"] == "cheap-worker"
     assert result["cost_usd"] is None and result["estimated_cost_usd"] == 0.012
@@ -74,15 +75,15 @@ def test_long_output_keeps_the_end():
     assert result["result"].endswith("THE END") and result["output_truncated"]
 
 
-def test_delegate_many_runs_concurrently_preserves_order_and_sums_overhead():
+def test_delegate_many_runs_concurrently_preserves_order_and_sums_overhead(tmp_path):
     def worker(task, context, cwd, tier, timeout_s):
-        time.sleep(0.03 if task == "one" else 0.01)
+        time.sleep(0.3 if task == "one" else 0.1)
         return {"ok": True, "result": task, "cost_usd": None,
                 "estimated_cost_usd": 0.1, "brief_tokens_estimate": len(task)}
 
     started = time.perf_counter()
-    result = delegate.run_many(["one", "two"], parallel=2, runner=worker)
-    assert time.perf_counter() - started < 0.055
+    result = delegate.run_many(["one", "two"], cwd=str(tmp_path), parallel=2, runner=worker)
+    assert time.perf_counter() - started < 0.39
     assert [item["result"] for item in result["results"]] == ["one", "two"]
     assert result["estimated_cost_usd"] == 0.2 and result["cost_usd"] is None
     assert result["brief_tokens_estimate"] == 6
