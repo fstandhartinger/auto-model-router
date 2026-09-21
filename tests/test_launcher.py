@@ -170,6 +170,12 @@ def test_forcing_a_route_is_recorded_as_an_override():
     assert chosen in record["notes"][-1]
 
 
+def test_worker_tier_flag_is_available():
+    parser = build_parser()
+    assert parser.parse_args(["--tier", "cheap", "task"]).tier == "cheap"
+    assert parser.parse_args(["--tier", "strong", "task"]).tier == "strong"
+
+
 # --------------------------------------------------------------------------
 # running it
 # --------------------------------------------------------------------------

@@ -2,9 +2,10 @@
 
 A cost-, cache- and quota-aware LLM router. It sits in front of any number of
 OpenAI-compatible providers and picks a model per user turn so that tasks get
-solved at the lowest expected cost. It can also route *whole jobs* to a coding
-agent's official CLI - including one running on a flat-rate subscription - so
-that work lands on a plan you already pay for instead of a per-token bill. What
+solved at the lowest expected cost. Run it locally in front of Claude Code,
+Codex, opencode or Cursor: it uses requests included with your plans when they
+fit, and sends easy turns to cheaper models on your own keys. It can also route
+*whole jobs* to a coding agent's official CLI. What
 the vendors allow there is quoted, with links, in [`TERMS.md`](TERMS.md).
 
 Status: experimental, measured. Full method and numbers: [`EXPERIMENTS.md`](EXPERIMENTS.md).
@@ -568,22 +569,46 @@ at all, so it never sees the plan's login.
 - Claude Code only. Codex has no cheap mode yet: it needs an OpenAI Responses
   API endpoint, which this router does not implement.
 
-### 4. The delegate tool: the plan orchestrates, cheap models do the legwork
+### 4. Use it as a subagent layer
+
+Keep a strong model as planner and reviewer, and route bounded mechanical work
+to workers. The MCP server exposes:
+
+- `delegate(task, context, tier="cheap"|"auto"|"strong", parallel=n)` for one
+  brief, optionally with independent duplicate attempts;
+- `delegate_many(tasks, context, tier, parallel)` for different independent briefs.
+
+`cheap` is the default: easy work prefers the lowest-price non-plan worker, while
+hard work keeps the router's expected-cost choice. `strong` explicitly selects
+the most capable non-plan worker. Every response names the selected model, wall
+time, brief size, and actual cost when the launched CLI reports usage. If it does
+not, actual cost is `null` and the router's pre-run estimate is separate and
+clearly labeled.
+
+The included `plan-with-cheap-workers` skill tells the main model to retain
+judgement, security-sensitive work and final review; send only task-local context;
+parallelise only independent work; and verify every worker result.
+
+Measured on three small agentic coding tasks, this did **not** save cost: Claude
+quality stayed 3/3, API-equivalent strong-model cost rose 1.7%, and wall time was
+4.1× longer. On one repeated Codex task, quality stayed 1/1, plan tokens rose
+6.6%, and wall time was 2.4× longer. The cold worker brief was estimated at 179
+tokens in that run. See [`DELEGATION_EVALUATION.md`](DELEGATION_EVALUATION.md).
+Delegation may fit larger separable work; this sample does not demonstrate that.
+
+One-line install (replace the last word):
 
 ```bash
-claude mcp add auto-router-delegate -- env AUTO_ROUTER_CONFIG=$PWD/router.local.yaml python -m auto_router.delegate
-codex mcp add auto-router-delegate -- env AUTO_ROUTER_CONFIG=$PWD/router.local.yaml python -m auto_router.delegate
+curl -fsSL https://raw.githubusercontent.com/fstandhartinger/auto-model-router/main/scripts/install-delegation.sh | sh -s -- claude
+curl -fsSL https://raw.githubusercontent.com/fstandhartinger/auto-model-router/main/scripts/install-delegation.sh | sh -s -- codex
+curl -fsSL https://raw.githubusercontent.com/fstandhartinger/auto-model-router/main/scripts/install-delegation.sh | sh -s -- opencode
+curl -fsSL https://raw.githubusercontent.com/fstandhartinger/auto-model-router/main/scripts/install-delegation.sh | sh -s -- cursor
 ```
 
-The official client runs unchanged on its plan. It gains one tool,
-`delegate(task, cwd)`, which runs the job launcher restricted to non-plan routes
-(`--no-plans`): the cheapest route expected to do the job starts its own agent
-CLI in `cwd` and returns what it printed. The plan model then checks the result.
-Codex needs `default_tools_approval_mode = "approve"` on the server to call it in
-`codex exec`. Measured: with a soft hint the model never delegated a small
-task; with an explicit "you are the orchestrator" instruction it did, and plan
-use stayed about the same — the tool pays off only when the delegated part is
-large compared with Claude Code's own fixed prompt.
+Set `AUTO_ROUTER_CONFIG` to a launcher configuration with worker `runner`
+blocks. Claude Code and Codex receive a global skill and stdio MCP entry;
+OpenCode receives its global skill and local MCP entry; Cursor receives an MCP
+entry and a project rule in the directory where the installer is run.
 
 ### Install it with a coding agent
 

@@ -1,0 +1,22 @@
+{
+  "evaluated_at": "2026-09-21",
+  "source_run_date": "2026-09-19",
+  "source": "EXPERIMENTS.md section 15 and retained run artifacts",
+  "task_set": "three small agentic Python tasks with hidden checks; one Codex task repeated",
+  "claude": {
+    "strong_alone": {"quality_passed": 3, "quality_total": 3, "api_equivalent_cost_usd": 0.46, "wall_time_s": 67.9},
+    "strong_planner_cheap_workers": {"quality_passed": 3, "quality_total": 3, "api_equivalent_cost_usd": 0.468, "wall_time_s": 277.7, "delegated_tasks": 2},
+    "delta": {"quality_points": 0, "cost_percent": 1.74, "wall_time_percent": 309.0}
+  },
+  "codex": {
+    "strong_alone": {"quality_passed": 1, "quality_total": 1, "plan_tokens": 15260, "wall_time_s": 31},
+    "strong_planner_cheap_workers": {"quality_passed": 1, "quality_total": 1, "plan_tokens": 16269, "wall_time_s": 74, "worker_model": "qwen3.8-27b", "worker_metered_cost_usd": 0.0},
+    "delta": {"quality_points": 0, "plan_tokens_percent": 6.61, "wall_time_percent": 138.71}
+  },
+  "brief_overhead": {
+    "codex_worker_router_prompt_tokens_estimate": 179,
+    "basis": "router ledger estimate for the cold worker brief and declared tools",
+    "limitation": "the launched worker CLI did not report actual input usage; its fixed agent prompt is not included"
+  },
+  "conclusion": "No saving was measured on these small tasks. Quality was unchanged, planner usage rose slightly, and wall time was materially worse. Delegation remains plausible only for larger separable work or parallel latency wins; that has not been demonstrated by this sample."
+}

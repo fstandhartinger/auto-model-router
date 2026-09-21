@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "auto-model-router"
-version = "0.2.0"
+version = "0.3.0"
 description = "A cost-, cache- and quota-aware LLM router"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -17,6 +17,7 @@ test = ["pytest>=8.0", "pytest-asyncio>=0.23"]
 
 [project.scripts]
 auto-model-router = "auto_router.server:main"
+auto-router-delegate = "auto_router.delegate:main"
 
 [tool.setuptools.packages.find]
 include = ["auto_router*"]

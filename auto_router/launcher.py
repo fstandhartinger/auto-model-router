@@ -237,6 +237,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-plans", action="store_true",
                    help="never pick a subscription route (used by the delegate tool, so a "
                         "plan session hands work only to cheaper routes)")
+    p.add_argument("--tier", choices=("cheap", "auto", "strong"), default="auto",
+                   help="worker tier: cheap prefers low price for easy work, auto uses the "
+                        "policy, strong forces the most capable eligible non-plan route")
     p.add_argument("--quiet", action="store_true", help="no summary line on stderr")
     return p
 
@@ -266,6 +269,20 @@ def main(argv: list[str] | None = None) -> int:
         router = Router(lconfig)
         only = (lambda m: not m.subscription) if args.no_plans else None
         result = router.route_job(task, steps=args.steps, force=args.route, only=only)
+        if not args.route and args.tier in ("cheap", "strong"):
+            eligible = [m for m in lconfig.catalog.all()
+                        if (not args.no_plans or not m.subscription)]
+            category = result.request.category
+            if args.tier == "strong":
+                forced = max(eligible, key=lambda m: (m.cap(category), -m.latency_s))
+                if forced.name != result.model.name:
+                    result = router.route_job(task, steps=args.steps, force=forced.name, only=only)
+            elif result.request.difficulty < 0.65:
+                # For easy work, prefer the lowest blended list price. Hard work keeps the
+                # expected-cost policy's choice, which may be a stronger worker.
+                forced = min(eligible, key=lambda m: (m.prices.input + m.prices.output, -m.cap(category)))
+                if forced.name != result.model.name:
+                    result = router.route_job(task, steps=args.steps, force=forced.name, only=only)
 
         default_clear = {name: list(sub.get("clear_env") or [])
                          for name, sub in (config.subscriptions or {}).items()}

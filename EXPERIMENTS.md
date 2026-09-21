@@ -923,6 +923,23 @@ conversation.
 - The plan's own usage meter could not be sampled around the runs (the usage
   endpoint answered `rate_limit_error`); plan use is the transcript's token
   counts at list price.
+
+## 16. Planner + cheap workers: derived comparison (21 Sep 2026)
+
+The delegation feature was expanded to parallel workers and explicit tiers on
+21 September. We reused the retained section 15 task artifacts rather than spend
+more plan quota on the same small tasks. The calculations and limitations are in
+[`DELEGATION_EVALUATION.md`](DELEGATION_EVALUATION.md); the machine-readable
+summary is [`evaluation/delegation-20260921.json`](evaluation/delegation-20260921.json).
+
+There was no measured saving. Across three Claude tasks, quality stayed 3/3,
+API-equivalent plan cost changed from $0.460 to $0.468 (+1.7%), and wall time
+from 67.9 s to 277.7 s (4.1×). On the Codex repeat, quality stayed 1/1, plan use
+changed from 15,260 to 16,269 tokens (+6.6%), and wall time from 31 s to 74 s
+(2.4×). The Codex delegation ledger estimated 179 cold prompt tokens for the
+brief and tools; actual worker input was not reported by its CLI. Small tasks
+were worse because orchestration overhead dominated. Larger or parallel work
+remains an unmeasured hypothesis, not a savings claim.
 - The quota pacing was replaced by a stand-in reader reporting 20 % for the
   switch and gateway arms: early in a week the real reader projects a few
   hours' use onto the whole week (5 % after ~3 h → "268 %") and closes the plan.

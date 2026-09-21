@@ -1,30 +1,9 @@
-"""A ``delegate`` tool for Claude Code and Codex: the plan orchestrates, cheap routes do the legwork.
+"""MCP tools for handing bounded work from a strong planner to routed workers.
 
-This is the mode that needs nothing from anyone's terms but the ordinary use of
-two features both clients document: MCP servers and tools. The official client
-runs unmodified, signed in with its own plan, talking to its own vendor - the
-router is never in that path. What the router adds is a tool the plan model can
-*choose* to call::
-
-    delegate(task="write unit tests for parser.py and run them", cwd="/repo")
-
-The call runs the job launcher (``launcher.py``) restricted to non-plan routes:
-it picks the cheapest route expected to do the job, starts that route's own
-agent CLI in ``cwd``, and returns what it printed. The plan model then reads
-the result and checks it, which is the part it is good at, and the output
-tokens and tool-loop turns of the sub-task are spent somewhere else.
-
-Register it (stdio MCP server)::
-
-    claude mcp add auto-router-delegate -- python -m auto_router.delegate
-    codex mcp add auto-router-delegate -- python -m auto_router.delegate
-
-It needs ``AUTO_ROUTER_CONFIG`` pointing at a configuration whose cheap routes
-have ``runner`` blocks (see ``examples/launcher.example.yaml``).
-
-The protocol handled here is the small stdio subset of MCP a tool server needs
-(``initialize``, ``tools/list``, ``tools/call``, ``ping``), newline-delimited
-JSON-RPC 2.0, with no dependency beyond the standard library.
+The planner's client remains unchanged. Workers are launched through the normal
+job router, never through a subscription route, and the response distinguishes
+the router's pre-run cost estimate from measured cost (which most agent CLIs do
+not report).
 """
 
 from __future__ import annotations
@@ -33,92 +12,213 @@ import json
 import os
 import subprocess
 import sys
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Callable
 
 ROOT = Path(__file__).resolve().parents[1]
 PROTOCOL = "2025-06-18"
 MAX_OUTPUT = 12000
+MAX_PARALLEL = 8
 
-TOOL = {
+_COMMON_PROPERTIES = {
+    "context": {"type": "string", "description": "only the task-local context the worker needs"},
+    "cwd": {"type": "string", "description": "working directory (default: the server's)"},
+    "tier": {"type": "string", "enum": ["cheap", "auto", "strong"], "default": "cheap",
+             "description": "cheap prefers a low-cost worker unless the router judges the task hard; auto uses expected cost; strong uses the most capable non-plan worker"},
+    "timeout_s": {"type": "integer", "minimum": 1, "maximum": 7200, "default": 900},
+}
+
+DELEGATE_TOOL = {
     "name": "delegate",
     "description": (
-        "Hand a self-contained sub-task to a cheaper model instead of doing it yourself. "
-        "Good for: writing or extending tests, boilerplate, mechanical refactors across files, "
-        "summarising files or logs, first drafts. The sub-agent works in `cwd` with its own "
-        "shell and editor and cannot see this conversation, so state everything it needs "
-        "(files, constraints, how to verify). It returns the sub-agent's final output. "
-        "Check the result (read the diff, run the tests) before relying on it."),
+        "Run a self-contained sub-task on routed worker agents. Use cheap for mechanical work; "
+        "the router may choose a stronger worker when the task is hard. parallel>1 asks independent "
+        "workers for results. Give only task-local context and verify their output before using it."),
     "inputSchema": {
         "type": "object",
         "properties": {
-            "task": {"type": "string", "description": "complete, self-contained instructions"},
-            "cwd": {"type": "string", "description": "working directory (default: the server's)"},
-            "timeout_s": {"type": "integer", "description": "wall-clock limit, default 900"},
+            "task": {"type": "string", "description": "complete, self-contained worker brief"},
+            **_COMMON_PROPERTIES,
+            "parallel": {"type": "integer", "minimum": 1, "maximum": MAX_PARALLEL, "default": 1},
         },
         "required": ["task"],
         "additionalProperties": False,
     },
 }
 
+DELEGATE_MANY_TOOL = {
+    "name": "delegate_many",
+    "description": (
+        "Run different independent worker briefs concurrently. Keep dependencies with the planner; "
+        "use this only when every task can finish without another worker's result."),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "tasks": {"type": "array", "minItems": 1, "maxItems": 32,
+                      "items": {"type": "string"},
+                      "description": "self-contained worker briefs"},
+            **_COMMON_PROPERTIES,
+            "parallel": {"type": "integer", "minimum": 1, "maximum": MAX_PARALLEL, "default": 4},
+        },
+        "required": ["tasks"],
+        "additionalProperties": False,
+    },
+}
 
-def launcher_argv(task: str, cwd: str | None) -> list[str]:
-    argv = [sys.executable, "-m", "auto_router.launcher", "--no-plans"]
+TOOLS = [DELEGATE_TOOL, DELEGATE_MANY_TOOL]
+
+
+def _brief(task: str, context: str | None) -> str:
+    task = task.strip()
+    if not context or not context.strip():
+        return task
+    return f"{task}\n\nTask-local context:\n{context.strip()}"
+
+
+def launcher_argv(task: str, cwd: str | None, tier: str = "cheap") -> list[str]:
+    argv = [sys.executable, "-m", "auto_router.launcher", "--no-plans", "--json",
+            "--tier", tier]
     if cwd:
         argv += ["--cwd", cwd]
     return argv + [task]
 
 
-def run_delegate(task: str, cwd: str | None = None, timeout_s: int = 900,
-                 run: Callable[..., Any] = subprocess.run) -> tuple[str, bool]:
-    """Run one delegated job; returns (text for the model, is_error)."""
+def _decision(stderr: str) -> dict[str, Any]:
+    for line in reversed((stderr or "").splitlines()):
+        try:
+            value = json.loads(line)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if isinstance(value, dict) and "route" in value:
+            return value
+    return {}
+
+
+def run_delegate(task: str, context: str | None = None, cwd: str | None = None,
+                 tier: str = "cheap", timeout_s: int = 900,
+                 run: Callable[..., Any] = subprocess.run) -> dict[str, Any]:
+    """Run one worker and return a truthful, machine-readable result."""
+    started = time.perf_counter()
     if not task.strip():
-        return "delegate: empty task", True
+        return {"ok": False, "error": "empty task"}
     if cwd and not Path(cwd).is_dir():
-        return f"delegate: no such directory: {cwd}", True
+        return {"ok": False, "error": f"no such directory: {cwd}"}
+    if tier not in {"cheap", "auto", "strong"}:
+        return {"ok": False, "error": f"unknown tier: {tier}"}
+    timeout_s = max(1, min(int(timeout_s), 7200))
+    full_brief = _brief(task, context)
     env = dict(os.environ)
     env["PYTHONPATH"] = os.pathsep.join(p for p in (str(ROOT), env.get("PYTHONPATH", "")) if p)
     try:
-        proc = run(launcher_argv(task, cwd), cwd=cwd or None, env=env, capture_output=True,
-                   text=True, timeout=timeout_s, stdin=subprocess.DEVNULL)
+        proc = run(launcher_argv(full_brief, cwd, tier), cwd=cwd or None, env=env,
+                   capture_output=True, text=True, timeout=timeout_s, stdin=subprocess.DEVNULL)
     except subprocess.TimeoutExpired:
-        return f"delegate: the sub-agent did not finish within {timeout_s}s", True
-    route = next((line for line in (proc.stderr or "").splitlines() if line.strip()), "")
+        return {"ok": False, "error": f"worker timed out after {timeout_s}s",
+                "tier": tier, "wall_time_s": round(time.perf_counter() - started, 3),
+                "brief_chars": len(full_brief), "brief_tokens_estimate": (len(full_brief) + 3) // 4}
+    decision = _decision(proc.stderr or "")
     output = (proc.stdout or "").strip()
-    if len(output) > MAX_OUTPUT:
+    truncated = len(output) > MAX_OUTPUT
+    if truncated:
         output = "[... earlier output cut ...]\n" + output[-MAX_OUTPUT:]
-    text = f"route: {route}\nexit code: {proc.returncode}\n\n{output or '(no output)'}"
-    return text, proc.returncode != 0
+    estimate = ((decision.get("decision") or {}).get("estimated_outcome") or {}).get("cost_usd")
+    return {
+        "ok": proc.returncode == 0,
+        "model": decision.get("route"),
+        "tier": tier,
+        "result": output or "(no output)",
+        "exit_code": proc.returncode,
+        "wall_time_s": round(time.perf_counter() - started, 3),
+        "cost_usd": None,
+        "cost_basis": "not measured: the launched agent CLI did not report token usage",
+        "estimated_cost_usd": estimate,
+        "estimated_cost_basis": "router estimate before the worker ran" if estimate is not None else None,
+        "brief_chars": len(full_brief),
+        "brief_tokens_estimate": (len(full_brief) + 3) // 4,
+        "output_truncated": truncated,
+    }
 
 
-def handle(message: dict, run_tool: Callable[[dict], tuple[str, bool]]) -> dict | None:
-    method = message.get("method")
-    mid = message.get("id")
-    if mid is None:                      # a notification: nothing to answer
+def run_many(tasks: list[str], *, context: str | None = None, cwd: str | None = None,
+             tier: str = "cheap", parallel: int = 4, timeout_s: int = 900,
+             runner: Callable[..., dict[str, Any]] = run_delegate) -> dict[str, Any]:
+    if not tasks or any(not isinstance(task, str) or not task.strip() for task in tasks):
+        return {"ok": False, "error": "tasks must contain non-empty strings"}
+    workers = max(1, min(int(parallel), MAX_PARALLEL, len(tasks)))
+    started = time.perf_counter()
+    results: list[dict[str, Any] | None] = [None] * len(tasks)
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        pending = {pool.submit(runner, task, context, cwd, tier, timeout_s): i
+                   for i, task in enumerate(tasks)}
+        for future in as_completed(pending):
+            i = pending[future]
+            try:
+                results[i] = future.result()
+            except Exception as exc:  # a broken worker must not lose its siblings
+                results[i] = {"ok": False, "error": f"worker failed: {type(exc).__name__}: {exc}"}
+    finished = [r or {"ok": False, "error": "worker produced no result"} for r in results]
+    known_costs = [r.get("cost_usd") for r in finished if r.get("cost_usd") is not None]
+    estimates = [r.get("estimated_cost_usd") for r in finished
+                 if r.get("estimated_cost_usd") is not None]
+    return {
+        "ok": all(r.get("ok") for r in finished),
+        "results": finished,
+        "wall_time_s": round(time.perf_counter() - started, 3),
+        "parallel": workers,
+        "cost_usd": round(sum(known_costs), 8) if len(known_costs) == len(finished) else None,
+        "estimated_cost_usd": round(sum(estimates), 8) if len(estimates) == len(finished) else None,
+        "brief_tokens_estimate": sum(int(r.get("brief_tokens_estimate") or 0) for r in finished),
+    }
+
+
+def _text_result(data: dict[str, Any]) -> tuple[str, bool, dict[str, Any]]:
+    return json.dumps(data, ensure_ascii=False, indent=2), not bool(data.get("ok")), data
+
+
+def _call(name: str, arguments: dict) -> tuple[str, bool, dict[str, Any]]:
+    common = {
+        "context": arguments.get("context"), "cwd": arguments.get("cwd"),
+        "tier": arguments.get("tier") or "cheap",
+        "timeout_s": int(arguments.get("timeout_s") or 900),
+    }
+    if name == "delegate":
+        copies = max(1, min(int(arguments.get("parallel") or 1), MAX_PARALLEL))
+        if copies == 1:
+            return _text_result(run_delegate(str(arguments.get("task") or ""), **common))
+        return _text_result(run_many([str(arguments.get("task") or "")] * copies,
+                                     parallel=copies, **common))
+    if name == "delegate_many":
+        return _text_result(run_many(list(arguments.get("tasks") or []),
+                                     parallel=int(arguments.get("parallel") or 4), **common))
+    return json.dumps({"error": f"unknown tool {name!r}"}), True, {}
+
+
+def handle(message: dict, run_tool: Callable[[str, dict], tuple[str, bool, dict]]) -> dict | None:
+    method, mid = message.get("method"), message.get("id")
+    if mid is None:
         return None
     if method == "initialize":
         version = (message.get("params") or {}).get("protocolVersion") or PROTOCOL
         result = {"protocolVersion": version, "capabilities": {"tools": {}},
-                  "serverInfo": {"name": "auto-router-delegate", "version": "0.1.0"}}
+                  "serverInfo": {"name": "auto-router-delegate", "version": "0.2.0"}}
     elif method == "ping":
         result = {}
     elif method == "tools/list":
-        result = {"tools": [TOOL]}
+        result = {"tools": TOOLS}
     elif method == "tools/call":
         params = message.get("params") or {}
-        if params.get("name") != TOOL["name"]:
+        if params.get("name") not in {tool["name"] for tool in TOOLS}:
             return {"jsonrpc": "2.0", "id": mid,
                     "error": {"code": -32602, "message": f"unknown tool {params.get('name')!r}"}}
-        text, is_error = run_tool(params.get("arguments") or {})
-        result = {"content": [{"type": "text", "text": text}], "isError": is_error}
+        text, is_error, structured = run_tool(params["name"], params.get("arguments") or {})
+        result = {"content": [{"type": "text", "text": text}], "isError": is_error,
+                  "structuredContent": structured}
     else:
-        return {"jsonrpc": "2.0", "id": mid, "error": {"code": -32601, "message": f"no method {method}"}}
+        return {"jsonrpc": "2.0", "id": mid,
+                "error": {"code": -32601, "message": f"no method {method}"}}
     return {"jsonrpc": "2.0", "id": mid, "result": result}
-
-
-def _call(arguments: dict) -> tuple[str, bool]:
-    return run_delegate(str(arguments.get("task") or ""), arguments.get("cwd"),
-                        int(arguments.get("timeout_s") or 900))
 
 
 def main(stdin=sys.stdin, stdout=sys.stdout) -> int:
@@ -129,7 +229,8 @@ def main(stdin=sys.stdin, stdout=sys.stdout) -> int:
         try:
             message = json.loads(line)
         except json.JSONDecodeError:
-            reply = {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "parse error"}}
+            reply = {"jsonrpc": "2.0", "id": None,
+                     "error": {"code": -32700, "message": "parse error"}}
         else:
             reply = handle(message, _call)
         if reply is not None:

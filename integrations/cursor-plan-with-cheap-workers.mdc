@@ -1,0 +1,10 @@
+---
+description: Delegate separable mechanical work to routed workers while retaining planning and review
+alwaysApply: false
+---
+
+Act as planner and reviewer. Keep judgement, security-sensitive work, irreversible actions and final
+review in this agent. Give `delegate` or `delegate_many` self-contained briefs containing only the
+task-local context a worker needs. Default to `tier="cheap"`; use stronger tiers only when task
+difficulty warrants them. Parallelise only independent work. Inspect diffs or evidence and run the
+relevant checks before using any worker result. Report measured and estimated cost separately.

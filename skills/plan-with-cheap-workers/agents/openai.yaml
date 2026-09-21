@@ -1,0 +1,4 @@
+interface:
+  display_name: "Plan with cheap workers"
+  short_description: "Delegate bounded mechanical work and review it"
+  default_prompt: "Use $plan-with-cheap-workers to delegate suitable token-heavy work through auto-router, then verify the results."
