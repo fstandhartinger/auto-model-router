@@ -496,9 +496,12 @@ def _unless_stopping(runner: Callable[..., dict[str, Any]], *args: Any) -> dict[
 def _stop_workers(futures: dict) -> bool:
     """Stop every worker still running; True once none is, False after STOP_WAIT_S."""
     deadline = time.monotonic() + STOP_WAIT_S
+    # A queued brief cancelled by the shutdown never runs, but wait() only
+    # counts it as done once a pool thread has seen it, which may be never.
+    live = [future for future in futures if not future.cancelled()]
     while True:
         procs.terminate_all()
-        if not wait(futures, timeout=0.2).not_done:
+        if not wait(live, timeout=0.2).not_done:
             return True
         if time.monotonic() >= deadline:
             return False

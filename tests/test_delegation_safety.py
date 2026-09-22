@@ -479,11 +479,16 @@ sys.exit(delegate.main())
 """
 
 
+@pytest.mark.parametrize("signum, returncode", [
+    (signal.SIGTERM, 128 + signal.SIGTERM),  # the handler's SystemExit
+    (signal.SIGHUP, 128 + signal.SIGHUP),
+    (signal.SIGINT, -signal.SIGINT),  # Ctrl-C: KeyboardInterrupt, no handler, no flag
+])
 def test_a_stop_signal_during_parallel_work_stops_every_worker_and_removes_the_copies(
-        hermetic, tmp_path):
+        hermetic, tmp_path, signum, returncode):
     # The real server in a child process, the real run_delegate/procs path, a
     # fake worker: two briefs, one at a time, so the second is still queued
-    # when SIGTERM arrives during the first.
+    # when the signal arrives during the first.
     (hermetic / "a.txt").write_text("a\n")
     marks, scratch_tmp = tmp_path / "marks", tmp_path / "tmp"
     marks.mkdir()
@@ -509,14 +514,14 @@ def test_a_stop_signal_during_parallel_work_stops_every_worker_and_removes_the_c
         first = sorted(p.name for p in marks.glob("started-*"))
         assert len(first) == 1, "the first worker never started"
         assert list(scratch_tmp.glob("auto-router-delegate-*/worker-*/edited.txt"))
-        server.send_signal(signal.SIGTERM)
+        server.send_signal(signum)
         out, _ = server.communicate(timeout=60)
     finally:
         if server.poll() is None:
             server.kill()
             server.wait()
-    # The exit status still says "stopped by SIGTERM", and no reply claims a result.
-    assert server.returncode == 128 + signal.SIGTERM
+    # The exit status still names the signal, and no reply claims a result.
+    assert server.returncode == returncode
     assert out == ""
     # The queued brief never got a worker, and the one that ran is gone with
     # its background child: nothing was alive when the copies were removed.
@@ -550,6 +555,37 @@ def test_an_interrupted_run_stops_its_other_workers_before_removing_the_copies(
     with pytest.raises(KeyboardInterrupt):
         delegate.run_many(["sleeps", "interrupted"], cwd=str(hermetic), parallel=2, runner=runner)
     assert alive_at_cleanup == [False]
+    assert not _alive([int(pid_file.read_text())])
+    assert not list(tmp_path.glob("auto-router-delegate-*"))
+
+
+def test_ctrl_c_with_briefs_still_queued_cleans_up_without_waiting_for_them(
+        hermetic, tmp_path, monkeypatch):
+    # Ctrl-C reaches the main thread while it waits; one worker runs, one
+    # brief is queued. The cancelled brief must neither start nor hold up the
+    # cleanup until STOP_WAIT_S runs out.
+    (hermetic / "a.txt").write_text("a\n")
+    monkeypatch.setattr(delegate.tempfile, "tempdir", str(tmp_path))
+    sleeper = _script(tmp_path / "sleep.sh", 'echo "$$" > "$1"\nexec sleep 30\n')
+    pid_file = tmp_path / "pid"
+    ran = []
+
+    def runner(task, context, cwd, tier, timeout_s):
+        ran.append(task)
+        return {"ok": True, "p": procs.run([sleeper, str(pid_file)], timeout=60).returncode}
+
+    def interrupted(futures):
+        while not pid_file.exists() or not pid_file.read_text().strip():
+            time.sleep(0.02)
+        raise KeyboardInterrupt
+        yield  # pragma: no cover - a generator, like as_completed
+
+    monkeypatch.setattr(delegate, "as_completed", interrupted)
+    began = time.monotonic()
+    with pytest.raises(KeyboardInterrupt):
+        delegate.run_many(["runs", "queued"], cwd=str(hermetic), parallel=1, runner=runner)
+    assert time.monotonic() - began < delegate.STOP_WAIT_S / 3
+    assert ran == ["runs"]
     assert not _alive([int(pid_file.read_text())])
     assert not list(tmp_path.glob("auto-router-delegate-*"))
 

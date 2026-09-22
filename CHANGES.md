@@ -41,6 +41,17 @@ worker or real installation was run.
   within 30 s. The exit status is still 128 + the signal number. Found by an
   offline self-audit on 22 Sep and reproduced by signalling a real server that
   was running fake workers. No live worker was run.
+- **An interrupted run with briefs still queued no longer waits 30 s and
+  keeps its copies.** The interruption cancels the queued briefs. A cancelled
+  brief never runs, but the wait for stopped workers (`concurrent.futures.wait`)
+  counts it as done only once a pool thread has seen it, and none does. On
+  `Ctrl-C` (`SIGINT`) this happened every time; on `SIGTERM`/`SIGHUP`, only
+  when the queue was cancelled before a pool thread picked the brief up. The
+  server then waited the full 30 s, judged a worker unstoppable, and left
+  every copy in `$TMPDIR/auto-router-delegate-*`, although all workers had been
+  stopped. Cancelled briefs are no longer waited for. The real-server signal
+  test now covers `SIGINT` and `SIGHUP` as well as `SIGTERM`. Found by an offline
+  self-audit on 22 Sep and reproduced with fake workers; no live worker was run.
 - **Installer tests.** `tests/test_install_delegation_e2e.py` runs
   `install-delegation.sh` and `install-delegation.py` end to end in a
   disposable HOME against fake `git`, `python3 -m venv`, `pip` and agent CLIs
