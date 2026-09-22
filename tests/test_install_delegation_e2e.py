@@ -267,9 +267,52 @@ def test_the_python_entry_point_refuses_jsonc_and_leaves_it_byte_identical(fake)
     proc = fake.run("opencode", "--server", "/opt/delegate", entry="py")
     assert proc.returncode == 1 and "not plain JSON" in proc.stderr
     assert oc.read_text() == jsonc
-    # Observed, not ideal: the skill is copied before the settings file is read.
-    assert sorted(p.name for p in oc.parent.iterdir()) == ["opencode.json", "skill"]
+    assert sorted(p.name for p in oc.parent.iterdir()) == ["opencode.json"], "no skill copied"
     assert not fake.calls()
+
+
+@pytest.mark.parametrize("tool", ["claude", "codex"])
+def test_a_refused_cli_entry_leaves_no_skill_behind(fake, tool):
+    store = fake.state / tool
+    store.mkdir(parents=True)
+    (store / NAME).write_text("someone else's server\n")
+    proc = fake.run(tool, "--server", "/opt/delegate", entry="py")
+    assert proc.returncode == 1 and "already has an MCP server" in proc.stderr
+    assert fake.calls() == [f"{tool} mcp get {NAME}"]
+    assert (store / NAME).read_text() == "someone else's server\n"
+    assert list(fake.home.iterdir()) == [], "the refused install wrote nothing to HOME"
+
+
+def test_a_refused_skill_leaves_the_cli_entry_alone(fake):
+    skill = fake.home / ".claude/skills/plan-with-cheap-workers"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("mine\n")
+    proc = fake.run("claude", "--server", "/opt/delegate", entry="py")
+    assert proc.returncode == 1 and "exists and differs" in proc.stderr
+    assert not fake.calls() and not fake.state.exists()
+    assert [p.name for p in skill.iterdir()] == ["SKILL.md"]
+
+
+def test_a_refused_opencode_entry_leaves_no_skill_behind(fake):
+    oc = fake.home / ".config/opencode/opencode.json"
+    oc.parent.mkdir(parents=True)
+    oc.write_text(json.dumps({"mcp": {NAME: {"type": "local", "command": ["/other"]}}}))
+    before = oc.read_bytes()
+    proc = fake.run("opencode", "--server", "/opt/delegate", entry="py")
+    assert proc.returncode == 1 and "different 'auto-router-delegate' entry" in proc.stderr
+    assert oc.read_bytes() == before
+    assert sorted(p.name for p in oc.parent.iterdir()) == ["opencode.json"]
+
+
+def test_a_refused_cursor_rule_leaves_the_global_settings_alone(fake):
+    project = fake.tmp / "project"
+    rule = project / ".cursor/rules/plan-with-cheap-workers.mdc"
+    rule.parent.mkdir(parents=True)
+    rule.write_text("my own rule\n")
+    proc = fake.run("cursor", "--server", "/opt/delegate", "--project", str(project), entry="py")
+    assert proc.returncode == 1 and "exists and differs" in proc.stderr
+    assert rule.read_text() == "my own rule\n"
+    assert list(fake.home.iterdir()) == [], "no ~/.cursor/mcp.json written"
 
 
 def test_the_python_entry_point_rejects_an_unknown_tool_through_argparse(fake):

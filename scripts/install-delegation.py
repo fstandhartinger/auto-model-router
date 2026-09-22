@@ -14,6 +14,8 @@ Conservative by design, because it edits another program's global settings:
   configuration (``--config``, or the variable already set in your shell) and
   that file exists. Otherwise the entry carries no configuration path and the
   server reads the variable from the environment it is started in.
+- Every refusal is decided before anything is written, so a refused install
+  leaves the skill, the settings, the MCP entry and the rule as they were.
 - The Cursor rule is project-local, so it is written only with ``--project``.
 - It reads and writes no credential.
 """
@@ -86,15 +88,24 @@ def _copy_plain(source: Path, target: Path) -> None:
             shutil.copyfile(path, dest)
 
 
+def check_skill(target: Path, *, force: bool = False) -> bool:
+    """True if the skill at ``target`` is current; raises if copy_skill would refuse."""
+    if not (target.is_symlink() or target.exists()):
+        return False
+    if target.is_dir() and not target.is_symlink() and _same_tree(ROOT / "skills" / SKILL, target):
+        return True
+    if not force:
+        raise InstallError(f"{target} exists and differs; rerun with --force to replace it "
+                           f"(the old copy is kept as a .bak- directory)")
+    return False
+
+
 def copy_skill(target: Path, *, force: bool = False) -> str:
     """Copy the skill; never deletes a different existing copy without --force."""
     source = ROOT / "skills" / SKILL
+    if check_skill(target, force=force):
+        return f"skill already current at {target}"
     if target.is_symlink() or target.exists():
-        if target.is_dir() and not target.is_symlink() and _same_tree(source, target):
-            return f"skill already current at {target}"
-        if not force:
-            raise InstallError(f"{target} exists and differs; rerun with --force to replace it "
-                               f"(the old copy is kept as a .bak- directory)")
         moved = _backup(target)
         note = f" (previous copy moved to {moved})"
     else:
@@ -122,9 +133,12 @@ def _write_atomic(path: Path, text: str) -> None:
         raise
 
 
-def update_json(path: Path, key: str, value: dict, *, force: bool = False) -> str:
-    """Add this server under ``key`` without touching any other entry."""
-    path.parent.mkdir(parents=True, exist_ok=True)
+def update_json(path: Path, key: str, value: dict, *, force: bool = False,
+                write: bool = True) -> str:
+    """Add this server under ``key`` without touching any other entry.
+
+    With ``write=False`` it only raises what a write would refuse.
+    """
     if path.exists():
         try:
             data = json.loads(path.read_text())
@@ -140,11 +154,14 @@ def update_json(path: Path, key: str, value: dict, *, force: bool = False) -> st
     current = bucket.get(NAME)
     if current == value:
         return f"{path}: entry already current"
+    if current is not None and not force:
+        raise InstallError(f"{path} already has a different {NAME!r} entry; rerun with "
+                           f"--force to replace it (the file is backed up first)")
+    if not write:
+        return f"{path}: entry can be written"
+    path.parent.mkdir(parents=True, exist_ok=True)
     note = ""
     if current is not None:
-        if not force:
-            raise InstallError(f"{path} already has a different {NAME!r} entry; rerun with "
-                               f"--force to replace it (the file is backed up first)")
         backup = path.with_name(f"{path.name}.bak-{time.strftime('%Y%m%dT%H%M%S')}")
         shutil.copy2(path, backup)
         note = f" (previous file saved as {backup})"
@@ -153,14 +170,19 @@ def update_json(path: Path, key: str, value: dict, *, force: bool = False) -> st
     return f"{path}: entry written{note}"
 
 
-def _cli_entry(cli: str, config: str | None, server: str, *, force: bool,
-               run=subprocess.run) -> str:
-    """Register through the agent's own CLI; an existing entry is kept unless --force."""
+def check_cli_entry(cli: str, *, force: bool, run=subprocess.run) -> bool:
+    """Whether the agent's CLI has an entry already; raises if it may not be replaced."""
     exists = run([cli, "mcp", "get", NAME], stdout=subprocess.DEVNULL,
                  stderr=subprocess.DEVNULL).returncode == 0
     if exists and not force:
         raise InstallError(f"{cli} already has an MCP server named {NAME!r}; inspect it with "
                            f"`{cli} mcp get {NAME}` and rerun with --force to replace it")
+    return exists
+
+
+def _cli_entry(cli: str, config: str | None, server: str, *, exists: bool,
+               run=subprocess.run) -> str:
+    """Register through the agent's own CLI, replacing the entry checked to exist."""
     if exists:
         remove = [cli, "mcp", "remove", NAME] + (["--scope", "user"] if cli == "claude" else [])
         run(remove, check=True)
@@ -176,29 +198,37 @@ def install(tool: str, *, config: str | None = None, project: str | None = None,
     server = server or server_path()
     config = resolve_config(config)
     done: list[str] = []
-    if tool == "claude":
-        done.append(copy_skill(home / ".claude/skills" / SKILL, force=force))
-        done.append(_cli_entry("claude", config, server, force=force, run=run))
-    elif tool == "codex":
-        done.append(copy_skill(home / ".agents/skills" / SKILL, force=force))
-        done.append(_cli_entry("codex", config, server, force=force, run=run))
+    # Each branch checks every refusal first, then writes.
+    if tool in ("claude", "codex"):
+        skill = home / (".claude/skills" if tool == "claude" else ".agents/skills") / SKILL
+        check_skill(skill, force=force)
+        exists = check_cli_entry(tool, force=force, run=run)
+        done.append(copy_skill(skill, force=force))
+        done.append(_cli_entry(tool, config, server, exists=exists, run=run))
     elif tool == "opencode":
-        done.append(copy_skill(home / ".config/opencode/skill" / SKILL, force=force))
+        skill = home / ".config/opencode/skill" / SKILL
+        settings = home / ".config/opencode/opencode.json"
         entry = {"type": "local", "command": [server], "enabled": True}
         if config:
             entry["environment"] = {"AUTO_ROUTER_CONFIG": config}
-        done.append(update_json(home / ".config/opencode/opencode.json", "mcp", entry, force=force))
+        check_skill(skill, force=force)
+        update_json(settings, "mcp", entry, force=force, write=False)
+        done.append(copy_skill(skill, force=force))
+        done.append(update_json(settings, "mcp", entry, force=force))
     elif tool == "cursor":
+        settings = home / ".cursor/mcp.json"
         entry = {"command": server, "args": []}
         if config:
             entry["env"] = {"AUTO_ROUTER_CONFIG": config}
-        done.append(update_json(home / ".cursor/mcp.json", "mcpServers", entry, force=force))
+        update_json(settings, "mcpServers", entry, force=force, write=False)
         if project:
             rules = Path(project).resolve() / ".cursor/rules"
             rule = rules / f"{SKILL}.mdc"
             source = ROOT / "integrations" / f"cursor-{SKILL}.mdc"
             if rule.exists() and rule.read_bytes() != source.read_bytes() and not force:
                 raise InstallError(f"{rule} exists and differs; rerun with --force to replace it")
+        done.append(update_json(settings, "mcpServers", entry, force=force))
+        if project:
             rules.mkdir(parents=True, exist_ok=True)
             if rule.exists() and rule.read_bytes() != source.read_bytes():
                 done.append(f"previous rule moved to {_backup(rule)}")

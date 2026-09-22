@@ -700,9 +700,14 @@ fetched commit that differs from the pin, a foreign `auto-router-delegate`
 link, a missing `--config` file, JSONC settings and an existing MCP entry all
 stop the install without changing what was there. It does **not** show that the
 installer works with the real git, pip, PyPI, Claude Code or Codex CLIs; no
-real installation has been run. Note that the skill is copied before the
-settings file or MCP entry is checked, so a refused install can leave the skill
-directory behind.
+real installation has been run. The installer checks every refusal (a
+differing skill, settings file, MCP entry or Cursor rule) before it writes
+anything, so a refused install leaves no skill or entry behind. A step that
+fails while it is writing (for example `claude mcp add` exiting with an error
+after the skill was copied) can still leave a partial install. Running the
+same install again stops at the existing Claude Code or Codex MCP entry
+instead of reporting it as current, because the installer does not parse
+those CLIs' output; use `--force` to replace it.
 
 ### Install it with a coding agent
 

@@ -145,6 +145,7 @@ def test_an_existing_cli_entry_is_not_replaced_without_force(home):
     with pytest.raises(InstallError, match="--force"):
         install_delegation.install("claude", server="/opt/delegate", run=run)
     assert [c[2] for c in run.calls] == ["get"]
+    assert not (home / ".claude").exists(), "a refused install copies no skill"
     run = Recorder(existing=True)
     install_delegation.install("claude", server="/opt/delegate", force=True, run=run)
     assert [c[2] for c in run.calls] == ["get", "remove", "add"]

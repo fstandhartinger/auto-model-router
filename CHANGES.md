@@ -52,6 +52,19 @@ worker or real installation was run.
   stopped. Cancelled briefs are no longer waited for. The real-server signal
   test now covers `SIGINT` and `SIGHUP` as well as `SIGTERM`. Found by an offline
   self-audit on 22 Sep and reproduced with fake workers; no live worker was run.
+- **A refused install no longer leaves part of the install behind.** The
+  installer copied the skill before it checked the MCP entry or settings file,
+  so an install refused because Claude Code or Codex already had an
+  `auto-router-delegate` entry, or because opencode's settings were JSONC or
+  held a different entry, still left the skill directory in place, with exit
+  status 1. For Cursor with `--project`, `~/.cursor/mcp.json` was written
+  before a differing project rule stopped the install. Every refusal is now
+  checked before anything is written. A command that fails while the install
+  is writing can still leave a partial install. Re-running an identical Claude
+  Code or Codex install still stops at the existing entry (use `--force`): the
+  installer does not parse those CLIs' output to tell whether the entry is
+  current. Found by an offline self-audit on 22 Sep and reproduced against
+  fake CLIs in a disposable HOME; no real installation was run.
 - **Installer tests.** `tests/test_install_delegation_e2e.py` runs
   `install-delegation.sh` and `install-delegation.py` end to end in a
   disposable HOME against fake `git`, `python3 -m venv`, `pip` and agent CLIs
@@ -59,7 +72,8 @@ worker or real installation was run.
   a dirty checkout, a commit that differs from the pin, a foreign command link,
   a missing config, JSONC settings and an existing MCP entry (replaced only with
   `--force`). This proves control flow only; compatibility with the real tools
-  is untested. The installer code itself is unchanged.
+  is untested. Adding these tests did not change the installer; the fix
+  above did.
 
 ## 0.4.0 — delegation safety repair (21 Sep 2026)
 
