@@ -9,8 +9,10 @@ import io
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -404,10 +406,13 @@ def test_valid_calls_are_normalised_before_running(hermetic, monkeypatch):
 
 def test_the_server_stops_running_workers_when_it_is_told_to_stop(monkeypatch):
     called = []
-    monkeypatch.setattr(procs, "terminate_all", lambda: called.append(True))
-    with pytest.raises(SystemExit):
+    stopping = threading.Event()
+    monkeypatch.setattr(delegate, "_STOPPING", stopping)
+    monkeypatch.setattr(procs, "terminate_all", lambda: called.append(stopping.is_set()))
+    with pytest.raises(SystemExit) as exc:
         delegate._exit_on_signal(15, None)
-    assert called
+    assert exc.value.code == 128 + 15
+    assert called == [True], "queued briefs must be barred before the running ones are stopped"
 
 
 # --------------------------------------------------------------------------
@@ -456,6 +461,122 @@ def test_unchanged_worker_copies_are_removed(hermetic):
     result = delegate.run_many(["one", "two"], cwd=str(hermetic),
                                runner=lambda *a: {"ok": True})
     assert all(r["workspace"] is None for r in result["results"])
+
+
+STOPPABLE_WORKER = """
+echo edited > "$2/edited.txt"
+sleep 20 &
+echo "$$ $!" > "$1/.pids" && mv "$1/.pids" "$1/started-$(basename "$2")"
+wait
+"""
+
+SIGNALLED_SERVER = """
+import sys
+from auto_router import delegate
+worker, marks = sys.argv[1], sys.argv[2]
+delegate.launcher_argv = lambda task, cwd, tier="cheap": [worker, marks, cwd]
+sys.exit(delegate.main())
+"""
+
+
+def test_a_stop_signal_during_parallel_work_stops_every_worker_and_removes_the_copies(
+        hermetic, tmp_path):
+    # The real server in a child process, the real run_delegate/procs path, a
+    # fake worker: two briefs, one at a time, so the second is still queued
+    # when SIGTERM arrives during the first.
+    (hermetic / "a.txt").write_text("a\n")
+    marks, scratch_tmp = tmp_path / "marks", tmp_path / "tmp"
+    marks.mkdir()
+    scratch_tmp.mkdir()
+    worker = _script(tmp_path / "w.sh", STOPPABLE_WORKER)
+    driver = tmp_path / "server.py"
+    driver.write_text(SIGNALLED_SERVER)
+    env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(tmp_path),
+           "PYTHONPATH": str(ROOT), "AUTO_ROUTER_DELEGATE_ROOT": str(hermetic),
+           "AUTO_ROUTER_BENCH_OFFLINE": "1", "TMPDIR": str(scratch_tmp)}
+    server = subprocess.Popen([sys.executable, str(driver), worker, str(marks)], cwd=hermetic,
+                              env=env, text=True, stdin=subprocess.PIPE,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        server.stdin.write(json.dumps({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "delegate_many",
+                       "arguments": {"tasks": ["one", "two"], "parallel": 1}}}) + "\n")
+        server.stdin.flush()
+        deadline = time.monotonic() + 30
+        while not list(marks.glob("started-*")) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        first = sorted(p.name for p in marks.glob("started-*"))
+        assert len(first) == 1, "the first worker never started"
+        assert list(scratch_tmp.glob("auto-router-delegate-*/worker-*/edited.txt"))
+        server.send_signal(signal.SIGTERM)
+        out, _ = server.communicate(timeout=60)
+    finally:
+        if server.poll() is None:
+            server.kill()
+            server.wait()
+    # The exit status still says "stopped by SIGTERM", and no reply claims a result.
+    assert server.returncode == 128 + signal.SIGTERM
+    assert out == ""
+    # The queued brief never got a worker, and the one that ran is gone with
+    # its background child: nothing was alive when the copies were removed.
+    assert sorted(p.name for p in marks.glob("started-*")) == first
+    pids = [int(p) for f in marks.glob("started-*") for p in f.read_text().split()]
+    assert len(pids) == 2 and not _alive(pids)
+    assert not list(scratch_tmp.iterdir()), "the worker copies were left behind"
+
+
+def test_an_interrupted_run_stops_its_other_workers_before_removing_the_copies(
+        hermetic, tmp_path, monkeypatch):
+    (hermetic / "a.txt").write_text("a\n")
+    monkeypatch.setattr(delegate.tempfile, "tempdir", str(tmp_path))
+    sleeper = _script(tmp_path / "sleep.sh", 'echo "$$" > "$1"\nexec sleep 30\n')
+    pid_file = tmp_path / "pid"
+    alive_at_cleanup = []
+    real_rmtree = delegate.shutil.rmtree
+
+    def rmtree(path, *a, **k):
+        alive_at_cleanup.append(bool(_alive([int(pid_file.read_text())])))
+        return real_rmtree(path, *a, **k)
+
+    def runner(task, context, cwd, tier, timeout_s):
+        if task == "sleeps":
+            return {"ok": True, "p": procs.run([sleeper, str(pid_file)], timeout=60).returncode}
+        while not pid_file.exists() or not pid_file.read_text().strip():
+            time.sleep(0.02)
+        raise KeyboardInterrupt  # Ctrl-C arriving while the other worker runs
+
+    monkeypatch.setattr(delegate.shutil, "rmtree", rmtree)
+    with pytest.raises(KeyboardInterrupt):
+        delegate.run_many(["sleeps", "interrupted"], cwd=str(hermetic), parallel=2, runner=runner)
+    assert alive_at_cleanup == [False]
+    assert not _alive([int(pid_file.read_text())])
+    assert not list(tmp_path.glob("auto-router-delegate-*"))
+
+
+def test_copies_a_worker_may_still_write_to_are_not_deleted(hermetic, tmp_path, monkeypatch):
+    (hermetic / "a.txt").write_text("a\n")
+    monkeypatch.setattr(delegate.tempfile, "tempdir", str(tmp_path))
+    monkeypatch.setattr(delegate, "STOP_WAIT_S", 0.3)
+    release, stuck = threading.Event(), threading.Event()
+
+    def runner(task, context, cwd, tier, timeout_s):
+        if task == "stuck":  # not under procs.run, so nothing can stop it
+            stuck.set()
+            release.wait(30)
+            return {"ok": True}
+        stuck.wait(30)
+        raise KeyboardInterrupt
+
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            delegate.run_many(["stuck", "interrupted"], cwd=str(hermetic), parallel=2,
+                              runner=runner)
+        assert list(tmp_path.glob("auto-router-delegate-*/worker-1/a.txt"))
+    finally:
+        release.set()
+        for leftover in tmp_path.glob("auto-router-delegate-*"):
+            shutil.rmtree(leftover)
 
 
 def test_a_tree_too_large_to_copy_is_refused(hermetic, monkeypatch):

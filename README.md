@@ -627,7 +627,11 @@ with a shell:
   diff against the starting state; nothing is applied to `cwd` and nothing a
   worker wrote is executed by the server. You review the diffs and apply what you
   accept. A single worker runs in `cwd` itself, and tool calls are served one at
-  a time.
+  a time. If the server is stopped (`SIGTERM`/`SIGHUP`) or interrupted while
+  workers run, queued briefs are not started and the running workers are
+  stopped. The copies are deleted only after that, because no reply will name
+  them. A worker that cannot be stopped within 30 s keeps its copies on disk
+  (`$TMPDIR/auto-router-delegate-*`), since they are not deleted under a writer.
 - **Symlinks in copies.** A copy keeps a symlink only if its target is relative
   and stays inside the copy, both as written and after following every link on
   the way. Absolute links (even into the project, which would lead back to the

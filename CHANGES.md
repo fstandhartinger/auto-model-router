@@ -29,6 +29,18 @@ worker or real installation was run.
   each result's `changes.links_leaving_copy` names the added or retargeted
   links that lead out of the copy. (Found by an offline self-audit on 22 Sep;
   reproduced with a fake worker; no live worker was run.)
+- **Stopping the server during parallel work** no longer starts queued briefs
+  or leaves the copies behind. Before this change, on `SIGTERM` or `SIGHUP` the
+  running workers were stopped, but the thread pool then started every brief
+  still queued (`parallel` below the number of briefs), each one running to
+  completion or its timeout. After that, the base and worker copies were left in
+  `$TMPDIR/auto-router-delegate-*` with no reply naming them. Now the signal
+  handler bars queued briefs before it stops the running ones. An interrupted
+  `run_many` (the stop signal, `Ctrl-C` or a crash) stops every remaining worker
+  and only then deletes the copies. It keeps them if a worker cannot be stopped
+  within 30 s. The exit status is still 128 + the signal number. Found by an
+  offline self-audit on 22 Sep and reproduced by signalling a real server that
+  was running fake workers. No live worker was run.
 - **Installer tests.** `tests/test_install_delegation_e2e.py` runs
   `install-delegation.sh` and `install-delegation.py` end to end in a
   disposable HOME against fake `git`, `python3 -m venv`, `pip` and agent CLIs

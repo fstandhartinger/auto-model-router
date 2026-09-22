@@ -46,7 +46,7 @@ import sys
 import tempfile
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, wait
 from pathlib import Path
 from typing import Any, Callable
 
@@ -63,6 +63,9 @@ MAX_CONTEXT_CHARS = 200_000
 #: A per-worker copy larger than this is refused rather than made eight times.
 COPY_LIMIT_BYTES = int(os.environ.get("AUTO_ROUTER_DELEGATE_COPY_LIMIT_MB", "200")) * 1024 * 1024
 COPY_LIMIT_FILES = 50_000
+#: How long an interrupted run_many keeps stopping its workers before it gives
+#: up and leaves their copies in place rather than delete them under a writer.
+STOP_WAIT_S = 30.0
 #: Left out of per-worker copies: large, machine-specific or version control.
 COPY_IGNORE = (".git", ".hg", ".svn", ".venv", "venv", "node_modules", "__pycache__",
                ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox")
@@ -479,6 +482,28 @@ def diff_trees(before: Path, after: Path, limit: int = MAX_PATCH) -> dict[str, A
             "patch_truncated": len(patch) > limit}
 
 
+#: Set by the server's stop-signal handler before it stops the running workers,
+#: so that a pool thread freed by that stop does not start a queued brief.
+_STOPPING = threading.Event()
+
+
+def _unless_stopping(runner: Callable[..., dict[str, Any]], *args: Any) -> dict[str, Any]:
+    if _STOPPING.is_set():
+        return {"ok": False, "error": "not started: the server was told to stop"}
+    return runner(*args)
+
+
+def _stop_workers(futures: dict) -> bool:
+    """Stop every worker still running; True once none is, False after STOP_WAIT_S."""
+    deadline = time.monotonic() + STOP_WAIT_S
+    while True:
+        procs.terminate_all()
+        if not wait(futures, timeout=0.2).not_done:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+
+
 def run_many(tasks: list[str], *, context: str | None = None, cwd: str | None = None,
              tier: str = "cheap", parallel: int = 4, timeout_s: int = 900,
              runner: Callable[..., dict[str, Any]] = run_delegate) -> dict[str, Any]:
@@ -502,41 +527,59 @@ def run_many(tasks: list[str], *, context: str | None = None, cwd: str | None = 
                 f"{source} is too large to copy once per worker (limit {COPY_LIMIT_FILES} files, "
                 f"{COPY_LIMIT_BYTES // 2**20} MB, without {', '.join(COPY_IGNORE[:6])}...); "
                 f"use a smaller cwd or run one worker at a time")}
-        scratch = Path(tempfile.mkdtemp(prefix="auto-router-delegate-"))
-        try:
-            skipped = _copy(source, scratch / "base")
-            for i in range(len(tasks)):
-                _copy(scratch / "base", scratch / f"worker-{i + 1}")
-                workdirs[i] = str(scratch / f"worker-{i + 1}")
-        except OSError as exc:
-            shutil.rmtree(scratch, ignore_errors=True)
-            return {"ok": False, "error": f"could not copy {source} for the workers: {exc}"}
     results: list[dict[str, Any] | None] = [None] * len(tasks)
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        pending = {pool.submit(runner, task, context, workdirs[i], tier, timeout_s): i
-                   for i, task in enumerate(tasks)}
+    pool: ThreadPoolExecutor | None = None
+    pending: dict = {}
+    try:
+        if isolated:
+            scratch = Path(tempfile.mkdtemp(prefix="auto-router-delegate-"))
+            try:
+                skipped = _copy(source, scratch / "base")
+                for i in range(len(tasks)):
+                    _copy(scratch / "base", scratch / f"worker-{i + 1}")
+                    workdirs[i] = str(scratch / f"worker-{i + 1}")
+            except OSError as exc:
+                shutil.rmtree(scratch, ignore_errors=True)
+                return {"ok": False, "error": f"could not copy {source} for the workers: {exc}"}
+        pool = ThreadPoolExecutor(max_workers=workers)
+        for i, task in enumerate(tasks):
+            pending[pool.submit(_unless_stopping, runner, task, context, workdirs[i], tier,
+                                timeout_s)] = i
         for future in as_completed(pending):
             i = pending[future]
             try:
                 results[i] = future.result()
             except Exception as exc:  # a broken worker must not lose its siblings
                 results[i] = {"ok": False, "error": f"worker failed: {type(exc).__name__}: {exc}"}
-    finished = [r or {"ok": False, "error": "worker produced no result"} for r in results]
-    if isolated and scratch is not None:
-        for i, item in enumerate(finished):
-            workdir = Path(workdirs[i] or "")
-            try:
-                changes = diff_trees(scratch / "base", workdir)
-            except OSError as exc:
-                changes = {"error": f"could not diff the worker copy: {exc}"}
-            changed = any(changes.get(k) for k in ("added", "modified", "deleted"))
-            if not changed and not changes.get("error"):
-                shutil.rmtree(workdir, ignore_errors=True)
-            finished[i] = {**item, "workspace": str(workdir) if changed else None,
-                           "changes": changes}
-        shutil.rmtree(scratch / "base", ignore_errors=True)
-        if not any(r.get("workspace") for r in finished):
+        pool.shutdown()
+        finished = [r or {"ok": False, "error": "worker produced no result"} for r in results]
+        if isolated and scratch is not None:
+            for i, item in enumerate(finished):
+                workdir = Path(workdirs[i] or "")
+                try:
+                    changes = diff_trees(scratch / "base", workdir)
+                except OSError as exc:
+                    changes = {"error": f"could not diff the worker copy: {exc}"}
+                changed = any(changes.get(k) for k in ("added", "modified", "deleted"))
+                if not changed and not changes.get("error"):
+                    shutil.rmtree(workdir, ignore_errors=True)
+                finished[i] = {**item, "workspace": str(workdir) if changed else None,
+                               "changes": changes}
+            shutil.rmtree(scratch / "base", ignore_errors=True)
+            if not any(r.get("workspace") for r in finished):
+                shutil.rmtree(scratch, ignore_errors=True)
+    except BaseException:
+        # Interrupted: the server's stop signal (raised here as SystemExit),
+        # Ctrl-C or a crash. No result will ever name these copies, so they go
+        # too - but only once no worker can still be writing into them. Queued
+        # briefs are not started; the exception goes on unchanged.
+        stopped = True
+        if pool is not None:
+            pool.shutdown(wait=False, cancel_futures=True)
+            stopped = _stop_workers(pending)
+        if scratch is not None and stopped:
             shutil.rmtree(scratch, ignore_errors=True)
+        raise
     known_costs = [r.get("cost_usd") for r in finished if r.get("cost_usd") is not None]
     estimates = [r.get("estimated_cost_usd") for r in finished
                  if r.get("estimated_cost_usd") is not None]
@@ -622,7 +665,8 @@ def handle(message: Any, run_tool: Callable[[str, Any], tuple[str, bool, dict]])
 
 def _exit_on_signal(signum, _frame):
     # Running workers (possibly in pool threads) are stopped before the server
-    # goes, instead of carrying on unsupervised.
+    # goes, instead of carrying on unsupervised; queued briefs are not started.
+    _STOPPING.set()
     procs.terminate_all()
     raise SystemExit(128 + signum)
 
