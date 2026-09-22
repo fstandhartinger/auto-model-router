@@ -49,8 +49,9 @@ plan, delegate implementation, and verify the result itself.
 
 - n=1 per task, small tasks, one free route.
 - The numbers predate the delegate tool's worker tiers, parallel workers,
-  per-worker copies, environment allowlist and timeout containment (21 Sep);
-  none of them was exercised.
+  per-worker copies, environment allowlist and timeout containment (21 Sep),
+  and the symlink handling of those copies (22 Sep); none of them was
+  exercised by a live worker. They are covered only by tests with fake workers.
 - It shows where delegation made the result worse: fixed planner prompts, MCP
   handoff, cold worker context, and final review cost more than they saved on
   small jobs. It does not test a large separable job or parallel workers, where

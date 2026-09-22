@@ -8,6 +8,7 @@ agent CLI, provider or network is involved.
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -462,6 +463,137 @@ def test_a_tree_too_large_to_copy_is_refused(hermetic, monkeypatch):
     monkeypatch.setattr(delegate, "COPY_LIMIT_BYTES", 1024)
     result = delegate.run_many(["one", "two"], cwd=str(hermetic), runner=lambda *a: {"ok": True})
     assert not result["ok"] and "too large" in result["error"]
+
+
+# --------------------------------------------------------------------------
+# Symlinks in per-worker copies (known limit of b7bda45, closed here)
+# --------------------------------------------------------------------------
+def _links_project(hermetic: Path) -> Path:
+    """A project whose links point inside and outside it; returns the outside file."""
+    outside = hermetic.parent / "outside"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("outside\n")
+    (hermetic / "shared.txt").write_text("original\n")
+    (hermetic / "sub").mkdir()
+    (hermetic / "sub" / "real.txt").write_text("real\n")
+    (hermetic / "abs_link").symlink_to(outside / "secret.txt")          # absolute, outside
+    (hermetic / "up_link").symlink_to("../outside/secret.txt")          # .. climbs out
+    (hermetic / "dir_up").symlink_to("../outside")                      # directory, outside
+    (hermetic / "chain").symlink_to("abs_link")                         # in-tree hop, ends outside
+    (hermetic / "abs_inside").symlink_to(hermetic / "shared.txt")       # absolute into the original
+    (hermetic / "sneaky").symlink_to(f"../{hermetic.name}/shared.txt")  # out and back by name
+    (hermetic / "in_tree").symlink_to("sub/real.txt")                   # safe
+    (hermetic / "sub" / "back").symlink_to("../shared.txt")             # safe, climbs within
+    (hermetic / "sub_link").symlink_to("sub")                           # safe directory link
+    return outside / "secret.txt"
+
+
+ESCAPING = ["abs_inside", "abs_link", "chain", "dir_up", "sneaky", "up_link"]
+
+
+def test_a_copy_keeps_safe_links_and_drops_links_that_leave_it(hermetic, tmp_path):
+    _links_project(hermetic)
+    skipped = delegate._copy(hermetic, tmp_path / "copy")
+    copy = tmp_path / "copy"
+    assert [line.split(" ")[0] for line in skipped] == ESCAPING
+    assert all("leads outside the copy" in line for line in skipped)
+    for name in ESCAPING:
+        assert not os.path.lexists(copy / name)
+    assert os.readlink(copy / "in_tree") == "sub/real.txt"
+    assert os.readlink(copy / "sub" / "back") == "../shared.txt"
+    assert os.readlink(copy / "sub_link") == "sub"
+    assert (copy / "in_tree").read_text() == "real\n"
+    assert (copy / "sub_link" / "real.txt").resolve() == (copy / "sub" / "real.txt").resolve()
+    assert (copy / "shared.txt").read_text() == "original\n" and not (copy / "shared.txt").is_symlink()
+
+
+def test_a_worker_writing_through_links_in_its_copy_cannot_reach_outside(hermetic):
+    secret = _links_project(hermetic)
+
+    def worker(task, context, cwd, tier, timeout_s):
+        for name in ["dir_up/secret.txt"] + ESCAPING + ["in_tree", "sub/back"]:
+            try:  # follows a link if one is there
+                Path(cwd, name).write_text(f"written by {task}\n")
+            except (FileNotFoundError, NotADirectoryError):
+                pass  # a relative link that dangles from the copy's location
+        return {"ok": True}
+
+    result = delegate.run_many(["one", "two"], cwd=str(hermetic), runner=worker)
+    assert result["ok"], result
+    assert secret.read_text() == "outside\n"
+    assert sorted(p.name for p in secret.parent.iterdir()) == ["secret.txt"]
+    assert (hermetic / "shared.txt").read_text() == "original\n"
+    assert (hermetic / "sub" / "real.txt").read_text() == "real\n"
+    assert [line.split(" ")[0] for line in result["copy_skipped"]] == ESCAPING
+    for item in result["results"]:
+        work = Path(item["workspace"])
+        # the safe links still work inside the copy, and the edits land there
+        assert (work / "sub" / "real.txt").read_text() == "written by " + ("one\n" if work.name == "worker-1" else "two\n")
+        assert (work / "shared.txt").read_text() == (work / "sub" / "real.txt").read_text()
+        assert set(ESCAPING) <= set(item["changes"]["added"])
+        assert item["changes"]["modified"] == ["shared.txt", "sub/real.txt"]
+    shutil.rmtree(Path(result["results"][0]["workspace"]).parent, ignore_errors=True)
+
+
+def test_writing_through_every_name_in_a_copy_beside_the_original_stays_inside(hermetic, tmp_path):
+    """The copy sits at the original's depth, so ``..`` links would really reach ``outside``."""
+    secret = _links_project(hermetic)
+    copy = tmp_path / "copy"
+    delegate._copy(hermetic, copy)
+    for name in ["dir_up/secret.txt"] + ESCAPING + ["in_tree", "sub/back"]:
+        try:
+            (copy / name).write_text("written in the copy\n")
+        except (FileNotFoundError, NotADirectoryError):
+            pass
+    assert secret.read_text() == "outside\n"
+    assert sorted(p.name for p in secret.parent.iterdir()) == ["secret.txt"]
+    assert (hermetic / "shared.txt").read_text() == "original\n"
+    assert (hermetic / "sub" / "real.txt").read_text() == "real\n"
+    for name in ESCAPING:  # each became a plain file of the copy
+        assert (copy / name).is_file() and not (copy / name).is_symlink()
+    assert (copy / "sub" / "real.txt").read_text() == "written in the copy\n"
+
+
+def test_a_file_swapped_for_a_link_during_the_copy_is_not_followed(hermetic, tmp_path, monkeypatch):
+    secret = _links_project(hermetic)
+    (hermetic / "victim.txt").write_text("victim\n")
+    real_open = os.open
+
+    def racing_open(path, flags, *args, **kwargs):
+        if path == "victim.txt":  # the swap lands between listing and opening
+            os.unlink(hermetic / "victim.txt")
+            os.symlink(secret, hermetic / "victim.txt")
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(delegate.os, "open", racing_open)
+    skipped = delegate._copy(hermetic, tmp_path / "copy")
+    assert "victim.txt (changed or unreadable during the copy)" in skipped
+    assert not os.path.lexists(tmp_path / "copy" / "victim.txt")
+
+
+def test_fifos_are_skipped_and_do_not_block_the_copy_or_the_diff(hermetic, tmp_path):
+    (hermetic / "a.txt").write_text("a\n")
+    os.mkfifo(hermetic / "pipe")
+    skipped = delegate._copy(hermetic, tmp_path / "base")
+    assert skipped == ["pipe (not a regular file)"]
+    delegate._copy(tmp_path / "base", tmp_path / "work")
+    os.mkfifo(tmp_path / "work" / "worker-pipe")
+    changes = delegate.diff_trees(tmp_path / "base", tmp_path / "work")
+    assert changes["added"] == ["worker-pipe"] and changes["binary_changed"] == ["worker-pipe"]
+
+
+def test_a_read_only_source_gives_an_editable_copy(hermetic, tmp_path):
+    (hermetic / "sub").mkdir()
+    (hermetic / "sub" / "f.txt").write_text("f\n")
+    (hermetic / "sub" / "f.txt").chmod(0o444)
+    (hermetic / "sub").chmod(0o555)
+    try:
+        delegate._copy(hermetic, tmp_path / "copy")
+    finally:
+        (hermetic / "sub").chmod(0o755)
+    (tmp_path / "copy" / "sub" / "f.txt").write_text("edited\n")
+    (tmp_path / "copy" / "sub" / "new.txt").write_text("new\n")
+    shutil.rmtree(tmp_path / "copy")
 
 
 def test_a_single_worker_runs_in_place(hermetic):

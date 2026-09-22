@@ -628,6 +628,18 @@ with a shell:
   worker wrote is executed by the server. You review the diffs and apply what you
   accept. A single worker runs in `cwd` itself, and tool calls are served one at
   a time.
+- **Symlinks in copies.** A copy keeps a symlink only if its target is relative
+  and stays inside the copy, both as written and after following every link on
+  the way. Absolute links (even into the project, which would lead back to the
+  original), links whose `..` climbs out and chains that end outside are left
+  out of every copy and listed in the result's `copy_skipped`, so editing a
+  file in a copy cannot write through a link into `cwd` or elsewhere. FIFOs,
+  sockets and devices are skipped too. Entries are opened with `O_NOFOLLOW`
+  relative to their parent directory, and links are vetted on the finished,
+  private copy before any worker starts, so a tree changing during the copy
+  cannot slip a link through. This protects against writing *through a copied
+  link*; it is not a sandbox. A worker still runs as your user and can create
+  its own links or write to any absolute path your user may write.
 
 The included `plan-with-cheap-workers` skill tells the main model to retain
 judgement, security-sensitive work and final review; send only task-local context;
@@ -670,6 +682,19 @@ Cursor gets an entry in `~/.cursor/mcp.json`, and the project rule only with
 `--project DIR`. The shell script installs into its own virtualenv under
 `~/.auto-router`; Python dependencies come from PyPI at the versions
 `pyproject.toml` allows.
+
+What has been tested: `tests/test_install_delegation_e2e.py` runs both entry
+points end to end, through their own argument parsing, in a disposable HOME
+with fake `git`, `python3 -m venv`, `pip`, `claude`, `codex`, `cursor` and
+`opencode` commands that only record their calls. That proves the control flow:
+the order of steps, what is written where, and that a dirty checkout, a
+fetched commit that differs from the pin, a foreign `auto-router-delegate`
+link, a missing `--config` file, JSONC settings and an existing MCP entry all
+stop the install without changing what was there. It does **not** show that the
+installer works with the real git, pip, PyPI, Claude Code or Codex CLIs; no
+real installation has been run. Note that the skill is copied before the
+settings file or MCP entry is checked, so a refused install can leave the skill
+directory behind.
 
 ### Install it with a coding agent
 

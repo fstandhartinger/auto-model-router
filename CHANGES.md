@@ -1,5 +1,33 @@
 # Changes
 
+## Unreleased — copy symlinks and installer control-flow tests (22 Sep 2026)
+
+Follow-up to 0.4.0 (commit b7bda45). Not independently reviewed; no live
+worker or real installation was run.
+
+- **A worker can no longer write through a symlink out of its copy.** 0.4.0
+  copied symlinks as they were, so a worker editing a linked file in its
+  disposable copy wrote to the link's target: another file in `cwd` or anywhere
+  outside it. Per-worker copies now keep only relative links that stay inside
+  the copy (as written and after following every hop); absolute links, `..`
+  escapes and chains that end outside are left out and reported in the new
+  `copy_skipped` field of the result. Entries are opened with `O_NOFOLLOW`
+  relative to their parent directory, links are vetted on the finished private
+  copy before a worker starts, and FIFOs, sockets and devices are skipped.
+  Worker copies are now made from the vetted base copy rather than from `cwd`
+  again, and copied files and directories are owner-writable.
+- **Diffs of worker copies** compare a link by its target instead of the file
+  it reaches, and no longer try to read a FIFO a worker created (the read would
+  block the server).
+- **Installer tests.** `tests/test_install_delegation_e2e.py` runs
+  `install-delegation.sh` and `install-delegation.py` end to end in a
+  disposable HOME against fake `git`, `python3 -m venv`, `pip` and agent CLIs
+  that record their calls: normal installs for all four tools, and refusals for
+  a dirty checkout, a commit that differs from the pin, a foreign command link,
+  a missing config, JSONC settings and an existing MCP entry (replaced only with
+  `--force`). This proves control flow only; compatibility with the real tools
+  is untested. The installer code itself is unchanged.
+
 ## 0.4.0 — delegation safety repair (21 Sep 2026)
 
 Repairs the delegate MCP tools and installer added in 0.3.0 (commit 7a7bc31),

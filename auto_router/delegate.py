@@ -24,7 +24,9 @@ third-party model with a shell:
   disposable copy of ``cwd``, and the result carries the copy's path and a
   diff against the state the copies started from. Nothing is applied to
   ``cwd`` and nothing a worker wrote is executed by this server; the planner
-  reviews the diff and applies what it accepts. A single worker runs in
+  reviews the diff and applies what it accepts. A symlink that would lead
+  out of a copy is left out of it (``_copy``), so editing a file in the copy
+  cannot write through a link into the original tree. A single worker runs in
   ``cwd`` itself. Tool calls are served one at a time.
 """
 
@@ -36,6 +38,7 @@ import json
 import os
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -321,9 +324,112 @@ def _copy_size(source: Path) -> tuple[int, int]:
     return files, size
 
 
-def _copy(source: Path, target: Path) -> None:
-    shutil.copytree(source, target, symlinks=True,
-                    ignore=shutil.ignore_patterns(*COPY_IGNORE))
+def _inside(root: str, path: str) -> bool:
+    return path == root or path.startswith(root.rstrip(os.sep) + os.sep)
+
+
+def _link_escapes(root: str, link: str) -> bool:
+    """Whether the symlink ``link`` in the tree ``root`` can lead out of it.
+
+    Kept only if its target is relative, stays inside ``root`` as written
+    (``a/../b``), and still stays inside once every link on the way is
+    followed. An absolute target is refused even when it names a path inside
+    the tree: in a copy it would point back at the original.
+    """
+    target = os.readlink(link)
+    if os.path.isabs(target):
+        return True
+    written = os.path.normpath(os.path.join(os.path.dirname(link), target))
+    return not _inside(root, written) or not _inside(root, os.path.realpath(link))
+
+
+def _copy_entries(src_fd: int, dest: Path, rel: str, skipped: list[str]) -> None:
+    """Copy the directory open at ``src_fd`` into the new directory ``dest``.
+
+    Every entry is opened relative to its parent's descriptor with
+    ``O_NOFOLLOW``, so an entry swapped for a symlink while the copy runs is
+    not followed. Symlinks are recreated as they are (they are vetted on the
+    finished copy); FIFOs, sockets and devices are skipped.
+    """
+    with os.scandir(src_fd) as entries:
+        names = sorted((e.name, e) for e in entries)
+    for name, entry in names:
+        where = f"{rel}{name}"
+        if name in COPY_IGNORE:
+            continue
+        if entry.is_symlink():
+            os.symlink(os.readlink(name, dir_fd=src_fd), dest / name)
+        elif entry.is_dir(follow_symlinks=False):
+            try:
+                fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=src_fd)
+            except OSError:
+                skipped.append(f"{where}/ (changed or unreadable during the copy)")
+                continue
+            try:
+                (dest / name).mkdir(mode=0o700)
+                _copy_entries(fd, dest / name, f"{where}/", skipped)
+                (dest / name).chmod(stat.S_IMODE(os.fstat(fd).st_mode) | 0o700)
+            finally:
+                os.close(fd)
+        elif entry.is_file(follow_symlinks=False):
+            try:
+                fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=src_fd)
+            except OSError:
+                skipped.append(f"{where} (changed or unreadable during the copy)")
+                continue
+            try:
+                info = os.fstat(fd)
+                if not stat.S_ISREG(info.st_mode):
+                    skipped.append(f"{where} (not a regular file)")
+                    continue
+                with open(dest / name, "xb") as out, os.fdopen(os.dup(fd), "rb") as src:
+                    shutil.copyfileobj(src, out)
+                    os.fchmod(out.fileno(), stat.S_IMODE(info.st_mode) & 0o777 | 0o600)
+                os.utime(dest / name, ns=(info.st_atime_ns, info.st_mtime_ns))
+            finally:
+                os.close(fd)
+        else:
+            skipped.append(f"{where} (not a regular file)")
+
+
+def _copy(source: Path, target: Path) -> list[str]:
+    """Make ``target`` a private, self-contained copy of ``source``.
+
+    A symlink that could lead out of the copy - an absolute target, a ``..``
+    that climbs above the copy, or a chain that ends outside it - is left out,
+    so a worker editing ``shared/config`` in its copy cannot write through it
+    into the original tree or anywhere else. The check runs on the finished
+    copy, inside a fresh ``0700`` directory no one else writes to, before any
+    worker starts; a source changing during the copy cannot slip a link past
+    it. Links that stay inside the copy are kept. Copied files and directories
+    are made owner-writable, since the copy exists to be edited. Returns the
+    left-out entries, relative to ``source``, with the reason.
+    """
+    skipped: list[str] = []
+    fd = os.open(source, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        target.mkdir(mode=0o700)
+        _copy_entries(fd, target, "", skipped)
+    finally:
+        os.close(fd)
+    root = os.path.realpath(target)
+    escaping = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        links = [n for n in dirnames + filenames if os.path.islink(os.path.join(dirpath, n))]
+        dirnames[:] = [n for n in dirnames if n not in links]
+        escaping += [p for p in (os.path.join(dirpath, n) for n in links) if _link_escapes(root, p)]
+    for path in escaping:  # all judged first, so the verdict on a chain does not depend on order
+        skipped.append(f"{os.path.relpath(path, root)} (symlink to "
+                       f"{os.readlink(path)!r} leads outside the copy)")
+        os.unlink(path)
+    return sorted(skipped)
+
+
+def _same_entry(a: Path, b: Path) -> bool:
+    """Links compare by target, not by the file they reach (it is diffed itself)."""
+    if a.is_symlink() or b.is_symlink():
+        return a.is_symlink() and b.is_symlink() and os.readlink(a) == os.readlink(b)
+    return filecmp.cmp(a, b, shallow=False)
 
 
 def diff_trees(before: Path, after: Path, limit: int = MAX_PATCH) -> dict[str, Any]:
@@ -331,8 +437,7 @@ def diff_trees(before: Path, after: Path, limit: int = MAX_PATCH) -> dict[str, A
     old, new = _tree(before), _tree(after)
     added = sorted(set(new) - set(old))
     deleted = sorted(set(old) - set(new))
-    modified = sorted(rel for rel in set(old) & set(new)
-                      if not filecmp.cmp(old[rel], new[rel], shallow=False))
+    modified = sorted(rel for rel in set(old) & set(new) if not _same_entry(old[rel], new[rel]))
     chunks: list[str] = []
     binary: list[str] = []
     for rel in sorted({*added, *deleted, *modified}):
@@ -341,6 +446,9 @@ def diff_trees(before: Path, after: Path, limit: int = MAX_PATCH) -> dict[str, A
             path = tree.get(rel)
             if path is None or path.is_symlink():
                 texts.append([] if path is None else [f"-> {os.readlink(path)}\n"])
+                continue
+            if not stat.S_ISREG(path.lstat().st_mode):  # a FIFO would block the read
+                texts.append(None)
                 continue
             try:
                 texts.append(path.read_text(encoding="utf-8").splitlines(keepends=True))
@@ -369,6 +477,7 @@ def run_many(tasks: list[str], *, context: str | None = None, cwd: str | None = 
     source = Path(cwd or os.getcwd()).resolve()
     isolated = len(tasks) > 1
     scratch: Path | None = None
+    skipped: list[str] = []
     workdirs: list[str | None] = [cwd] * len(tasks)
     if isolated:
         files, size = _copy_size(source)
@@ -379,9 +488,9 @@ def run_many(tasks: list[str], *, context: str | None = None, cwd: str | None = 
                 f"use a smaller cwd or run one worker at a time")}
         scratch = Path(tempfile.mkdtemp(prefix="auto-router-delegate-"))
         try:
-            _copy(source, scratch / "base")
+            skipped = _copy(source, scratch / "base")
             for i in range(len(tasks)):
-                _copy(source, scratch / f"worker-{i + 1}")
+                _copy(scratch / "base", scratch / f"worker-{i + 1}")
                 workdirs[i] = str(scratch / f"worker-{i + 1}")
         except OSError as exc:
             shutil.rmtree(scratch, ignore_errors=True)
@@ -425,6 +534,8 @@ def run_many(tasks: list[str], *, context: str | None = None, cwd: str | None = 
         "estimated_cost_usd": round(sum(estimates), 8) if len(estimates) == len(finished) else None,
         "brief_tokens_estimate": sum(int(r.get("brief_tokens_estimate") or 0) for r in finished),
     }
+    if skipped:
+        out["copy_skipped"] = skipped
     if isolated:
         out["note"] = ("Each worker ran in its own copy of cwd; nothing was applied to cwd. Review "
                        "each result's changes and apply what you accept.")
