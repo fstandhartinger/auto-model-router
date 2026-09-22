@@ -26,7 +26,9 @@ third-party model with a shell:
   ``cwd`` and nothing a worker wrote is executed by this server; the planner
   reviews the diff and applies what it accepts. A symlink that would lead
   out of a copy is left out of it (``_copy``), so editing a file in the copy
-  cannot write through a link into the original tree. A single worker runs in
+  cannot write through a link into the original tree; a link a worker adds
+  is reported in the diff, and ``links_leaving_copy`` names the ones that lead
+  out of its copy. A single worker runs in
   ``cwd`` itself. Tool calls are served one at a time.
 """
 
@@ -302,10 +304,18 @@ def run_delegate(task: str, context: str | None = None, cwd: str | None = None,
 
 
 def _tree(root: Path) -> dict[str, Path]:
+    """Every entry of ``root`` that is not a directory, links to directories included.
+
+    ``os.walk`` lists a symlink to a directory among the directories and does
+    not enter it; left there it would vanish from the diff, so a worker could
+    add ``home -> ~`` to its copy unreported. It is listed as an entry of its
+    own and, like every link, never followed.
+    """
     out: dict[str, Path] = {}
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in COPY_IGNORE]
-        for name in filenames:
+        kept = [d for d in dirnames if d not in COPY_IGNORE]
+        dirnames[:] = [d for d in kept if not os.path.islink(os.path.join(dirpath, d))]
+        for name in filenames + [d for d in kept if d not in dirnames]:
             path = Path(dirpath) / name
             out[str(path.relative_to(root))] = path
     return out
@@ -459,8 +469,14 @@ def diff_trees(before: Path, after: Path, limit: int = MAX_PATCH) -> dict[str, A
             continue
         chunks.extend(difflib.unified_diff(texts[0], texts[1], f"a/{rel}", f"b/{rel}"))
     patch = "".join(chunks)
+    # A link the worker added or retargeted that leads out of its copy: the
+    # planner applying this copy would import a path into someone else's tree.
+    root = os.path.realpath(after)
+    leaving = [rel for rel in sorted({*added, *modified})
+               if new[rel].is_symlink() and _link_escapes(root, os.path.join(root, rel))]
     return {"added": added, "modified": modified, "deleted": deleted, "binary_changed": binary,
-            "patch": patch[:limit], "patch_truncated": len(patch) > limit}
+            "links_leaving_copy": leaving, "patch": patch[:limit],
+            "patch_truncated": len(patch) > limit}
 
 
 def run_many(tasks: list[str], *, context: str | None = None, cwd: str | None = None,

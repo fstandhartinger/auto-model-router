@@ -19,6 +19,16 @@ worker or real installation was run.
 - **Diffs of worker copies** compare a link by its target instead of the file
   it reaches, and no longer try to read a FIFO a worker created (the read would
   block the server).
+- **Links to directories in worker copies are no longer invisible.** The diff
+  walked the copy with `os.walk`, which files a symlink to a directory among
+  the directories and never enters it, so such a link was left out of the diff
+  altogether: a worker could add `home -> /home/you` or retarget an in-tree
+  directory link to leave its copy, and the result reported no change; a copy
+  whose only change was such a link was deleted as unchanged. Links to
+  directories are now listed and compared by target like any other link, and
+  each result's `changes.links_leaving_copy` names the added or retargeted
+  links that lead out of the copy. (Found by an offline self-audit on 22 Sep;
+  reproduced with a fake worker; no live worker was run.)
 - **Installer tests.** `tests/test_install_delegation_e2e.py` runs
   `install-delegation.sh` and `install-delegation.py` end to end in a
   disposable HOME against fake `git`, `python3 -m venv`, `pip` and agent CLIs

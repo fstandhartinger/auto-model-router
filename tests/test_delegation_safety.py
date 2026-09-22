@@ -582,6 +582,60 @@ def test_fifos_are_skipped_and_do_not_block_the_copy_or_the_diff(hermetic, tmp_p
     assert changes["added"] == ["worker-pipe"] and changes["binary_changed"] == ["worker-pipe"]
 
 
+def test_a_directory_link_a_worker_adds_is_reported_not_hidden(hermetic, tmp_path):
+    """os.walk lists a link to a directory as a directory and never enters it;
+    the diff must still show the link, most of all one that leads out of the copy."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (hermetic / "a.txt").write_text("a\n")
+    (hermetic / "sub").mkdir()
+    (hermetic / "sub" / "f.txt").write_text("f\n")
+    (hermetic / "sub_link").symlink_to("sub")
+    delegate._copy(hermetic, tmp_path / "base")
+    delegate._copy(tmp_path / "base", tmp_path / "work")
+    work = tmp_path / "work"
+    (work / "escape").symlink_to(outside)              # added, absolute, outside
+    (work / "sub_link").unlink()
+    (work / "sub_link").symlink_to("../outside")       # retargeted out of the copy
+    shutil.rmtree(work / "sub")
+    (work / "sub").symlink_to("sub_link")              # a directory replaced by a link
+    changes = delegate.diff_trees(tmp_path / "base", work)
+    assert changes["added"] == ["escape", "sub"]
+    assert changes["modified"] == ["sub_link"]
+    assert changes["deleted"] == ["sub/f.txt"]
+    assert f"+-> {outside}" in changes["patch"]
+    assert "--> sub\n+-> ../outside" in changes["patch"] and "+-> sub_link" in changes["patch"]
+    assert changes["links_leaving_copy"] == ["escape", "sub", "sub_link"]
+
+
+def test_a_copy_whose_only_change_is_a_directory_link_is_kept_and_flagged(hermetic, tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (hermetic / "a.txt").write_text("a\n")
+
+    def worker(task, context, cwd, tier, timeout_s):
+        if task == "link":
+            Path(cwd, "home").symlink_to(outside)
+        return {"ok": True}
+
+    result = delegate.run_many(["link", "idle"], cwd=str(hermetic), runner=worker)
+    linked, idle = result["results"]
+    assert linked["workspace"] and linked["changes"]["added"] == ["home"]
+    assert linked["changes"]["links_leaving_copy"] == ["home"]
+    assert idle["workspace"] is None and idle["changes"]["links_leaving_copy"] == []
+    assert not os.path.lexists(hermetic / "home")
+    shutil.rmtree(Path(linked["workspace"]).parent, ignore_errors=True)
+
+
+def test_unchanged_links_in_a_copy_are_neither_changes_nor_flagged(hermetic, tmp_path):
+    _links_project(hermetic)
+    delegate._copy(hermetic, tmp_path / "base")
+    delegate._copy(tmp_path / "base", tmp_path / "work")
+    changes = delegate.diff_trees(tmp_path / "base", tmp_path / "work")
+    assert changes["added"] == changes["modified"] == changes["deleted"] == []
+    assert changes["links_leaving_copy"] == [] and changes["patch"] == ""
+
+
 def test_a_read_only_source_gives_an_editable_copy(hermetic, tmp_path):
     (hermetic / "sub").mkdir()
     (hermetic / "sub" / "f.txt").write_text("f\n")

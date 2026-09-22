@@ -639,7 +639,11 @@ with a shell:
   private copy before any worker starts, so a tree changing during the copy
   cannot slip a link through. This protects against writing *through a copied
   link*; it is not a sandbox. A worker still runs as your user and can create
-  its own links or write to any absolute path your user may write.
+  its own links or write to any absolute path your user may write. A link a
+  worker creates, retargets or removes in its copy, including a link to a
+  directory, appears in the diff as `-> target`, and each result's
+  `changes.links_leaving_copy` names the added or retargeted links that lead
+  out of the copy; check those before applying a copy's changes.
 
 The included `plan-with-cheap-workers` skill tells the main model to retain
 judgement, security-sensitive work and final review; send only task-local context;
