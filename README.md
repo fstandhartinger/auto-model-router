@@ -648,6 +648,18 @@ with a shell:
   directory, appears in the diff as `-> target`, and each result's
   `changes.links_leaving_copy` names the added or retargeted links that lead
   out of the copy; check those before applying a copy's changes.
+- **What the diff reads from a copy is capped; the copy itself is not.** The
+  200 MB / 50,000-file limit applies to `cwd` before it is copied. A worker may
+  then write as much as your disk allows into its copy. The server never reads
+  more than 1 MiB of a changed file into memory: a larger one is still listed in
+  `added`/`modified`/`deleted` and in `changes.not_diffed`, with no patch.
+  Once the patch passes its 60,000-character cap (`patch_truncated`), the
+  remaining changed files are listed in `not_diffed` too and are not read.
+  Not capped: the number of paths listed, and comparing two large files of equal
+  size to decide whether one was modified (streamed, so it takes time but not
+  memory). Files a worker writes under an ignored name (`.git`, `node_modules`,
+  `__pycache__` and the other names left out of copies) do not appear in the
+  diff at all, and a copy whose only changes are there is deleted as unchanged.
 
 The included `plan-with-cheap-workers` skill tells the main model to retain
 judgement, security-sensitive work and final review; send only task-local context;

@@ -793,6 +793,65 @@ def test_unchanged_links_in_a_copy_are_neither_changes_nor_flagged(hermetic, tmp
     assert changes["links_leaving_copy"] == [] and changes["patch"] == ""
 
 
+def test_a_huge_file_a_worker_writes_is_listed_but_never_read_into_memory(hermetic, tmp_path):
+    """The copy is capped on the way in; what a worker writes into it was read whole."""
+    import tracemalloc
+    (hermetic / "a.txt").write_text("a\n")
+    (hermetic / "grown.log").write_text("line\n" * 1000)
+    delegate._copy(hermetic, tmp_path / "base")
+    delegate._copy(tmp_path / "base", tmp_path / "work")
+    work = tmp_path / "work"
+    (work / "huge.log").write_text("x" * 99 + "\n" * 1 + ("y" * 99 + "\n") * 80_000)  # 8 MB
+    with (work / "grown.log").open("a") as out:
+        out.write("z" * 8_000_000 + "\n")
+    (work / "a.txt").write_text("b\n")
+    tracemalloc.start()
+    try:
+        changes = delegate.diff_trees(tmp_path / "base", work)
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert changes["added"] == ["huge.log"] and changes["modified"] == ["a.txt", "grown.log"]
+    assert changes["not_diffed"] == ["grown.log", "huge.log"]
+    assert "-a\n+b\n" in changes["patch"] and "huge.log" not in changes["patch"]
+    assert "grown.log" not in changes["patch"]
+    assert peak < 4_000_000, peak
+
+
+def test_the_patch_stops_growing_once_its_budget_is_spent(hermetic, tmp_path, monkeypatch):
+    for i in range(40):
+        (hermetic / f"f{i:02}.txt").write_text("old\n")
+    delegate._copy(hermetic, tmp_path / "base")
+    delegate._copy(tmp_path / "base", tmp_path / "work")
+    for i in range(40):
+        (tmp_path / "work" / f"f{i:02}.txt").write_text("new " * 250 + "\n")
+    calls = []
+    real = delegate.difflib.unified_diff
+    monkeypatch.setattr(delegate.difflib, "unified_diff",
+                        lambda *a, **k: calls.append(a[2]) or real(*a, **k))
+    changes = delegate.diff_trees(tmp_path / "base", tmp_path / "work", limit=5000)
+    assert len(changes["modified"]) == 40 and changes["patch_truncated"]
+    assert len(changes["patch"]) == 5000
+    assert len(calls) < 10, len(calls)  # later files are listed, not read and diffed
+    assert changes["not_diffed"] == [f"f{i:02}.txt" for i in range(len(calls), 40)]
+
+
+def test_a_worker_copy_holding_a_huge_file_is_kept_and_reported(hermetic):
+    (hermetic / "a.txt").write_text("a\n")
+
+    def worker(task, context, cwd, tier, timeout_s):
+        if task == "big":
+            Path(cwd, "dump.txt").write_text("d" * 3_000_000)
+        return {"ok": True}
+
+    result = delegate.run_many(["big", "idle"], cwd=str(hermetic), runner=worker)
+    big, idle = result["results"]
+    assert big["workspace"] and big["changes"]["added"] == ["dump.txt"]
+    assert big["changes"]["not_diffed"] == ["dump.txt"] and big["changes"]["patch"] == ""
+    assert idle["workspace"] is None and idle["changes"]["not_diffed"] == []
+    shutil.rmtree(Path(big["workspace"]).parent, ignore_errors=True)
+
+
 def test_a_read_only_source_gives_an_editable_copy(hermetic, tmp_path):
     (hermetic / "sub").mkdir()
     (hermetic / "sub" / "f.txt").write_text("f\n")

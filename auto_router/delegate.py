@@ -28,7 +28,9 @@ third-party model with a shell:
   out of a copy is left out of it (``_copy``), so editing a file in the copy
   cannot write through a link into the original tree; a link a worker adds
   is reported in the diff, and ``links_leaving_copy`` names the ones that lead
-  out of its copy. A single worker runs in
+  out of its copy. The diff reads at most ``DIFF_FILE_LIMIT_BYTES`` of any
+  changed file and stops reading once the patch is full; the rest are listed
+  in ``not_diffed``. A single worker runs in
   ``cwd`` itself. Tool calls are served one at a time.
 """
 
@@ -56,6 +58,9 @@ ROOT = Path(__file__).resolve().parents[1]
 PROTOCOL = "2025-06-18"
 MAX_OUTPUT = 12000
 MAX_PATCH = 60000
+#: A changed file larger than this is listed in a worker's changes but never
+#: read into memory for the patch; nor is any file once the patch is full.
+DIFF_FILE_LIMIT_BYTES = 1024 * 1024
 MAX_PARALLEL = 8
 MAX_TASKS = 32
 MAX_TASK_CHARS = 100_000
@@ -453,24 +458,22 @@ def diff_trees(before: Path, after: Path, limit: int = MAX_PATCH) -> dict[str, A
     modified = sorted(rel for rel in set(old) & set(new) if not _same_entry(old[rel], new[rel]))
     chunks: list[str] = []
     binary: list[str] = []
+    not_diffed: list[str] = []
+    size = 0
     for rel in sorted({*added, *deleted, *modified}):
-        texts = []
-        for tree in (old, new):
-            path = tree.get(rel)
-            if path is None or path.is_symlink():
-                texts.append([] if path is None else [f"-> {os.readlink(path)}\n"])
-                continue
-            if not stat.S_ISREG(path.lstat().st_mode):  # a FIFO would block the read
-                texts.append(None)
-                continue
-            try:
-                texts.append(path.read_text(encoding="utf-8").splitlines(keepends=True))
-            except (UnicodeDecodeError, OSError):
-                texts.append(None)
-        if texts[0] is None or texts[1] is None:
+        if size > limit:  # the patch is full: list the rest, do not read them
+            not_diffed.append(rel)
+            continue
+        texts = [_diff_text(tree.get(rel)) for tree in (old, new)]
+        if "too large" in texts:
+            not_diffed.append(rel)
+            continue
+        if "binary" in texts:
             binary.append(rel)
             continue
-        chunks.extend(difflib.unified_diff(texts[0], texts[1], f"a/{rel}", f"b/{rel}"))
+        for chunk in difflib.unified_diff(texts[0], texts[1], f"a/{rel}", f"b/{rel}"):
+            chunks.append(chunk)
+            size += len(chunk)
     patch = "".join(chunks)
     # A link the worker added or retargeted that leads out of its copy: the
     # planner applying this copy would import a path into someone else's tree.
@@ -478,8 +481,34 @@ def diff_trees(before: Path, after: Path, limit: int = MAX_PATCH) -> dict[str, A
     leaving = [rel for rel in sorted({*added, *modified})
                if new[rel].is_symlink() and _link_escapes(root, os.path.join(root, rel))]
     return {"added": added, "modified": modified, "deleted": deleted, "binary_changed": binary,
-            "links_leaving_copy": leaving, "patch": patch[:limit],
+            "links_leaving_copy": leaving, "not_diffed": not_diffed, "patch": patch[:limit],
             "patch_truncated": len(patch) > limit}
+
+
+def _diff_text(path: Path | None) -> list[str] | str:
+    """The lines of ``path`` for the patch, or why it has none: "binary" or "too large".
+
+    At most ``DIFF_FILE_LIMIT_BYTES`` + 1 bytes are read, so a worker that
+    writes a huge file into its copy cannot make the server hold it in memory.
+    """
+    if path is None:
+        return []
+    if path.is_symlink():
+        return [f"-> {os.readlink(path)}\n"]
+    if not stat.S_ISREG(path.lstat().st_mode):  # a FIFO would block the read
+        return "binary"
+    try:
+        with open(path, "rb") as src:
+            data = src.read(DIFF_FILE_LIMIT_BYTES + 1)
+    except OSError:
+        return "binary"
+    if len(data) > DIFF_FILE_LIMIT_BYTES:
+        return "too large"
+    try:  # newlines as read_text() gives them
+        text = data.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+    except UnicodeDecodeError:
+        return "binary"
+    return text.splitlines(keepends=True)
 
 
 #: Set by the server's stop-signal handler before it stops the running workers,

@@ -29,6 +29,18 @@ worker or real installation was run.
   each result's `changes.links_leaving_copy` names the added or retargeted
   links that lead out of the copy. (Found by an offline self-audit on 22 Sep;
   reproduced with a fake worker; no live worker was run.)
+- **The diff of a worker copy no longer reads a huge file into memory.** Only
+  `cwd` was capped (200 MB / 50,000 files) before copying; the diff then read
+  every file a worker changed whole and built the full patch before cutting it
+  to 60,000 characters. A worker writing a 64 MB text file made the server peak
+  at 244.5 MiB of traced memory for a 60,000-character reply. Now a changed
+  file over 1 MiB (`DIFF_FILE_LIMIT_BYTES`) is listed in the new
+  `changes.not_diffed` field without being read past its first 1 MiB + 1 byte,
+  and once the patch is over its cap the remaining files are listed there
+  unread (same case: 1.0 MiB peak). The worker's copy itself, the number of
+  listed paths, and files under ignored names (`.git`, `node_modules`, ...)
+  remain uncapped or unreported, as before. (Self-audit 22 Sep; fake local
+  worker only; no live worker was run.)
 - **Stopping the server during parallel work** no longer starts queued briefs
   or leaves the copies behind. Before this change, on `SIGTERM` or `SIGHUP` the
   running workers were stopped, but the thread pool then started every brief
