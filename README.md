@@ -632,6 +632,10 @@ with a shell:
   stopped. The copies are deleted only after that, because no reply will name
   them. A worker that cannot be stopped within 30 s keeps its copies on disk
   (`$TMPDIR/auto-router-delegate-*`), since they are not deleted under a writer.
+  A second `SIGTERM`/`SIGHUP` while the server is stopping is ignored, so it
+  cannot cut that cleanup short; `SIGKILL` still ends the server at once and
+  leaves the copies. `Ctrl-C` is not a stop signal: during the cleanup after a
+  `Ctrl-C`, a second `Ctrl-C` or a stop signal can still cut it short.
 - **Symlinks in copies.** A copy keeps a symlink only if its target is relative
   and stays inside the copy, both as written and after following every link on
   the way. Absolute links (even into the project, which would lead back to the

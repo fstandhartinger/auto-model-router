@@ -513,6 +513,7 @@ def _diff_text(path: Path | None) -> list[str] | str:
 
 #: Set by the server's stop-signal handler before it stops the running workers,
 #: so that a pool thread freed by that stop does not start a queued brief.
+#: Cleared when :func:`main` starts, so it belongs to one server run.
 _STOPPING = threading.Event()
 
 
@@ -698,6 +699,10 @@ def handle(message: Any, run_tool: Callable[[str, Any], tuple[str, bool, dict]])
 def _exit_on_signal(signum, _frame):
     # Running workers (possibly in pool threads) are stopped before the server
     # goes, instead of carrying on unsupervised; queued briefs are not started.
+    # A second signal changes nothing: raising again would abort the cleanup
+    # the first one began and leave the worker copies behind.
+    if _STOPPING.is_set():
+        return
     _STOPPING.set()
     procs.terminate_all()
     raise SystemExit(128 + signum)
@@ -705,6 +710,7 @@ def _exit_on_signal(signum, _frame):
 
 def main(stdin=sys.stdin, stdout=sys.stdout) -> int:
     previous = {}
+    _STOPPING.clear()
     if threading.current_thread() is threading.main_thread():
         for sig in (signal.SIGTERM, signal.SIGHUP):
             previous[sig] = signal.signal(sig, _exit_on_signal)

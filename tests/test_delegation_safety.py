@@ -413,6 +413,67 @@ def test_the_server_stops_running_workers_when_it_is_told_to_stop(monkeypatch):
         delegate._exit_on_signal(15, None)
     assert exc.value.code == 128 + 15
     assert called == [True], "queued briefs must be barred before the running ones are stopped"
+    # A second signal leaves the cleanup the first one began alone.
+    assert delegate._exit_on_signal(1, None) is None
+    assert called == [True]
+
+
+def test_a_second_stop_signal_does_not_abort_the_cleanup_the_first_began(
+        hermetic, tmp_path, monkeypatch):
+    # Real signals through the real handler: the first arrives while two
+    # workers run, the second while the interrupted run deletes its copies.
+    # No worker is left to write to them, so they must all still go.
+    (hermetic / "a.txt").write_text("a\n")
+    monkeypatch.setattr(delegate.tempfile, "tempdir", str(tmp_path))
+    stopping = threading.Event()
+    monkeypatch.setattr(delegate, "_STOPPING", stopping)
+    both = threading.Barrier(2)
+    real_rmtree = delegate.shutil.rmtree
+    second = []
+
+    def runner(task, context, cwd, tier, timeout_s):
+        both.wait(timeout=10)
+        if task == "one":
+            os.kill(os.getpid(), signal.SIGTERM)
+        stopping.wait(timeout=10)  # set by the handler, in the main thread
+        return {"ok": True}
+
+    def rmtree(path, *a, **k):
+        if not second:
+            second.append(path)
+            os.kill(os.getpid(), signal.SIGTERM)
+        return real_rmtree(path, *a, **k)
+
+    monkeypatch.setattr(delegate.shutil, "rmtree", rmtree)
+    previous = signal.signal(signal.SIGTERM, delegate._exit_on_signal)
+    try:
+        with pytest.raises(SystemExit) as exc:
+            delegate.run_many(["one", "two"], cwd=str(hermetic), parallel=2, runner=runner)
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+    assert exc.value.code == 128 + signal.SIGTERM
+    assert len(second) == 1, "the second signal must arrive during the cleanup"
+    assert not list(tmp_path.glob("auto-router-delegate-*")), "the worker copies were left behind"
+
+
+def test_a_server_run_does_not_inherit_an_earlier_runs_stop(monkeypatch):
+    # main() called again in the same process after a stop: queued briefs are
+    # started again, and a stop signal still ends this run.
+    stopping = threading.Event()
+    stopping.set()
+    monkeypatch.setattr(delegate, "_STOPPING", stopping)
+    monkeypatch.setattr(procs, "terminate_all", lambda: None)
+    seen = []
+
+    def serve(stdin, stdout):
+        seen.append(delegate._unless_stopping(lambda: {"ok": True}))
+        delegate._exit_on_signal(signal.SIGTERM, None)
+        return 0
+
+    monkeypatch.setattr(delegate, "_serve", serve)
+    with pytest.raises(SystemExit):
+        delegate.main(io.StringIO(), io.StringIO())
+    assert seen == [{"ok": True}]
 
 
 # --------------------------------------------------------------------------
