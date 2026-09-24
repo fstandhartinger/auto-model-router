@@ -38,7 +38,10 @@ GRACE_S = 2.0
 #: Jobs currently running under :func:`run`, so a supervisor that is itself
 #: told to stop can end them (:func:`terminate_all`).
 _LIVE: dict[subprocess.Popen, str] = {}
-_LIVE_LOCK = threading.Lock()
+#: Reentrant because a stop-signal handler calls :func:`terminate_all` on the
+#: main thread, which may be inside one of this lock's own blocks at that
+#: moment; a plain Lock deadlocked there.
+_LIVE_LOCK = threading.RLock()
 
 
 def _table() -> dict[int, tuple[str, int, int, int]] | None:

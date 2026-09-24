@@ -620,6 +620,8 @@ with a shell:
   an agent leaves behind after exiting is stopped too. A descendant that
   detaches with `setsid()` after its parent exited cannot be seen by a process;
   containing that needs a cgroup or sandbox.
+  A stop signal that arrives in the moment between a job's process starting
+  and its being recorded as running does not end that job; it keeps running.
 - **Parallel work never shares a tree.** With more than one worker, each works in
   its own disposable copy of `cwd` (without `.git`, virtualenvs,
   `node_modules` and caches; at most 200 MB / 50,000 files, see

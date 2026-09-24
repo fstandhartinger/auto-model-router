@@ -64,6 +64,19 @@ worker or real installation was run.
   stopped. Cancelled briefs are no longer waited for. The real-server signal
   test now covers `SIGINT` and `SIGHUP` as well as `SIGTERM`. Found by an offline
   self-audit on 22 Sep and reproduced with fake workers; no live worker was run.
+- **A stop signal can no longer hang the delegate server or `route-run`.**
+  The `SIGTERM`/`SIGHUP` handler ends running jobs through
+  `procs.terminate_all()`, which takes the lock guarding the list of running
+  jobs. Python runs the handler on the main thread, and the main thread takes
+  that same lock itself: when it starts or finishes a job (a single-worker
+  `delegate` call, the agent `route-run` starts) and when it stops jobs on the
+  way out. A signal landing inside one of those short sections made the handler
+  wait for a lock its own thread held, so the process hung until `SIGKILL`, and
+  a second stop signal changed nothing. The lock is now reentrant. What stays
+  open: a signal that arrives after a job's process has started but before it is
+  entered in that list still misses it, and that job is left running. (Self-audit
+  24 Sep; shown with the handler triggered from inside each locked section in a
+  child process and fake `sleep` jobs; no live worker was run.)
 - **A refused install no longer leaves part of the install behind.** The
   installer copied the skill before it checked the MCP entry or settings file,
   so an install refused because Claude Code or Codex already had an

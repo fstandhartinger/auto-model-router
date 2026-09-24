@@ -456,6 +456,85 @@ def test_a_second_stop_signal_does_not_abort_the_cleanup_the_first_began(
     assert not list(tmp_path.glob("auto-router-delegate-*")), "the worker copies were left behind"
 
 
+SIGNAL_WHILE_LOCKED = """
+import os, signal, sys
+from auto_router import delegate, launcher, procs
+handler = {"delegate": delegate._exit_on_signal, "launcher": launcher._exit_on_signal}[sys.argv[1]]
+point, pidfile = sys.argv[2], sys.argv[3]
+
+class Tripwire(dict):
+    # Sends the stop signal from inside procs' own "with _LIVE_LOCK:" blocks,
+    # on the main thread, which is where Python then runs the handler.
+    fired = False
+
+    def _fire(self):
+        if not Tripwire.fired:
+            Tripwire.fired = True
+            os.kill(os.getpid(), signal.SIGTERM)
+
+    def __setitem__(self, proc, scope):
+        super().__setitem__(proc, scope)
+        with open(pidfile, "w") as fh:
+            fh.write(str(proc.pid))
+        if point == "register":
+            self._fire()
+
+    def pop(self, *a):
+        out = super().pop(*a)
+        if point == "unregister":
+            self._fire()
+        return out
+
+    def items(self):
+        if point == "snapshot":
+            self._fire()
+        return super().items()
+
+procs._LIVE = Tripwire()
+signal.signal(signal.SIGTERM, handler)
+if point == "snapshot":
+    procs.terminate_all()  # as main()'s finally does when the server stops
+else:
+    procs.run(["sleep", "0" if point == "unregister" else "30"], timeout=60)
+sys.exit(0)
+"""
+
+
+@pytest.mark.parametrize("server", ["delegate", "launcher"])
+@pytest.mark.parametrize("point", ["register", "unregister", "snapshot"])
+def test_a_stop_signal_while_the_main_thread_holds_the_job_lock_does_not_deadlock(
+        tmp_path, server, point):
+    # The first signal's handler calls terminate_all(), which takes the job
+    # lock; the main thread may already hold it (registering, unregistering or
+    # listing a job), and Python runs the handler on that same thread.
+    driver, pidfile = tmp_path / "driver.py", tmp_path / "worker.pid"
+    driver.write_text(SIGNAL_WHILE_LOCKED)
+    env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(tmp_path),
+           "PYTHONPATH": str(ROOT)}
+    child = subprocess.Popen([sys.executable, str(driver), server, point, str(pidfile)],
+                             env=env, cwd=tmp_path)
+    worker = None
+    try:
+        try:
+            code = child.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            code = None
+        if pidfile.exists():
+            worker = int(pidfile.read_text())
+        assert code == 128 + signal.SIGTERM, "the stop handler deadlocked on the job lock"
+        if worker is not None:
+            assert not procs.members(worker, scope="session", children=False), \
+                "the job registered when the signal arrived was left running"
+    finally:
+        child.kill()
+        child.wait()
+        if worker is not None:
+            try:
+                os.killpg(worker, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+
+
 def test_a_server_run_does_not_inherit_an_earlier_runs_stop(monkeypatch):
     # main() called again in the same process after a stop: queued briefs are
     # started again, and a stop signal still ends this run.
