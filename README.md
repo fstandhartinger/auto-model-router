@@ -622,9 +622,12 @@ with a shell:
   containing that needs a cgroup or sandbox.
   A `Ctrl-C`, `SIGTERM` or `SIGHUP` that arrives while a job is being started
   waits until the job is recorded as running and then ends it like any other
-  stop. Once a job's own process has exited it is no longer recorded, so a stop
-  signal that arrives while a background process it left behind is being
-  stopped can leave that process running if it outlasts the `SIGTERM`.
+  stop. A job stays recorded until the background processes it left behind
+  after exiting are stopped too, so a stop signal that arrives while they are
+  being stopped still ends them, with `SIGKILL` for one that outlasts the
+  `SIGTERM`. This holds for the stop handlers of `route-run` and the delegate
+  server; code that calls the library with a handler of its own that raises
+  twice in a row during that cleanup can still cut it short.
 - **Parallel work never shares a tree.** With more than one worker, each works in
   its own disposable copy of `cwd` (without `.git`, virtualenvs,
   `node_modules` and caches; at most 200 MB / 50,000 files, see

@@ -15,7 +15,9 @@ timeout, an interrupt or a ``SystemExit`` every process in that group or
 session, plus any descendant still linked by parent id, gets ``SIGTERM``, then
 ``SIGKILL`` after a short grace period, and the call returns only once none of
 them is left alive. A stop signal that arrives while a job is being started
-waits until the job is registered, so it ends that job too.
+waits until the job is registered, so it ends that job too; one that arrives
+while the leftover of an already-exited job is being stopped ends that
+leftover too, because the job stays registered until it is gone.
 
 The limit is the kernel's: a descendant that calls ``setsid()`` *and* whose
 parent has already exited is no longer linked to the job in any way a process
@@ -177,6 +179,11 @@ def _signal(root: int, targets: set[int] | None, sig: int) -> None:
 
 def terminate(proc: subprocess.Popen, *, scope: str, grace_s: float = GRACE_S) -> None:
     """End the whole job: TERM, a grace period, then KILL; reap the direct child."""
+    if proc.returncode is not None and members(proc.pid, scope=scope, children=False) == set():
+        # Reaped and nothing left in its group or session: its pid may be
+        # anyone's by now, so nothing is signalled. (Without /proc nothing is
+        # known and the group is signalled as before.)
+        return
     for sig, wait_s in ((signal.SIGTERM, grace_s), (signal.SIGKILL, 5.0)):
         reaped = proc.returncode is not None
         _signal(proc.pid, members(proc.pid, scope=scope, children=not reaped), sig)
@@ -280,6 +287,13 @@ def run(argv: list[str], *, timeout: float | None, scope: str = "session",
     try:
         held.release()
         out, err = proc.communicate(input, timeout=timeout)
+        # The direct child finished, but it may have left a background process
+        # behind in its group; that one is as much a stray writer as a hung
+        # child. The job stays registered and inside this try while that is
+        # stopped, so a stop signal meanwhile still ends it (terminate_all or
+        # the except-block below) instead of cutting the cleanup short.
+        if members(proc.pid, scope=scope, children=False):
+            terminate(proc, scope=scope, grace_s=grace_s)
     except subprocess.TimeoutExpired:
         terminate(proc, scope=scope, grace_s=grace_s)
         raise subprocess.TimeoutExpired(argv, timeout) from None
@@ -291,8 +305,4 @@ def run(argv: list[str], *, timeout: float | None, scope: str = "session",
     finally:
         with _LIVE_LOCK:
             _LIVE.pop(proc, None)
-    # The direct child finished, but it may have left a background process
-    # behind in its group; that one is as much a stray writer as a hung child.
-    if members(proc.pid, scope=scope, children=False):
-        terminate(proc, scope=scope, grace_s=grace_s)
     return subprocess.CompletedProcess(argv, proc.returncode, out, err)

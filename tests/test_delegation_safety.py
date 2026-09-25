@@ -624,6 +624,160 @@ def test_starting_a_job_leaves_the_stop_handlers_as_they_were(tmp_path):
             signal.signal(sig, old)
 
 
+LEFTOVER = """
+# $1 marks, $2 the signals (comma-separated) the first SIGTERMs are answered
+# with, one each, $3 the caller. Answers the cleanup's SIGTERMs with stop
+# signals to the caller and otherwise ignores them, so only a SIGKILL ends it.
+n=0
+trap 'n=$((n+1)); s=$(echo "$2," | cut -d, -f$n); mkdir -p "$1/second"; [ -z "$s" ] || kill -$s $3' TERM
+echo $$ > "$1/.p" && mv "$1/.p" "$1/leftover-pid"
+while :; do sleep 0.05; done
+"""
+
+EXITING_JOB = """
+# $1 marks, $2 signal: leave the leftover behind, then exit at once.
+"$(dirname "$0")/leftover.sh" "$1" "$2" $PPID </dev/null >/dev/null 2>&1 &
+while [ ! -e "$1/leftover-pid" ]; do sleep 0.02; done
+"""
+
+SIGNAL_DURING_LEFTOVER_CLEANUP = """
+import sys
+job, marks, signame, server = sys.argv[1:5]
+if server == "delegate":
+    from auto_router import delegate
+    delegate.launcher_argv = lambda task, cwd, tier="cheap": [job, marks, signame]
+    sys.exit(delegate.main())
+from auto_router import launcher
+sys.exit(launcher.main(["--route", "worker", "--quiet", "--", "task"]))
+"""
+
+
+def _exiting_job(tmp_path: Path) -> tuple[str, Path]:
+    marks = tmp_path / "marks"
+    marks.mkdir()
+    _script(tmp_path / "leftover.sh", LEFTOVER)
+    return _script(tmp_path / "job.sh", EXITING_JOB), marks
+
+
+def _leftover_pid(marks: Path) -> int | None:
+    path = marks / "leftover-pid"
+    return int(path.read_text()) if path.exists() else None
+
+
+def _kill_group(pid: int | None) -> None:
+    for kill in (os.killpg, os.kill):
+        try:
+            if pid is not None:
+                kill(pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+
+@pytest.mark.parametrize("server", ["delegate", "launcher"])
+@pytest.mark.parametrize("signame", ["INT", "TERM", "HUP", "INT,TERM"])
+def test_a_stop_signal_while_an_exited_jobs_leftover_is_stopped_still_ends_it(
+        hermetic, tmp_path, server, signame):
+    # The real server or route-run in a child process with its own handlers.
+    # The job exits at once and leaves a process behind that only SIGKILL
+    # ends; that process answers the leftover cleanup's SIGTERM with the stop
+    # signal, so it lands after the job is gone, while its leftover is stopped.
+    # "INT,TERM": a SIGTERM follows while the Ctrl-C's own cleanup runs.
+    job, marks = _exiting_job(tmp_path)
+    agent = _script(tmp_path / "agent.sh", f"exec {job} {marks} {signame}\n")
+    driver = tmp_path / "driver.py"
+    driver.write_text(SIGNAL_DURING_LEFTOVER_CLEANUP)
+    env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(tmp_path),
+           "PYTHONPATH": str(ROOT), "AUTO_ROUTER_DELEGATE_ROOT": str(hermetic),
+           "AUTO_ROUTER_BENCH_OFFLINE": "1",
+           "AUTO_ROUTER_CONFIG": str(_write_config(tmp_path, agent))}
+    # Not part of the job: must come through untouched.
+    bystander = subprocess.Popen(["sleep", "60"], start_new_session=True)
+    child = subprocess.Popen(
+        [sys.executable, str(driver), job, str(marks), signame, server],
+        cwd=hermetic, env=env, text=True, stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        child.stdin.write(json.dumps({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "delegate", "arguments": {"task": "t"}}}) + "\n")
+        child.stdin.close()
+        code = child.wait(timeout=60)
+        time.sleep(0.2)
+        pid = _leftover_pid(marks)
+        assert pid is not None, "the job never left its process behind"
+        assert (marks / "second").exists(), "the stop signal never came"
+        assert not _alive([pid]), "the leftover of the exited job was left running"
+        assert bystander.poll() is None, "a process outside the job was signalled"
+        # The delegate server ignores every signal after its first.
+        last = signame.split(",")[0 if server == "delegate" else -1]
+        sig = getattr(signal, "SIG" + last)
+        assert code == (-sig if sig == signal.SIGINT else 128 + sig)
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait()
+        _kill_group(_leftover_pid(marks))
+        bystander.kill()
+        bystander.wait()
+
+
+class _Stop(Exception):
+    pass
+
+
+@pytest.mark.parametrize("scope", ["session", "group"])
+@pytest.mark.parametrize("handler_ends_jobs", [False, True])
+def test_procs_run_ends_an_exited_jobs_leftover_when_a_stop_signal_interrupts(
+        tmp_path, scope, handler_ends_jobs):
+    # In-process: a SIGTERM handler that raises (like Ctrl-C), or that first
+    # calls terminate_all() (like the servers' SIGTERM/SIGHUP handlers).
+    job, marks = _exiting_job(tmp_path)
+
+    def handler(signum, frame):
+        if handler_ends_jobs:
+            procs.terminate_all()
+        raise _Stop
+
+    bystander = subprocess.Popen(["sleep", "60"], start_new_session=True)
+    previous = signal.signal(signal.SIGTERM, handler)
+    try:
+        with pytest.raises(_Stop):
+            procs.run([job, str(marks), "TERM"], timeout=30, scope=scope, grace_s=1.0)
+        assert (marks / "second").exists(), "the stop signal never came"
+        assert not _alive([_leftover_pid(marks)]), "the leftover was left running"
+        assert procs._LIVE == {}, "a finished job stayed registered"
+        assert bystander.poll() is None, "a process outside the job was signalled"
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+        _kill_group(_leftover_pid(marks))
+        bystander.kill()
+        bystander.wait()
+
+
+def test_stopping_a_reaped_job_with_nothing_left_signals_nothing(monkeypatch):
+    # Its pid is free again once no group or session holds it: a group signal
+    # to it could reach whoever got the pid next.
+    proc = subprocess.Popen(["true"], start_new_session=True)
+    proc.wait()
+    sent = []
+    monkeypatch.setattr(os, "killpg", lambda *a: sent.append(("killpg", *a)))
+    monkeypatch.setattr(os, "kill", lambda *a: sent.append(("kill", *a)))
+    procs.terminate(proc, scope="session", grace_s=0.1)
+    assert sent == []
+
+
+def test_without_proc_a_reaped_jobs_group_is_still_signalled(monkeypatch):
+    # No /proc: whether anything is left cannot be told, so the group signal
+    # its leftovers depend on is still sent.
+    proc = subprocess.Popen(["true"], start_new_session=True)
+    proc.wait()
+    sent = []
+    monkeypatch.setattr(procs, "_table", lambda: None)
+    monkeypatch.setattr(os, "killpg", lambda *a: sent.append(a))
+    procs.terminate(proc, scope="session", grace_s=0.1)
+    assert (proc.pid, signal.SIGTERM) in sent
+
+
 def test_a_server_run_does_not_inherit_an_earlier_runs_stop(monkeypatch):
     # main() called again in the same process after a stop: queued briefs are
     # started again, and a stop signal still ends this run.
