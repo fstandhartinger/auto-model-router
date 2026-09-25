@@ -32,11 +32,16 @@ third-party model with a shell:
   changed file and stops reading once the patch is full; the rest are listed
   in ``not_diffed``. A single worker runs in
   ``cwd`` itself. Tool calls are served one at a time.
+- **Copies left behind** by a server that was killed, or kept because a
+  worker could not be stopped, carry an owner record; a later server deletes
+  them when it starts only once their server is gone and no process holds
+  anything inside them (:func:`sweep_copies`), and names what it keeps.
 """
 
 from __future__ import annotations
 
 import difflib
+import fcntl
 import filecmp
 import json
 import os
@@ -71,6 +76,12 @@ COPY_LIMIT_FILES = 50_000
 #: How long an interrupted run_many keeps stopping its workers before it gives
 #: up and leaves their copies in place rather than delete them under a writer.
 STOP_WAIT_S = 30.0
+#: Every run's scratch directory is ``$TMPDIR/COPY_PREFIX*``.
+COPY_PREFIX = "auto-router-delegate-"
+#: Written into a scratch directory when it is made and removed when a result
+#: hands its copies over: who made it (pid, start time, boot, pid namespace).
+#: The server holds an exclusive ``flock`` on it for as long as it runs.
+OWNER_RECORD = ".auto-router-owner.json"
 #: Left out of per-worker copies: large, machine-specific or version control.
 COPY_IGNORE = (".git", ".hg", ".svn", ".venv", "venv", "node_modules", "__pycache__",
                ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox")
@@ -511,6 +522,154 @@ def _diff_text(path: Path | None) -> list[str] | str:
     return text.splitlines(keepends=True)
 
 
+def _boot_id() -> str | None:
+    try:
+        return Path("/proc/sys/kernel/random/boot_id").read_text().strip() or None
+    except OSError:
+        return None
+
+
+def _pid_ns() -> str | None:
+    try:
+        return os.readlink("/proc/self/ns/pid")
+    except OSError:
+        return None
+
+
+def _tag(scratch: Path) -> int:
+    """Record this server as the owner of ``scratch``; returns the locked fd."""
+    fd = os.open(scratch / OWNER_RECORD, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        os.write(fd, json.dumps({"path": str(scratch), "pid": os.getpid(),
+                                 "start": procs.start_time(os.getpid()), "boot_id": _boot_id(),
+                                 "pid_ns": _pid_ns()}).encode())
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def _remove_copies(scratch: Path) -> None:
+    """Delete ``scratch``, its owner record last, so an interrupted deletion
+    leaves a directory a later server still recognises and finishes."""
+    try:
+        entries = list(scratch.iterdir())
+    except OSError:
+        entries = []
+    for entry in entries:
+        if entry.name == OWNER_RECORD:
+            continue
+        if entry.is_dir() and not entry.is_symlink():
+            shutil.rmtree(entry, ignore_errors=True)
+        else:
+            entry.unlink(missing_ok=True)
+    (scratch / OWNER_RECORD).unlink(missing_ok=True)
+    shutil.rmtree(scratch, ignore_errors=True)
+
+
+def _orphan(scratch: Path) -> tuple[bool, str, int | None]:
+    """(reclaimable, why not, the locked record fd) for one scratch directory.
+
+    Reclaimable only if all of: a directory (not a link) this user owns, with
+    an owner record naming this very path, made in this boot and pid
+    namespace; its owner is gone (no process with the recorded pid and start
+    time, and the record's lock is free); and no live process holds anything
+    inside it (working or root directory, executable, open or mapped file),
+    while every process that cannot be inspected started before its owner did.
+    """
+    try:
+        st = os.lstat(scratch)
+    except OSError as exc:
+        return False, f"cannot inspect it ({exc.strerror})", None
+    if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid():
+        return False, "not a directory of this user", None
+    try:
+        fd = os.open(scratch / OWNER_RECORD, os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return False, "no owner record (copies a result handed over, or not ours)", None
+    except OSError as exc:
+        return False, f"owner record unreadable ({exc.strerror})", None
+    try:
+        record = json.loads(os.read(fd, 65536) or b"null")
+        pid, start = record["pid"], record["start"]
+        if (record["path"] != str(scratch) or isinstance(pid, bool) or not isinstance(pid, int)
+                or isinstance(start, bool) or not isinstance(start, int)):
+            raise ValueError
+    except (OSError, ValueError, TypeError, KeyError):
+        os.close(fd)
+        return False, "owner record not understood", None
+    if record.get("boot_id") != _boot_id() or _boot_id() is None:
+        why = "made before the last reboot or on another machine"
+    elif record.get("pid_ns") != _pid_ns() or _pid_ns() is None:
+        why = "made in another pid namespace (container or sandbox)"
+    elif procs.start_time(pid) == start:
+        why = f"its server (pid {pid}) is still running"
+    else:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            why = "its owner record is locked by a running process"
+        else:
+            why = ""
+    if not why:
+        why = _in_use(scratch, since=start)
+    if why:
+        os.close(fd)
+        return False, why, None
+    return True, "", fd
+
+
+def _in_use(scratch: Path, *, since: int) -> str:
+    """Why a process may still write into ``scratch`` ("" if none can)."""
+    inodes = set()
+    try:
+        for top, dirs, files in os.walk(scratch, onerror=_raise):
+            for name in (top, *(os.path.join(top, n) for n in dirs + files)):
+                entry = os.lstat(name)
+                inodes.add((entry.st_dev, entry.st_ino))
+    except OSError as exc:
+        return f"cannot list it ({exc.strerror})"
+    seen = procs.holders(inodes, since=since)
+    if seen is None:
+        return "cannot tell which processes use it (/proc unreadable)"
+    if seen[0]:
+        return "in use by pid " + ", ".join(map(str, sorted(seen[0])))
+    if seen[1]:
+        return ("processes that cannot be inspected started after its server: pid "
+                + ", ".join(map(str, sorted(seen[1]))))
+    return ""
+
+
+def _raise(exc: OSError) -> None:
+    raise exc
+
+
+def sweep_copies(tmpdir: str | None = None) -> list[str]:
+    """Delete scratch directories a dead server left in ``tmpdir`` (default
+    ``$TMPDIR``) that no process can still write to (:func:`_orphan`); keep
+    every other ``COPY_PREFIX*`` entry. Returns one line per entry.
+    """
+    lines = []
+    base = Path(tmpdir or tempfile.gettempdir())
+    try:
+        entries = sorted(base.glob(COPY_PREFIX + "*"))
+    except OSError:
+        return lines
+    for scratch in entries:
+        ok, why, fd = _orphan(scratch)
+        if not ok:
+            lines.append(f"kept {scratch}: {why}")
+            continue
+        try:
+            _remove_copies(scratch)
+        finally:
+            os.close(fd)
+        lines.append(f"removed {scratch}: its server and every worker had ended")
+    return lines
+
+
 #: Set by the server's stop-signal handler before it stops the running workers,
 #: so that a pool thread freed by that stop does not start a queued brief.
 #: Cleared when :func:`main` starts, so it belongs to one server run.
@@ -563,16 +722,18 @@ def run_many(tasks: list[str], *, context: str | None = None, cwd: str | None = 
     results: list[dict[str, Any] | None] = [None] * len(tasks)
     pool: ThreadPoolExecutor | None = None
     pending: dict = {}
+    owner: int | None = None
     try:
         if isolated:
-            scratch = Path(tempfile.mkdtemp(prefix="auto-router-delegate-"))
+            scratch = Path(tempfile.mkdtemp(prefix=COPY_PREFIX))
             try:
+                owner = _tag(scratch)
                 skipped = _copy(source, scratch / "base")
                 for i in range(len(tasks)):
                     _copy(scratch / "base", scratch / f"worker-{i + 1}")
                     workdirs[i] = str(scratch / f"worker-{i + 1}")
             except OSError as exc:
-                shutil.rmtree(scratch, ignore_errors=True)
+                _remove_copies(scratch)
                 return {"ok": False, "error": f"could not copy {source} for the workers: {exc}"}
         pool = ThreadPoolExecutor(max_workers=workers)
         for i, task in enumerate(tasks):
@@ -600,19 +761,28 @@ def run_many(tasks: list[str], *, context: str | None = None, cwd: str | None = 
                                "changes": changes}
             shutil.rmtree(scratch / "base", ignore_errors=True)
             if not any(r.get("workspace") for r in finished):
-                shutil.rmtree(scratch, ignore_errors=True)
+                _remove_copies(scratch)
+            else:
+                # Handed over: the result names these copies, so they are the
+                # planner's now and no later server may reclaim them.
+                (scratch / OWNER_RECORD).unlink(missing_ok=True)
     except BaseException:
         # Interrupted: the server's stop signal (raised here as SystemExit),
         # Ctrl-C or a crash. No result will ever name these copies, so they go
         # too - but only once no worker can still be writing into them. Queued
-        # briefs are not started; the exception goes on unchanged.
+        # briefs are not started; the exception goes on unchanged. Copies
+        # kept for a worker that could not be stopped keep their owner record,
+        # so a later server reclaims them once nothing uses them (sweep_copies).
         stopped = True
         if pool is not None:
             pool.shutdown(wait=False, cancel_futures=True)
             stopped = _stop_workers(pending)
         if scratch is not None and stopped:
-            shutil.rmtree(scratch, ignore_errors=True)
+            _remove_copies(scratch)
         raise
+    finally:
+        if owner is not None:
+            os.close(owner)
     known_costs = [r.get("cost_usd") for r in finished if r.get("cost_usd") is not None]
     estimates = [r.get("estimated_cost_usd") for r in finished
                  if r.get("estimated_cost_usd") is not None]
@@ -721,11 +891,22 @@ def main(stdin=sys.stdin, stdout=sys.stdout) -> int:
             if sig != signal.SIGINT or signal.getsignal(sig) is not signal.SIG_IGN:
                 previous[sig] = signal.signal(sig, _exit_on_signal)
     try:
+        _report_sweep()
         return _serve(stdin, stdout)
     finally:
         procs.terminate_all()
         for sig, handler in previous.items():
             signal.signal(sig, handler)
+
+
+def _report_sweep() -> None:
+    """Reclaim what dead servers left behind; say on stderr what was kept."""
+    try:
+        lines = sweep_copies()
+    except Exception as exc:  # noqa: BLE001 - never a reason not to serve
+        lines = [f"could not check for copies left behind: {type(exc).__name__}: {exc}"]
+    for line in lines:
+        print(f"auto-router-delegate: {line}", file=sys.stderr, flush=True)
 
 
 def _serve(stdin, stdout) -> int:

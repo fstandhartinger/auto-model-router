@@ -88,6 +88,81 @@ def members(root: int, *, scope: str, children: bool = True) -> set[int] | None:
     return {pid for pid in found if table.get(pid, ("Z",))[0] not in ("Z", "X")}
 
 
+def start_time(pid: int) -> int | None:
+    """When ``pid`` started, in clock ticks since boot (None: no such process).
+
+    With the boot id, this tells a process from a later one given the same pid.
+    """
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as fh:
+            raw = fh.read().decode("utf-8", "replace")
+        return int(raw[raw.rfind(")") + 2:].split()[19])
+    except (OSError, IndexError, ValueError):
+        return None
+
+
+def _references(base: str, majors: dict[tuple[int, int], int]) -> set[tuple[int, int]]:
+    """``(st_dev, st_ino)`` of what the process at ``base`` (``/proc/<pid>``) holds."""
+    refs = set()
+    for link in [f"{base}/cwd", f"{base}/root", f"{base}/exe",
+                 *(f"{base}/fd/{fd}" for fd in os.listdir(f"{base}/fd"))]:
+        try:
+            st = os.stat(link)
+        except FileNotFoundError:  # a closed fd, a deleted file
+            continue
+        refs.add((st.st_dev, st.st_ino))
+    with open(f"{base}/maps") as fh:
+        for line in fh:
+            parts = line.split()
+            if len(parts) >= 6 and parts[4] != "0":
+                major, minor = parts[3].split(":")
+                dev = majors.get((int(major, 16), int(minor, 16)))
+                if dev is not None:
+                    refs.add((dev, int(parts[4])))
+    return refs
+
+
+def holders(inodes: set[tuple[int, int]], *, since: int) -> tuple[set[int], set[int]] | None:
+    """Live processes that hold one of ``inodes`` (``(st_dev, st_ino)``) open.
+
+    Held means as working or root directory, executable, open file or mapped
+    file. Returns ``(holding, unreadable)``: the pids seen holding one, and the
+    pids started at or after ``since`` (clock ticks since boot) whose
+    references cannot be read - another user's or a non-dumpable process.
+    None when ``/proc`` cannot be read at all. Only processes this ``/proc``
+    shows are seen.
+    """
+    try:
+        names = os.listdir("/proc")
+    except OSError:
+        return None
+    majors = {(os.major(dev), os.minor(dev)): dev for dev, _ in inodes}
+    holding: set[int] = set()
+    unreadable: set[int] = set()
+    for name in names:
+        if not name.isdigit() or int(name) == os.getpid():
+            continue
+        pid, base = int(name), f"/proc/{name}"
+        started: int | None = None
+        try:
+            with open(f"{base}/stat", "rb") as fh:
+                raw = fh.read().decode("utf-8", "replace")
+            fields = raw[raw.rfind(")") + 2:].split()
+            if fields[0] in ("Z", "X"):
+                continue
+            started = int(fields[19])
+            refs = _references(base, majors)
+        except (FileNotFoundError, ProcessLookupError):
+            continue  # gone meanwhile
+        except (OSError, IndexError, ValueError):
+            if started is None or started >= since:
+                unreadable.add(pid)
+            continue
+        if refs & inodes:
+            holding.add(pid)
+    return holding, unreadable
+
+
 def _signal(root: int, targets: set[int] | None, sig: int) -> None:
     try:
         os.killpg(root, sig)

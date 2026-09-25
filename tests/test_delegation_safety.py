@@ -935,7 +935,9 @@ def test_an_interrupted_run_stops_its_other_workers_before_removing_the_copies(
     monkeypatch.setattr(delegate.shutil, "rmtree", rmtree)
     with pytest.raises(KeyboardInterrupt):
         delegate.run_many(["sleeps", "interrupted"], cwd=str(hermetic), parallel=2, runner=runner)
-    assert alive_at_cleanup == [False]
+    # The copies go one directory at a time (the owner record last); the
+    # worker was gone before the first of them.
+    assert alive_at_cleanup and not any(alive_at_cleanup)
     assert not _alive([int(pid_file.read_text())])
     assert not list(tmp_path.glob("auto-router-delegate-*"))
 
@@ -1261,3 +1263,296 @@ def test_cheap_tier_alone_would_have_taken_the_route_without_tools():
     assert router.route_job("rename x", tier="cheap").request.needs_tools
     router, _ = _router(_route("notools", 0.0, 10), mid)
     assert router.route_job("rename x", tier="cheap").model.name == "notools"
+
+
+# --------------------------------------------------------------------------
+# Copies left by a server that died (SIGKILL) or kept for a worker it could
+# not stop are reclaimed by a later server once no one can write to them.
+
+WRITING_WORKER = """
+# $1 marks, $2 the copy it works in: keeps writing there until killed
+echo $$ > "$1/.p$$" && mv "$1/.p$$" "$1/pid-$$"
+while :; do date +%s%N > "$2/written.txt"; sleep 0.05; done
+"""
+
+WRITING_SERVER = """
+import sys
+from auto_router import delegate
+worker, marks = sys.argv[1], sys.argv[2]
+delegate.launcher_argv = lambda task, cwd, tier="cheap": [worker, marks, cwd]
+sys.exit(delegate.main())
+"""
+
+
+def _server_env(hermetic: Path, tmp_path: Path, scratch_tmp: Path) -> dict:
+    return {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(tmp_path),
+            "PYTHONPATH": str(ROOT), "AUTO_ROUTER_DELEGATE_ROOT": str(hermetic),
+            "AUTO_ROUTER_BENCH_OFFLINE": "1", "TMPDIR": str(scratch_tmp)}
+
+
+def _killed_server_copies(hermetic: Path, tmp_path: Path) -> tuple[Path, Path, dict]:
+    """Start a real server on two briefs of a fake worker that writes into its
+    copy until killed, SIGKILL the server once both write, return the copies."""
+    (hermetic / "a.txt").write_text("a\n")
+    marks, scratch_tmp = tmp_path / "marks", tmp_path / "tmp"
+    marks.mkdir()
+    scratch_tmp.mkdir()
+    worker = _script(tmp_path / "w.sh", WRITING_WORKER)
+    driver = tmp_path / "server.py"
+    driver.write_text(WRITING_SERVER)
+    env = _server_env(hermetic, tmp_path, scratch_tmp)
+    server = subprocess.Popen([sys.executable, str(driver), worker, str(marks)], cwd=hermetic,
+                              env=env, text=True, stdin=subprocess.PIPE,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        server.stdin.write(json.dumps({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "delegate_many",
+                       "arguments": {"tasks": ["one", "two"], "parallel": 2}}}) + "\n")
+        server.stdin.flush()
+        deadline = time.monotonic() + 30
+        while (len(list(scratch_tmp.glob("auto-router-delegate-*/worker-*/written.txt"))) < 2
+               and time.monotonic() < deadline):
+            time.sleep(0.05)
+        server.kill()  # SIGKILL: no cleanup of any kind runs
+    finally:
+        if server.poll() is None:
+            server.kill()
+        server.communicate(timeout=30)
+    copies = list(scratch_tmp.glob("auto-router-delegate-*"))
+    assert len(copies) == 1 and len(_worker_pids(marks)) == 2
+    return copies[0], marks, env
+
+
+def _wait_gone(pids: list[int]) -> None:
+    """Wait until none of ``pids`` is a live process (reaped or a zombie)."""
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        states = []
+        for pid in pids:
+            try:
+                states.append(Path(f"/proc/{pid}/stat").read_text().split(") ")[1][0])
+            except (OSError, IndexError):
+                pass
+        if all(state in "ZX" for state in states):
+            return
+        time.sleep(0.05)
+    raise AssertionError(f"still running: {pids}")
+
+
+def _start_server(hermetic: Path, env: dict) -> str:
+    """Start a fresh server, let it serve nothing, return what it said on stderr."""
+    proc = subprocess.run([sys.executable, "-m", "auto_router.delegate"], cwd=hermetic, env=env,
+                          input="", capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0, proc.stderr
+    return proc.stderr
+
+
+def test_copies_of_a_killed_server_are_reclaimed_once_their_workers_are_gone(
+        hermetic, tmp_path):
+    scratch, marks, env = _killed_server_copies(hermetic, tmp_path)
+    try:
+        _kill_workers(marks)
+        _wait_gone(_worker_pids(marks))
+        assert not _alive(_worker_pids(marks))
+        assert (scratch / "worker-1" / "written.txt").exists(), "the killed server left its copies"
+        said = _start_server(hermetic, env)
+        assert not scratch.exists(), "a later server did not reclaim the dead server's copies"
+        assert f"removed {scratch}" in said
+    finally:
+        _kill_workers(marks)
+
+
+def test_copies_a_worker_of_a_killed_server_still_writes_to_are_kept(hermetic, tmp_path):
+    scratch, marks, env = _killed_server_copies(hermetic, tmp_path)
+    try:
+        # The workers outlived the server (their sessions are their own) and
+        # keep writing into their copies: a later server must leave them be.
+        assert len(_alive(_worker_pids(marks))) == 2
+        said = _start_server(hermetic, env)
+        assert (scratch / "worker-1" / "a.txt").exists() and (scratch / "worker-2").is_dir()
+        assert f"kept {scratch}" in said and "in use by pid" in said
+        before = (scratch / "worker-1" / "written.txt").read_text()
+        time.sleep(0.3)
+        assert (scratch / "worker-1" / "written.txt").read_text() != before, "worker stopped"
+        # Once they are gone, the next server reclaims the copies.
+        _kill_workers(marks)
+        _wait_gone(_worker_pids(marks))
+        _start_server(hermetic, env)
+        assert not scratch.exists()
+    finally:
+        _kill_workers(marks)
+
+
+def _dead_owner() -> tuple[int, int]:
+    """The pid and start time of a process that has ended."""
+    proc = subprocess.Popen(["sleep", "30"])
+    start = procs.start_time(proc.pid)
+    proc.kill()
+    proc.wait()
+    return proc.pid, start
+
+
+def _left_copy(tmp_path: Path, name: str = "auto-router-delegate-left", **record) -> Path:
+    scratch = tmp_path / name
+    (scratch / "worker-1").mkdir(parents=True)
+    (scratch / "worker-1" / "a.txt").write_text("a\n")
+    pid, start = _dead_owner()
+    fields = {"path": str(scratch), "pid": pid, "start": start,
+              "boot_id": delegate._boot_id(), "pid_ns": delegate._pid_ns(), **record}
+    (scratch / delegate.OWNER_RECORD).write_text(json.dumps(fields))
+    return scratch
+
+
+def test_a_copy_whose_server_and_workers_are_gone_is_reclaimed(tmp_path):
+    scratch = _left_copy(tmp_path)
+    assert delegate.sweep_copies(str(tmp_path)) == [
+        f"removed {scratch}: its server and every worker had ended"]
+    assert not scratch.exists()
+
+
+def test_copies_kept_for_an_unstoppable_worker_stay_while_their_server_runs(
+        hermetic, tmp_path, monkeypatch):
+    # Same run as test_copies_a_worker_may_still_write_to_are_not_deleted: the
+    # stuck worker is a thread of this very process, the server, which the
+    # process scan cannot tell apart from the sweeping server. Only the owner
+    # record's pid and start time keep these copies.
+    (hermetic / "a.txt").write_text("a\n")
+    monkeypatch.setattr(delegate.tempfile, "tempdir", str(tmp_path))
+    monkeypatch.setattr(delegate, "STOP_WAIT_S", 0.3)
+    release, stuck = threading.Event(), threading.Event()
+
+    def runner(task, context, cwd, tier, timeout_s):
+        if task == "stuck":
+            stuck.set()
+            release.wait(30)
+            return {"ok": True}
+        stuck.wait(30)
+        raise KeyboardInterrupt
+
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            delegate.run_many(["stuck", "interrupted"], cwd=str(hermetic), parallel=2,
+                              runner=runner)
+        [scratch] = tmp_path.glob("auto-router-delegate-*")
+        assert delegate.sweep_copies(str(tmp_path)) == [
+            f"kept {scratch}: its server (pid {os.getpid()}) is still running"]
+        assert (scratch / "worker-1" / "a.txt").exists()
+        # The record the server left names it; once the server is gone and
+        # nothing uses the copies, they are reclaimed.
+        record = json.loads((scratch / delegate.OWNER_RECORD).read_text())
+        assert record["pid"] == os.getpid() and record["path"] == str(scratch)
+        record["pid"], record["start"] = _dead_owner()
+        (scratch / delegate.OWNER_RECORD).write_text(json.dumps(record))
+        release.set()
+        assert delegate.sweep_copies(str(tmp_path))[0].startswith("removed")
+        assert not scratch.exists()
+    finally:
+        release.set()
+        for leftover in tmp_path.glob("auto-router-delegate-*"):
+            shutil.rmtree(leftover)
+
+
+def test_the_sweep_never_deletes_what_it_cannot_prove_is_an_orphan(tmp_path):
+    untagged = tmp_path / "auto-router-delegate-untagged"
+    (untagged / "worker-1").mkdir(parents=True)
+    garbled = _left_copy(tmp_path, "auto-router-delegate-garbled")
+    (garbled / delegate.OWNER_RECORD).write_text('{"pid": ')
+    moved = _left_copy(tmp_path, "auto-router-delegate-moved", path=str(tmp_path / "elsewhere"))
+    other_boot = _left_copy(tmp_path, "auto-router-delegate-boot", boot_id="another-boot")
+    other_ns = _left_copy(tmp_path, "auto-router-delegate-ns", pid_ns="pid:[1]")
+    no_start = _left_copy(tmp_path, "auto-router-delegate-nostart", start=None)
+    linked = tmp_path / "auto-router-delegate-link"
+    linked.symlink_to(_left_copy(tmp_path, "not-ours"))
+    foreign = _left_copy(tmp_path, "someone-elses-dir")
+    lines = delegate.sweep_copies(str(tmp_path))
+    kept = {line.split(":")[0] for line in lines}
+    assert kept == {f"kept {p}" for p in (untagged, garbled, moved, other_boot, other_ns,
+                                          no_start, linked)}
+    for path in (untagged, garbled, moved, other_boot, other_ns, no_start, linked, foreign,
+                 tmp_path / "not-ours"):
+        assert path.exists()
+    assert any("no owner record" in line for line in lines)
+    assert any("before the last reboot" in line for line in lines)
+    assert any("another pid namespace" in line for line in lines)
+
+
+def test_copies_a_result_handed_over_are_never_reclaimed(hermetic, tmp_path, monkeypatch):
+    monkeypatch.setattr(delegate.tempfile, "tempdir", str(tmp_path))
+
+    def runner(task, context, cwd, tier, timeout_s):
+        Path(cwd, f"{task}.txt").write_text(task)
+        return {"ok": True}
+
+    result = delegate.run_many(["one", "two"], cwd=str(hermetic), runner=runner)
+    workspaces = [Path(r["workspace"]) for r in result["results"]]
+    assert all(w.exists() for w in workspaces)
+    assert not (workspaces[0].parent / delegate.OWNER_RECORD).exists()
+    assert "no owner record" in delegate.sweep_copies(str(tmp_path))[0]
+    assert all(w.exists() for w in workspaces)
+
+
+def test_a_copy_held_by_a_live_process_or_an_uninspectable_one_is_kept(tmp_path, monkeypatch):
+    scratch = _left_copy(tmp_path)
+    # A process of this user holding a file inside open, with its working
+    # directory elsewhere.
+    holder = subprocess.Popen([sys.executable, "-c",
+                               "import sys,time; f=open(sys.argv[1]); print(1, flush=True); "
+                               "time.sleep(30)", str(scratch / "worker-1" / "a.txt")],
+                              cwd="/", stdout=subprocess.PIPE, text=True)
+    try:
+        holder.stdout.readline()
+        assert delegate.sweep_copies(str(tmp_path)) == [
+            f"kept {scratch}: in use by pid {holder.pid}"]
+    finally:
+        holder.kill()
+        holder.wait()
+    # Processes the scan cannot read that started after the dead server, or
+    # no /proc at all: kept as well.
+    monkeypatch.setattr(procs, "holders", lambda inodes, since: (set(), {4242}))
+    assert "cannot be inspected started after its server: pid 4242" in \
+        delegate.sweep_copies(str(tmp_path))[0]
+    monkeypatch.setattr(procs, "holders", lambda inodes, since: None)
+    assert "/proc unreadable" in delegate.sweep_copies(str(tmp_path))[0]
+    assert (scratch / "worker-1" / "a.txt").exists()
+
+
+def test_an_interrupted_reclaim_leaves_the_owner_record_for_the_next_one(tmp_path, monkeypatch):
+    scratch = _left_copy(tmp_path)
+    (scratch / "base").mkdir()
+    real_rmtree = delegate.shutil.rmtree
+
+    def rmtree(path, *a, **k):
+        real_rmtree(path, *a, **k)
+        raise KeyboardInterrupt  # stopped after the first directory
+
+    real_iterdir = Path.iterdir
+    # The record sorts first, so a deletion in directory order reaches it first.
+    monkeypatch.setattr(Path, "iterdir", lambda self: iter(sorted(real_iterdir(self))))
+    monkeypatch.setattr(delegate.shutil, "rmtree", rmtree)
+    with pytest.raises(KeyboardInterrupt):
+        delegate.sweep_copies(str(tmp_path))
+    assert (scratch / delegate.OWNER_RECORD).exists()
+    monkeypatch.setattr(delegate.shutil, "rmtree", real_rmtree)
+    assert delegate.sweep_copies(str(tmp_path))[0].startswith("removed")
+    assert not scratch.exists()
+
+
+def test_a_locked_owner_record_keeps_the_copy_even_if_no_process_is_seen(tmp_path, monkeypatch):
+    # A server in a pid namespace this /proc does not show still holds the
+    # record's lock; the lock alone keeps its copies.
+    scratch = _left_copy(tmp_path)
+    locker = subprocess.Popen([sys.executable, "-c",
+                               "import fcntl,sys,time; f=open(sys.argv[1]); "
+                               "fcntl.flock(f, fcntl.LOCK_EX); print(1, flush=True); time.sleep(30)",
+                               str(scratch / delegate.OWNER_RECORD)],
+                              stdout=subprocess.PIPE, text=True)
+    monkeypatch.setattr(procs, "holders", lambda inodes, since: (set(), set()))
+    try:
+        locker.stdout.readline()
+        assert delegate.sweep_copies(str(tmp_path)) == [
+            f"kept {scratch}: its owner record is locked by a running process"]
+    finally:
+        locker.kill()
+        locker.wait()
+    assert delegate.sweep_copies(str(tmp_path))[0].startswith("removed")

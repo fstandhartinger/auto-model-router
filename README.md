@@ -639,10 +639,36 @@ with a shell:
   (`$TMPDIR/auto-router-delegate-*`), since they are not deleted under a writer.
   A second `SIGTERM`/`SIGHUP` while the server is stopping is ignored, so it
   cannot cut that cleanup short; `SIGKILL` still ends the server at once and
-  leaves the copies. `Ctrl-C` runs the same cleanup, and a further `Ctrl-C`,
-  `SIGTERM` or `SIGHUP` during it is ignored as well. In `route-run`, a second
-  `Ctrl-C` is ignored while the agent is being stopped; a `SIGTERM`/`SIGHUP`
-  there still ends `route-run`, after stopping the agent.
+  leaves the copies, and its running workers go on running (each is in a
+  session of its own) with no timeout applied. `Ctrl-C` runs the same cleanup,
+  and a further `Ctrl-C`, `SIGTERM` or `SIGHUP` during it is ignored as well.
+  In `route-run`, a second `Ctrl-C` is ignored while the agent is being
+  stopped; a `SIGTERM`/`SIGHUP` there still ends `route-run`, after stopping
+  the agent.
+- **Copies left behind are reclaimed when the next server starts, only if
+  nothing can still write to them.** Each run's scratch directory holds an
+  owner record (`.auto-router-owner.json`: the server's pid and start time,
+  the boot id and the pid namespace), which the server keeps locked while it
+  runs and deletes when a result hands the copies over. When the server starts,
+  it deletes an `$TMPDIR/auto-router-delegate-*` directory only if all of
+  these hold: it is a directory (not a link) owned by you; its record names
+  that very path and comes from this boot and this pid namespace; no process
+  has the recorded pid and start time and the record's lock is free; no
+  process visible in `/proc` holds anything inside it (working or root
+  directory, executable, open or mapped file); and no process whose references
+  cannot be read (another user's, or a non-dumpable one) started after that
+  server did. Everything else stays and is named, with the reason, on the
+  server's stderr: copies a result handed over (they have no record; delete
+  them yourself once applied), directories without a readable record, copies
+  from before a reboot or from another container, and copies still in use,
+  which a later start reclaims once they are not. The record is deleted last,
+  so an interrupted reclaim is finished by the next start; a server killed in
+  the moment between creating the directory and writing the record leaves an
+  empty directory (at most an empty record in it) that is never reclaimed. What the check cannot see is a
+  process holding nothing inside the copy at that moment that later writes
+  into it by path, such as a descendant that detached with `setsid()` and
+  changed directory; the same kernel limit as for timeouts above. Nothing is
+  reclaimed while a server runs, only when one starts.
 - **Symlinks in copies.** A copy keeps a symlink only if its target is relative
   and stays inside the copy, both as written and after following every link on
   the way. Absolute links (even into the project, which would lead back to the

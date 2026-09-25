@@ -93,6 +93,27 @@ worker or real installation was run.
   interrupts the cleanup (its own handler then stops the agent). (Self-audit
   25 Sep; shown in child processes with fake workers that ignore `SIGTERM` and
   answer it with the second signal; no live worker was run.)
+- **Worker copies a dead server left behind are reclaimed, once nothing can
+  write to them.** A server ended by `SIGKILL`, or one that kept its copies
+  because a worker could not be stopped within 30 s, left
+  `$TMPDIR/auto-router-delegate-*` for good: nothing later noticed, reported or
+  removed them. (Shown with a real server running two fake workers that write
+  into their copies: after `SIGKILL` the copies and both workers remained, and a
+  fresh server start changed nothing and said nothing.) Each run's scratch
+  directory now holds an owner record (pid, process start time, boot id, pid
+  namespace), locked by the server while it runs and removed when a result
+  hands the copies over. At startup the server deletes such a directory only if
+  its record names that path and comes from this boot and pid namespace, the
+  owner is gone (no process with that pid and start time, lock free), and no
+  process visible in `/proc` holds anything inside it, nor has any process
+  whose references cannot be read started since that server did. Anything else
+  (untagged, handed over, another boot or container, still in use, ambiguous)
+  is kept and listed on stderr with the reason. The record is removed last,
+  so an interrupted deletion is resumed by the next start. Not seen: a process
+  holding nothing inside the copy that later writes into it by path (a
+  `setsid()` descendant that changed directory). Unchanged: workers of a
+  `SIGKILL`ed server keep running, unsupervised. (Self-audit 25 Sep; fake
+  workers in Bubblewrap only; no live worker was run.)
 - **A refused install no longer leaves part of the install behind.** The
   installer copied the skill before it checked the MCP entry or settings file,
   so an install refused because Claude Code or Codex already had an
