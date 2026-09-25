@@ -708,9 +708,8 @@ def test_a_stop_signal_while_an_exited_jobs_leftover_is_stopped_still_ends_it(
         assert (marks / "second").exists(), "the stop signal never came"
         assert not _alive([pid]), "the leftover of the exited job was left running"
         assert bystander.poll() is None, "a process outside the job was signalled"
-        # The delegate server ignores every signal after its first.
-        last = signame.split(",")[0 if server == "delegate" else -1]
-        sig = getattr(signal, "SIG" + last)
+        # Both ignore a stop signal during a Ctrl-C's cleanup.
+        sig = getattr(signal, "SIG" + signame.split(",")[0])
         assert code == (-sig if sig == signal.SIGINT else 128 + sig)
     finally:
         if child.poll() is None:
@@ -752,6 +751,143 @@ def test_procs_run_ends_an_exited_jobs_leftover_when_a_stop_signal_interrupts(
         _kill_group(_leftover_pid(marks))
         bystander.kill()
         bystander.wait()
+
+
+def test_procs_run_a_second_stop_that_ends_jobs_still_reaches_an_exited_jobs_leftover(tmp_path):
+    # In-process: the first SIGTERM raises in the leftover cleanup, the second
+    # one lands in the except-block's pass and ends the job via terminate_all(),
+    # which sees it only because it is still registered.
+    job, marks = _exiting_job(tmp_path)
+    calls = []
+
+    def handler(signum, frame):
+        calls.append(signum)
+        if len(calls) > 1:
+            procs.terminate_all()
+        raise _Stop
+
+    bystander = subprocess.Popen(["sleep", "60"], start_new_session=True)
+    previous = signal.signal(signal.SIGTERM, handler)
+    try:
+        with pytest.raises(_Stop):
+            procs.run([job, str(marks), "TERM,TERM"], timeout=30, scope="group", grace_s=1.0)
+        assert len(calls) == 2, "the second stop signal never came"
+        assert not _alive([_leftover_pid(marks)]), "the leftover was left running"
+        assert procs._LIVE == {}, "a finished job stayed registered"
+        assert bystander.poll() is None, "a process outside the job was signalled"
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+        _kill_group(_leftover_pid(marks))
+        bystander.kill()
+        bystander.wait()
+
+
+SLOW_TO_STOP_AGENT = """
+# $1 marks, $2 the signal the first SIGTERM is answered with (- for none).
+# Needs 1.2 s after a SIGTERM to shut down cleanly and marks when it has; it
+# leaves a process in its group that only SIGKILL ends.
+sh -c 'trap "" TERM; echo $$ > "$0/.l" && mv "$0/.l" "$0/leftover-pid"
+       while :; do sleep 0.05; done' "$1" </dev/null >/dev/null 2>&1 &
+trap 'trap "" TERM; mkdir "$1/term"; [ "$2" = - ] || kill -$2 $PPID
+      sleep 1.2; touch "$1/clean"; exit 0' TERM
+echo $$ > "$1/.a" && mv "$1/.a" "$1/agent-pid"
+while :; do sleep 0.05; done
+"""
+
+
+@pytest.mark.parametrize("first, second", [
+    ("INT", "TERM"), ("INT", "HUP"), ("INT", "-"), ("TERM", "-"), ("HUP", "-")])
+def test_a_stop_signal_after_ctrl_c_does_not_cut_route_runs_cleanup_short(
+        hermetic, tmp_path, first, second):
+    # route-run in a child process with a real config and a live agent. The
+    # test sends the first signal; the agent answers the cleanup's SIGTERM with
+    # the second, so it lands while the agent is being stopped.
+    marks = tmp_path / "marks"
+    marks.mkdir()
+    slow = _script(tmp_path / "slow.sh", SLOW_TO_STOP_AGENT)
+    agent = _script(tmp_path / "agent.sh", f"exec {slow} {marks} {second}\n")
+    env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(tmp_path),
+           "PYTHONPATH": str(ROOT), "AUTO_ROUTER_CONFIG": str(_write_config(tmp_path, agent)),
+           "AUTO_ROUTER_BENCH_OFFLINE": "1"}
+    bystander = subprocess.Popen(["sleep", "60"], start_new_session=True)
+    run = subprocess.Popen([sys.executable, "-m", "auto_router.launcher", "--route", "worker",
+                            "--quiet", "--", "task"], cwd=hermetic, env=env,
+                           stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL)
+    pids = []
+    try:
+        deadline = time.monotonic() + 30
+        while not ((marks / "agent-pid").exists() and (marks / "leftover-pid").exists()):
+            assert time.monotonic() < deadline and run.poll() is None, "the agent never started"
+            time.sleep(0.02)
+        pids = [int((marks / name).read_text()) for name in ("agent-pid", "leftover-pid")]
+        os.kill(run.pid, getattr(signal, "SIG" + first))
+        code = run.wait(timeout=60)
+        time.sleep(0.2)
+        assert (marks / "term").exists(), "the agent was never asked to stop"
+        assert not _alive(pids), "the agent or its leftover was left running"
+        assert bystander.poll() is None, "a process outside the job was signalled"
+        if first == "INT":
+            # The Ctrl-C's grace period (procs.GRACE_S) was not cut short.
+            assert (marks / "clean").exists(), "the agent's own shutdown was cut short"
+        else:
+            # Without a Ctrl-C a SIGTERM/SIGHUP still ends route-run promptly.
+            assert not (marks / "clean").exists(), "the stop waited out the agent"
+        sig = getattr(signal, "SIG" + first)
+        assert code == (-sig if sig == signal.SIGINT else 128 + sig)
+    finally:
+        if run.poll() is None:
+            run.kill()
+            run.wait()
+        for pid in pids:
+            _kill_group(pid)
+        bystander.kill()
+        bystander.wait()
+
+
+def test_route_runs_stop_handler_leaves_a_ctrl_c_cleanup_alone(monkeypatch):
+    called = []
+    monkeypatch.setattr(procs, "terminate_all", lambda: called.append(1))
+    monkeypatch.setattr(launcher_mod, "_INTERRUPTED", threading.Event())
+    with pytest.raises(SystemExit) as exc:
+        launcher_mod._exit_on_signal(signal.SIGTERM, None)
+    assert exc.value.code == 128 + signal.SIGTERM and called == [1]
+    with pytest.raises(KeyboardInterrupt):
+        launcher_mod._interrupt_once(signal.SIGINT, None)
+    assert launcher_mod._exit_on_signal(signal.SIGTERM, None) is None
+    assert launcher_mod._exit_on_signal(signal.SIGHUP, None) is None
+    assert called == [1]
+
+
+def test_a_stop_signal_after_ctrl_c_still_restores_the_callers_handlers(monkeypatch):
+    # route-run called in-process: a Ctrl-C ends the run, and a SIGHUP/SIGTERM
+    # arrives while main() is putting the caller's handlers back.
+    def caller(signum, frame):
+        pass
+
+    real_signal = signal.signal
+    previous = {sig: real_signal(sig, caller) for sig in procs._STOP_SIGNALS}
+    fired = []
+
+    def restoring(sig, handler):
+        old = real_signal(sig, handler)
+        if handler is caller and not fired:
+            # The other stop signal still has route-run's handler here.
+            fired.append(signal.SIGHUP if sig == signal.SIGTERM else signal.SIGTERM)
+            signal.raise_signal(fired[0])
+        return old
+
+    monkeypatch.setattr(procs, "terminate_all", lambda: None)
+    monkeypatch.setattr(launcher_mod, "_main", lambda args: signal.raise_signal(signal.SIGINT))
+    monkeypatch.setattr(signal, "signal", restoring)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            launcher_mod.main(["task"])
+        assert fired, "no stop signal came during the restore"
+        assert all(signal.getsignal(sig) is caller for sig in procs._STOP_SIGNALS)
+    finally:
+        for sig, old in previous.items():
+            real_signal(sig, old)
 
 
 def test_stopping_a_reaped_job_with_nothing_left_signals_nothing(monkeypatch):

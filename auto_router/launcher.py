@@ -330,15 +330,21 @@ def read_task(value: str | None) -> str:
     return text
 
 
+#: Set by the first Ctrl-C of a :func:`main` run.
+_INTERRUPTED = threading.Event()
+
+
 def _exit_on_signal(signum, _frame):
+    # After a Ctrl-C the agent is already being stopped, with the full grace
+    # period (procs.run); ending it here would cut that short to terminate_all's
+    # and skip what main() still does on the way out, so it is ignored, as in
+    # the delegate server.
+    if _INTERRUPTED.is_set():
+        return
     # The agent's process group is ended on the way out instead of being left
     # running without a supervisor.
     procs.terminate_all()
     raise SystemExit(128 + signum)
-
-
-#: Set by the first Ctrl-C of a :func:`main` run.
-_INTERRUPTED = threading.Event()
 
 
 def _interrupt_once(_signum, _frame):

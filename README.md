@@ -645,9 +645,11 @@ with a shell:
   leaves the copies, and its running workers go on running (each is in a
   session of its own) with no timeout applied. `Ctrl-C` runs the same cleanup,
   and a further `Ctrl-C`, `SIGTERM` or `SIGHUP` during it is ignored as well.
-  In `route-run`, a second `Ctrl-C` is ignored while the agent is being
-  stopped; a `SIGTERM`/`SIGHUP` there still ends `route-run`, after stopping
-  the agent.
+  In `route-run`, a further `Ctrl-C`, `SIGTERM` or `SIGHUP` after the first
+  `Ctrl-C` is ignored, so the agent keeps its full grace period before
+  `SIGKILL`, and `route-run` exits as interrupted by `Ctrl-C`. Without a
+  `Ctrl-C` first, a `SIGTERM`/`SIGHUP` still ends `route-run` promptly, after
+  stopping the agent with a shorter grace period (0.5 s).
 - **Copies left behind are reclaimed when the next server starts, only if
   nothing can still write to them.** Each run's scratch directory holds an
   owner record (`.auto-router-owner.json`: the server's pid and start time,
