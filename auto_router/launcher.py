@@ -70,6 +70,7 @@ import shlex
 import signal
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -336,12 +337,32 @@ def _exit_on_signal(signum, _frame):
     raise SystemExit(128 + signum)
 
 
+#: Set by the first Ctrl-C of a :func:`main` run.
+_INTERRUPTED = threading.Event()
+
+
+def _interrupt_once(_signum, _frame):
+    # Ctrl-C ends the agent's process group (SIGTERM, a grace period, SIGKILL;
+    # procs.run). A second Ctrl-C raised inside that grace period would cut it
+    # short and leave an agent that ignores SIGTERM running, so it is ignored.
+    if _INTERRUPTED.is_set():
+        return
+    _INTERRUPTED.set()
+    raise KeyboardInterrupt
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     previous = {}
-    for sig in (signal.SIGTERM, signal.SIGHUP):
+    _INTERRUPTED.clear()
+    handlers = {signal.SIGTERM: _exit_on_signal, signal.SIGHUP: _exit_on_signal,
+                signal.SIGINT: _interrupt_once}
+    for sig, handler in handlers.items():
+        # A Ctrl-C route-run was started to ignore stays ignored.
+        if sig == signal.SIGINT and signal.getsignal(sig) is signal.SIG_IGN:
+            continue
         try:
-            previous[sig] = signal.signal(sig, _exit_on_signal)
+            previous[sig] = signal.signal(sig, handler)
         except ValueError:  # not the main thread; nothing to install
             pass
     try:

@@ -77,6 +77,22 @@ worker or real installation was run.
   entered in that list still misses it, and that job is left running. (Self-audit
   24 Sep; shown with the handler triggered from inside each locked section in a
   child process and fake `sleep` jobs; no live worker was run.)
+- **A second `Ctrl-C` no longer cuts the cleanup after the first one short.**
+  Neither the delegate server nor `route-run` handled `SIGINT`, so a second
+  `Ctrl-C` raised a new `KeyboardInterrupt` wherever the cleanup of the first
+  was, typically in the grace period between `SIGTERM` and `SIGKILL`. The
+  server then skipped deleting the worker copies (`$TMPDIR/auto-router-delegate-*`),
+  and a single-worker `delegate` call or `route-run` left an agent that ignores
+  `SIGTERM` running unsupervised. A `SIGTERM`/`SIGHUP` after a `Ctrl-C` did the
+  same to the server's copies. Both now handle `SIGINT`: the first `Ctrl-C` is
+  still a `KeyboardInterrupt` (exit status unchanged), later ones are ignored
+  until that cleanup is over, and in the server a later `SIGTERM`/`SIGHUP` is
+  ignored too. A `Ctrl-C` the process was started to ignore stays ignored.
+  Unchanged: `SIGKILL` still ends either at once and leaves what was not yet
+  cleaned up; in `route-run`, a `SIGTERM`/`SIGHUP` after a `Ctrl-C` still
+  interrupts the cleanup (its own handler then stops the agent). (Self-audit
+  25 Sep; shown in child processes with fake workers that ignore `SIGTERM` and
+  answer it with the second signal; no live worker was run.)
 - **A refused install no longer leaves part of the install behind.** The
   installer copied the skill before it checked the MCP entry or settings file,
   so an install refused because Claude Code or Codex already had an

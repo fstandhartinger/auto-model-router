@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 
 from auto_router import delegate, procs
+from auto_router import launcher as launcher_mod
 from auto_router.catalog import Catalog, ModelInfo, Prices
 from auto_router.jev import Classification
 from auto_router.config import RouterConfig
@@ -622,7 +623,7 @@ sys.exit(delegate.main())
 @pytest.mark.parametrize("signum, returncode", [
     (signal.SIGTERM, 128 + signal.SIGTERM),  # the handler's SystemExit
     (signal.SIGHUP, 128 + signal.SIGHUP),
-    (signal.SIGINT, -signal.SIGINT),  # Ctrl-C: KeyboardInterrupt, no handler, no flag
+    (signal.SIGINT, -signal.SIGINT),  # Ctrl-C: still a KeyboardInterrupt
 ])
 def test_a_stop_signal_during_parallel_work_stops_every_worker_and_removes_the_copies(
         hermetic, tmp_path, signum, returncode):
@@ -669,6 +670,158 @@ def test_a_stop_signal_during_parallel_work_stops_every_worker_and_removes_the_c
     pids = [int(p) for f in marks.glob("started-*") for p in f.read_text().split()]
     assert len(pids) == 2 and not _alive(pids)
     assert not list(scratch_tmp.iterdir()), "the worker copies were left behind"
+
+
+INTERRUPTING_WORKER = """
+# $1 marks, $2 lead|quiet, $3 workers to wait for, $4 the signal a SIGTERM answers with
+echo $$ > "$1/.p$$" && mv "$1/.p$$" "$1/pid-$$"
+# The cleanup's SIGTERM is answered once (by whichever worker gets it first)
+# with a second signal to the process cleaning up, and otherwise ignored, so
+# only a SIGKILL ends this worker.
+trap 'if mkdir "$1/second" 2>/dev/null; then kill -$4 $PPID; fi' TERM
+if [ "$2" = lead ]; then
+    while [ "$(ls "$1" | grep -c '^pid-')" -lt "$3" ]; do sleep 0.02; done
+    sleep 0.3
+    kill -INT $PPID  # the first Ctrl-C
+fi
+while :; do sleep 0.05; done
+"""
+
+INTERRUPTED_SERVER = """
+import sys
+from auto_router import delegate
+worker, marks, second = sys.argv[1], sys.argv[2], sys.argv[3]
+workers = sys.argv[4]
+delegate.launcher_argv = lambda task, cwd, tier="cheap": [worker, marks, task, workers, second]
+sys.exit(delegate.main())
+"""
+
+
+def _worker_pids(marks: Path) -> list[int]:
+    return [int(p.name[4:]) for p in marks.glob("pid-*")]
+
+
+def _kill_workers(marks: Path) -> None:
+    for pid in _worker_pids(marks):
+        for kill in (os.killpg, os.kill):
+            try:
+                kill(pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+
+
+@pytest.mark.parametrize("tool, second", [
+    ("delegate_many", "INT"), ("delegate_many", "TERM"), ("delegate", "INT")])
+def test_a_second_signal_after_ctrl_c_does_not_cut_the_servers_cleanup_short(
+        hermetic, tmp_path, tool, second):
+    # The real server in a child process, the real run_many/run_delegate/procs
+    # path, workers that only SIGKILL ends. The first Ctrl-C comes from a
+    # worker; the second signal from the worker that the cleanup's SIGTERM
+    # reaches first, so it lands while the cleanup is under way.
+    (hermetic / "a.txt").write_text("a\n")
+    marks, scratch_tmp = tmp_path / "marks", tmp_path / "tmp"
+    marks.mkdir()
+    scratch_tmp.mkdir()
+    worker = _script(tmp_path / "w.sh", INTERRUPTING_WORKER)
+    driver = tmp_path / "server.py"
+    driver.write_text(INTERRUPTED_SERVER)
+    arguments = ({"tasks": ["lead", "quiet"], "parallel": 2} if tool == "delegate_many"
+                 else {"task": "lead"})
+    env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(tmp_path),
+           "PYTHONPATH": str(ROOT), "AUTO_ROUTER_DELEGATE_ROOT": str(hermetic),
+           "AUTO_ROUTER_BENCH_OFFLINE": "1", "TMPDIR": str(scratch_tmp)}
+    server = subprocess.Popen(
+        [sys.executable, str(driver), worker, str(marks), second,
+         "2" if tool == "delegate_many" else "1"],
+        cwd=hermetic, env=env, text=True, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE)
+    try:
+        server.stdin.write(json.dumps({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": tool, "arguments": arguments}}) + "\n")
+        server.stdin.flush()
+        out, _ = server.communicate(timeout=60)
+        time.sleep(0.2)
+        pids = _worker_pids(marks)
+        assert (marks / "second").exists(), "the second signal never came"
+        assert len(pids) == (2 if tool == "delegate_many" else 1)
+        assert not _alive(pids), "a worker was left running"
+        assert not list(scratch_tmp.iterdir()), "the worker copies were left behind"
+        assert server.returncode == -signal.SIGINT and out == ""
+    finally:
+        if server.poll() is None:
+            server.kill()
+            server.wait()
+        _kill_workers(marks)
+
+
+def test_a_second_ctrl_c_does_not_cut_route_runs_cleanup_short(hermetic, tmp_path):
+    # route-run in a child process with a real config; the agent sends the
+    # first Ctrl-C and answers the cleanup's SIGTERM with the second one.
+    marks = tmp_path / "marks"
+    marks.mkdir()
+    worker = _script(tmp_path / "w.sh", INTERRUPTING_WORKER)
+    agent = _script(tmp_path / "agent.sh", f'exec {worker} {marks} lead 1 INT\n')
+    cfg = _write_config(tmp_path, agent)
+    env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(tmp_path),
+           "PYTHONPATH": str(ROOT), "AUTO_ROUTER_CONFIG": str(cfg),
+           "AUTO_ROUTER_BENCH_OFFLINE": "1"}
+    run = subprocess.Popen([sys.executable, "-m", "auto_router.launcher", "--route", "worker",
+                            "--quiet", "--", "task"], cwd=hermetic, env=env,
+                           stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL)  # an agent left running holds pipes open
+    try:
+        run.wait(timeout=60)
+        time.sleep(0.2)
+        pids = _worker_pids(marks)
+        assert (marks / "second").exists(), "the second Ctrl-C never came"
+        assert len(pids) == 1
+        assert not _alive(pids), "the agent was left running"
+        assert run.returncode == -signal.SIGINT
+    finally:
+        if run.poll() is None:
+            run.kill()
+            run.wait()
+        _kill_workers(marks)
+
+
+def test_ctrl_c_is_a_keyboard_interrupt_once_and_then_ignored(monkeypatch):
+    stopping = threading.Event()
+    monkeypatch.setattr(delegate, "_STOPPING", stopping)
+    called = []
+    monkeypatch.setattr(procs, "terminate_all", lambda: called.append(1))
+    with pytest.raises(KeyboardInterrupt):
+        delegate._exit_on_signal(signal.SIGINT, None)
+    assert stopping.is_set() and not called, "the interrupted code does its own cleanup"
+    assert delegate._exit_on_signal(signal.SIGINT, None) is None
+    assert delegate._exit_on_signal(signal.SIGTERM, None) is None
+    assert called == []
+    monkeypatch.setattr(launcher_mod, "_INTERRUPTED", threading.Event())
+    with pytest.raises(KeyboardInterrupt):
+        launcher_mod._interrupt_once(signal.SIGINT, None)
+    assert launcher_mod._interrupt_once(signal.SIGINT, None) is None
+
+
+@pytest.mark.parametrize("server", ["delegate", "launcher"])
+def test_ctrl_c_the_process_was_started_to_ignore_stays_ignored(monkeypatch, server):
+    seen = []
+
+    def body(*_a):
+        seen.append(signal.getsignal(signal.SIGINT))
+        return 0
+
+    previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
+    try:
+        if server == "delegate":
+            monkeypatch.setattr(delegate, "_serve", body)
+            delegate.main(io.StringIO(), io.StringIO())
+        else:
+            monkeypatch.setattr(launcher_mod, "_main", body)
+            launcher_mod.main(["--list"])
+        assert seen == [signal.SIG_IGN]
+        assert signal.getsignal(signal.SIGINT) is signal.SIG_IGN
+    finally:
+        signal.signal(signal.SIGINT, previous)
 
 
 def test_an_interrupted_run_stops_its_other_workers_before_removing_the_copies(

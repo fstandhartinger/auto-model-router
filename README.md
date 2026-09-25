@@ -636,8 +636,10 @@ with a shell:
   (`$TMPDIR/auto-router-delegate-*`), since they are not deleted under a writer.
   A second `SIGTERM`/`SIGHUP` while the server is stopping is ignored, so it
   cannot cut that cleanup short; `SIGKILL` still ends the server at once and
-  leaves the copies. `Ctrl-C` is not a stop signal: during the cleanup after a
-  `Ctrl-C`, a second `Ctrl-C` or a stop signal can still cut it short.
+  leaves the copies. `Ctrl-C` runs the same cleanup, and a further `Ctrl-C`,
+  `SIGTERM` or `SIGHUP` during it is ignored as well. In `route-run`, a second
+  `Ctrl-C` is ignored while the agent is being stopped; a `SIGTERM`/`SIGHUP`
+  there still ends `route-run`, after stopping the agent.
 - **Symlinks in copies.** A copy keeps a symlink only if its target is relative
   and stays inside the copy, both as written and after following every link on
   the way. Absolute links (even into the project, which would lead back to the

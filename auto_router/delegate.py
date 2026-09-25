@@ -704,6 +704,10 @@ def _exit_on_signal(signum, _frame):
     if _STOPPING.is_set():
         return
     _STOPPING.set()
+    if signum == signal.SIGINT:
+        # Ctrl-C stays a KeyboardInterrupt; the code it interrupts stops its
+        # workers (procs.run, run_many) and removes their copies.
+        raise KeyboardInterrupt
     procs.terminate_all()
     raise SystemExit(128 + signum)
 
@@ -712,8 +716,10 @@ def main(stdin=sys.stdin, stdout=sys.stdout) -> int:
     previous = {}
     _STOPPING.clear()
     if threading.current_thread() is threading.main_thread():
-        for sig in (signal.SIGTERM, signal.SIGHUP):
-            previous[sig] = signal.signal(sig, _exit_on_signal)
+        for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+            # A Ctrl-C the server was started to ignore stays ignored.
+            if sig != signal.SIGINT or signal.getsignal(sig) is not signal.SIG_IGN:
+                previous[sig] = signal.signal(sig, _exit_on_signal)
     try:
         return _serve(stdin, stdout)
     finally:
