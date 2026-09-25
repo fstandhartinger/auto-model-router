@@ -536,6 +536,94 @@ def test_a_stop_signal_while_the_main_thread_holds_the_job_lock_does_not_deadloc
                 pass
 
 
+SIGNAL_BEFORE_REGISTERING = """
+import os, signal, subprocess, sys
+server, signame, pidfile, worker = sys.argv[1:5]
+
+class Spawned(subprocess.Popen):
+    # Sends the stop signal once the job's process exists but before
+    # procs.run has registered it: as Popen returns, on the main thread,
+    # which is where Python then runs the handler.
+    fired = False
+
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        if not Spawned.fired:
+            Spawned.fired = True
+            with open(pidfile, "w") as fh:
+                fh.write(str(self.pid))
+            os.kill(os.getpid(), getattr(signal, "SIG" + signame))
+
+subprocess.Popen = Spawned
+if server == "delegate":
+    from auto_router import delegate
+    delegate.launcher_argv = lambda task, cwd, tier="cheap": [worker]
+    sys.exit(delegate.main())
+from auto_router import launcher
+sys.exit(launcher.main(["--route", "worker", "--quiet", "--", "task"]))
+"""
+
+
+@pytest.mark.parametrize("server", ["delegate", "launcher"])
+@pytest.mark.parametrize("signame", ["INT", "TERM", "HUP"])
+def test_a_stop_signal_before_the_job_is_registered_still_ends_it(
+        hermetic, tmp_path, server, signame):
+    # The real server or route-run in a child process with its own handlers;
+    # the signal lands between the job's start and its registration, where
+    # neither the caller's cleanup nor terminate_all() could see the job.
+    driver, pidfile = tmp_path / "driver.py", tmp_path / "worker.pid"
+    driver.write_text(SIGNAL_BEFORE_REGISTERING)
+    worker = _script(tmp_path / "w.sh", "exec sleep 30\n")
+    env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(tmp_path),
+           "PYTHONPATH": str(ROOT), "AUTO_ROUTER_DELEGATE_ROOT": str(hermetic),
+           "AUTO_ROUTER_BENCH_OFFLINE": "1",
+           "AUTO_ROUTER_CONFIG": str(_write_config(tmp_path, worker))}
+    child = subprocess.Popen(
+        [sys.executable, str(driver), server, signame, str(pidfile), worker],
+        cwd=hermetic, env=env, text=True, stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    pid = None
+    try:
+        child.stdin.write(json.dumps({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "delegate", "arguments": {"task": "t"}}}) + "\n")
+        child.stdin.close()
+        code = child.wait(timeout=30)
+        time.sleep(0.2)
+        assert pidfile.exists(), "the job never started"
+        pid = int(pidfile.read_text())
+        assert not _alive([pid]), "the job started just before the signal was left running"
+        sig = getattr(signal, "SIG" + signame)
+        assert code == (-sig if sig == signal.SIGINT else 128 + sig)
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait()
+        if pid is not None:
+            try:
+                os.killpg(pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+
+
+def test_starting_a_job_leaves_the_stop_handlers_as_they_were(tmp_path):
+    def handler(signum, frame):
+        pass
+
+    previous = {sig: signal.signal(sig, handler) for sig in procs._STOP_SIGNALS}
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    try:
+        assert procs.run(["true"], timeout=10).returncode == 0
+        with pytest.raises(FileNotFoundError):
+            procs.run([str(tmp_path / "missing")], timeout=10)
+        assert signal.getsignal(signal.SIGINT) is handler
+        assert signal.getsignal(signal.SIGTERM) is handler
+        assert signal.getsignal(signal.SIGHUP) is signal.SIG_IGN
+    finally:
+        for sig, old in previous.items():
+            signal.signal(sig, old)
+
+
 def test_a_server_run_does_not_inherit_an_earlier_runs_stop(monkeypatch):
     # main() called again in the same process after a stop: queued briefs are
     # started again, and a stop signal still ends this run.

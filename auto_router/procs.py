@@ -14,7 +14,8 @@ launcher then contains its agent in a group *inside* that session). On a
 timeout, an interrupt or a ``SystemExit`` every process in that group or
 session, plus any descendant still linked by parent id, gets ``SIGTERM``, then
 ``SIGKILL`` after a short grace period, and the call returns only once none of
-them is left alive.
+them is left alive. A stop signal that arrives while a job is being started
+waits until the job is registered, so it ends that job too.
 
 The limit is the kernel's: a descendant that calls ``setsid()`` *and* whose
 parent has already exited is no longer linked to the job in any way a process
@@ -127,6 +128,49 @@ def terminate_all() -> None:
         terminate(proc, scope=scope, grace_s=0.5)
 
 
+#: The signals this package's entry points stop on (launcher, delegate).
+_STOP_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+
+
+class _HeldSignals:
+    """Lets a stop signal wait while a job is started and registered.
+
+    Between the fork and the registration in ``_LIVE`` a handler that raises
+    (Ctrl-C, the servers' SIGTERM/SIGHUP handlers) would leave the job running
+    where neither :func:`run`'s own cleanup nor :func:`terminate_all` sees it.
+    So, on the main thread (the only one Python runs handlers on), each Python
+    handler of a stop signal is replaced by this object, which notes the
+    signal while held and hands it to the replaced handler once released.
+    Blocking the signals instead would not do: the child inherits the mask.
+    """
+
+    def __init__(self) -> None:
+        self.previous: dict[int, Any] = {}
+        self.pending: list[int] = []
+        self.holding = True
+
+    def __call__(self, signum: int, frame: Any) -> None:
+        if self.holding:
+            self.pending.append(signum)
+        else:
+            self.previous[signum](signum, frame)
+
+    def hold(self) -> None:
+        if threading.current_thread() is not threading.main_thread():
+            return
+        for sig in _STOP_SIGNALS:
+            if callable(signal.getsignal(sig)):
+                self.previous[sig] = signal.signal(sig, self)
+
+    def release(self) -> None:
+        """Put the handlers back, then deliver what came meanwhile, in order."""
+        self.holding = False
+        for sig, handler in self.previous.items():
+            signal.signal(sig, handler)
+        for signum in self.pending:
+            signal.raise_signal(signum)
+
+
 def run(argv: list[str], *, timeout: float | None, scope: str = "session",
         input: str | None = None, capture_output: bool = False, text: bool = True,
         stdin: Any = None, cwd: str | None = None, env: dict[str, str] | None = None,
@@ -148,11 +192,18 @@ def run(argv: list[str], *, timeout: float | None, scope: str = "session",
     if input is not None:
         stdin = subprocess.PIPE
     pipe = subprocess.PIPE if capture_output else None
-    proc = subprocess.Popen(argv, stdin=stdin, stdout=pipe, stderr=pipe, cwd=cwd, env=env,
-                            text=text, **kwargs)
-    with _LIVE_LOCK:
-        _LIVE[proc] = scope
+    held = _HeldSignals()
     try:
+        held.hold()
+        proc = subprocess.Popen(argv, stdin=stdin, stdout=pipe, stderr=pipe, cwd=cwd, env=env,
+                                text=text, **kwargs)
+        with _LIVE_LOCK:
+            _LIVE[proc] = scope
+    except BaseException:
+        held.release()
+        raise
+    try:
+        held.release()
         out, err = proc.communicate(input, timeout=timeout)
     except subprocess.TimeoutExpired:
         terminate(proc, scope=scope, grace_s=grace_s)
