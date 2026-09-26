@@ -602,7 +602,8 @@ with a shell:
   structured error and the server keeps serving. The brief follows `--` on the
   launcher's command line, so a brief such as `--list` is a task, not an option.
 - **Environment.** A launched worker gets an allowlist, not your environment:
-  `PATH`, `HOME`, the locale, `TERM`, `TMPDIR` and the XDG directories, plus what
+  `PATH`, `HOME`, the locale, `TERM`, `TMPDIR`, the XDG directories and
+  `AUTO_ROUTER_DELEGATE_COPY` (the copy a delegated worker runs in), plus what
   its route names (`env_pass: [NAME]`, `env_from: {NAME: SOURCE}`, `env: {...}`)
   and what you add for every route under `launcher.env_allow`. Provider keys,
   `SSH_AUTH_SOCK`, `DBUS_*` and `XDG_RUNTIME_DIR` are not passed unless you name
@@ -660,7 +661,11 @@ with a shell:
   that very path and comes from this boot and this pid namespace; no process
   has the recorded pid and start time and the record's lock is free; no
   process visible in `/proc` holds anything inside it (working or root
-  directory, executable, open or mapped file); and no process whose references
+  directory, executable, open or mapped file); no process started after that
+  server was started with `AUTO_ROUTER_DELEGATE_COPY` naming that directory in
+  its environment (every worker in a copy gets it, and whatever it starts
+  inherits it, so a descendant that detached with `setsid()`, left the copy and
+  holds nothing inside it still counts); and no process whose references
   cannot be read (another user's, or a non-dumpable one) started after that
   server did. Everything else stays and is named, with the reason, on the
   server's stderr: copies a result handed over (they have no record; delete
@@ -670,10 +675,14 @@ with a shell:
   so an interrupted reclaim is finished by the next start; a server killed in
   the moment between creating the directory and writing the record leaves an
   empty directory (at most an empty record in it) that is never reclaimed. What the check cannot see is a
-  process holding nothing inside the copy at that moment that later writes
-  into it by path, such as a descendant that detached with `setsid()` and
-  changed directory; the same kernel limit as for timeouts above. Nothing is
-  reclaimed while a server runs, only when one starts.
+  process that holds nothing inside the copy at that moment, later writes into
+  it by path, and no longer has the variable in the environment it was started
+  with: one started with a cleaned environment (by the worker's agent CLI for
+  its tools, or by an `env -i`/`exec` of its own), or one that got the path
+  some other way (a file, a socket). /proc keeps no other link from such a
+  process to the copy once its parent has exited; only running the workers in
+  a cgroup or sandbox contains that. Nothing is reclaimed while a server runs,
+  only when one starts.
 - **Symlinks in copies.** A copy keeps a symlink only if its target is relative
   and stays inside the copy, both as written and after following every link on
   the way. Absolute links (even into the project, which would lead back to the

@@ -94,6 +94,7 @@ BASE_ENV_ALLOW = (
     "PATH", "HOME", "USER", "LOGNAME", "SHELL", "TERM", "COLORTERM", "NO_COLOR", "TZ", "TMPDIR",
     "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "LC_MESSAGES", "LC_NUMERIC", "LC_TIME",
     "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME",
+    "AUTO_ROUTER_DELEGATE_COPY",  # the copy a delegated worker runs in (delegate.COPY_ENV)
 )
 
 

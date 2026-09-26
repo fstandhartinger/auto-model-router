@@ -35,7 +35,8 @@ third-party model with a shell:
 - **Copies left behind** by a server that was killed, or kept because a
   worker could not be stopped, carry an owner record; a later server deletes
   them when it starts only once their server is gone and no process holds
-  anything inside them (:func:`sweep_copies`), and names what it keeps.
+  anything inside them or still carries the copy's ``COPY_ENV`` variable
+  (:func:`sweep_copies`), and names what it keeps.
 """
 
 from __future__ import annotations
@@ -82,6 +83,11 @@ COPY_PREFIX = "auto-router-delegate-"
 #: hands its copies over: who made it (pid, start time, boot, pid namespace).
 #: The server holds an exclusive ``flock`` on it for as long as it runs.
 OWNER_RECORD = ".auto-router-owner.json"
+#: Set to the scratch directory for every worker that runs in one of its
+#: copies. Whatever the worker starts inherits it, even a process that detached
+#: (``setsid()``), left the copy and holds nothing inside it, so the sweep can
+#: still tell that such a process may write into the copy by path.
+COPY_ENV = "AUTO_ROUTER_DELEGATE_COPY"
 #: Left out of per-worker copies: large, machine-specific or version control.
 COPY_IGNORE = (".git", ".hg", ".svn", ".venv", "venv", "node_modules", "__pycache__",
                ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox")
@@ -286,8 +292,11 @@ def run_delegate(task: str, context: str | None = None, cwd: str | None = None,
         return {"ok": False, "error": "timeout_s must be an integer"}
     timeout_s = max(1, min(timeout_s, 7200))
     full_brief = _brief(task, context)
+    env = launcher_env()
+    if cwd and Path(cwd).parent.name.startswith(COPY_PREFIX):
+        env[COPY_ENV] = str(Path(cwd).parent)
     try:
-        proc = run(launcher_argv(full_brief, cwd, tier), cwd=cwd or None, env=launcher_env(),
+        proc = run(launcher_argv(full_brief, cwd, tier), cwd=cwd or None, env=env,
                    capture_output=True, text=True, timeout=timeout_s, stdin=subprocess.DEVNULL)
     except subprocess.TimeoutExpired:
         return {"ok": False, "error": f"worker timed out after {timeout_s}s; the worker and "
@@ -576,8 +585,9 @@ def _orphan(scratch: Path) -> tuple[bool, str, int | None]:
     an owner record naming this very path, made in this boot and pid
     namespace; its owner is gone (no process with the recorded pid and start
     time, and the record's lock is free); and no live process holds anything
-    inside it (working or root directory, executable, open or mapped file),
-    while every process that cannot be inspected started before its owner did.
+    inside it (working or root directory, executable, open or mapped file)
+    and none started after its owner carries ``COPY_ENV`` naming it, while
+    every process that cannot be inspected started before its owner did.
     """
     try:
         st = os.lstat(scratch)
@@ -631,7 +641,7 @@ def _in_use(scratch: Path, *, since: int) -> str:
                 inodes.add((entry.st_dev, entry.st_ino))
     except OSError as exc:
         return f"cannot list it ({exc.strerror})"
-    seen = procs.holders(inodes, since=since)
+    seen = procs.holders(inodes, since=since, environ=f"{COPY_ENV}={scratch}".encode())
     if seen is None:
         return "cannot tell which processes use it (/proc unreadable)"
     if seen[0]:

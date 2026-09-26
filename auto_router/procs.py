@@ -124,11 +124,16 @@ def _references(base: str, majors: dict[tuple[int, int], int]) -> set[tuple[int,
     return refs
 
 
-def holders(inodes: set[tuple[int, int]], *, since: int) -> tuple[set[int], set[int]] | None:
+def holders(inodes: set[tuple[int, int]], *, since: int,
+            environ: bytes | None = None) -> tuple[set[int], set[int]] | None:
     """Live processes that hold one of ``inodes`` (``(st_dev, st_ino)``) open.
 
     Held means as working or root directory, executable, open file or mapped
-    file. Returns ``(holding, unreadable)``: the pids seen holding one, and the
+    file. With ``environ`` (``b"NAME=value"``), a process started at or after
+    ``since`` whose environment, as it was started, has that entry counts as
+    holding too: it was started by one that had it, so it may write into what
+    the entry names even once it has detached and holds nothing there.
+    Returns ``(holding, unreadable)``: the pids seen holding one, and the
     pids started at or after ``since`` (clock ticks since boot) whose
     references cannot be read - another user's or a non-dumpable process.
     None when ``/proc`` cannot be read at all. Only processes this ``/proc``
@@ -154,13 +159,17 @@ def holders(inodes: set[tuple[int, int]], *, since: int) -> tuple[set[int], set[
                 continue
             started = int(fields[19])
             refs = _references(base, majors)
+            marked = False
+            if environ is not None and started >= since:
+                with open(f"{base}/environ", "rb") as fh:
+                    marked = environ in fh.read().split(b"\0")
         except (FileNotFoundError, ProcessLookupError):
             continue  # gone meanwhile
         except (OSError, IndexError, ValueError):
             if started is None or started >= since:
                 unreadable.add(pid)
             continue
-        if refs & inodes:
+        if marked or refs & inodes:
             holding.add(pid)
     return holding, unreadable
 
