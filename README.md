@@ -414,6 +414,7 @@ Choose the routing classifier under `policy.classifier`:
 
 ```yaml
 classifier: {backend: local, model: convaiinnovations/laya, threads: 4}
+# classifier: {backend: local-route-head, model: benchmarkheaven/weiche-395m, variant: fp16}
 # classifier: {backend: local-jev, base_url: http://127.0.0.1:8081/v1, model: jevk5}
 # classifier: {backend: hosted}    # set TYPESAFE_API_KEY
 # classifier: {backend: heuristic} # zero inference cost and latency
@@ -422,6 +423,19 @@ classifier: {backend: local, model: convaiinnovations/laya, threads: 4}
 Local means the scrubbed routing input stays on the machine. Hosted uses the
 existing Jev API path. If local inference or model loading fails, routing falls
 back cautiously instead of failing the user's LLM call.
+
+**Weiche** (`local-route-head`, optional) is a 395M routing model trained for this router
+([model card](https://huggingface.co/benchmarkheaven/weiche-395m),
+[training code](https://github.com/fstandhartinger/weiche)). It is ModernBERT-large with typed
+heads and runs on CPU through ONNX Runtime; it needs no PyTorch
+(`pip install "auto-model-router[route-head]"`). One pass returns the same fields as Jev
+(category, difficulty, needs_*, follow_up, stakes). It also returns measured-outcome
+P(success) for a small, a mid and a strong tier, kept in the classification's `raw`.
+On held-out data it got the category right 88.5 % of the time (hosted Jev 85.8 %, local
+Laya 9.3 %). On this repository's own 70 held-out tasks it got 94.9 % (Jev 79.7 %, Laya
+33.9 %). On the same busy 4-thread CPU it took 386 ms per decision in fp16 (288 ms in int4);
+local Laya took 11.1 s. These are development measurements from the model card, not
+production traffic results.
 
 **A local open Jev-class model** (`local-jev`) is any decision model served
 behind an OpenAI-compatible endpoint by `llama-server` or LM Studio. The
