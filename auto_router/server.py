@@ -68,6 +68,15 @@ def answer_text(data: dict) -> str:
     return ""
 
 
+def has_tool_calls(data: dict) -> bool:
+    """True when an OpenAI-shaped completion asks for a tool instead of answering."""
+    for choice in data.get("choices") or []:
+        choice = choice or {}
+        if choice.get("finish_reason") == "tool_calls" or (choice.get("message") or {}).get("tool_calls"):
+            return True
+    return False
+
+
 def request_text(messages: list[dict]) -> str:
     """The user's own last message: what the judge is asked to grade against."""
     for message in reversed(messages):
@@ -118,6 +127,20 @@ def provider_headers(provider: Provider) -> dict[str, str]:
     if key:
         headers["Authorization"] = f"Bearer {key}"
     return headers
+
+
+def provider_payload(provider: Provider, payload: dict) -> dict:
+    """The request body as this provider accepts it.
+
+    Only one adaptation so far: OpenAI's newer models reject ``max_tokens`` and
+    want ``max_completion_tokens`` (``max_tokens_field`` in the provider config).
+    """
+    field_name = provider.max_tokens_field
+    if field_name and field_name != "max_tokens" and "max_tokens" in payload:
+        payload = dict(payload)
+        value = payload.pop("max_tokens")
+        payload.setdefault(field_name, value)
+    return payload
 
 
 @app.on_event("shutdown")
@@ -238,7 +261,7 @@ async def chat_completions(request: Request) -> Any:
     #: tier by construction, so this only ever binds when an operator has
     #: configured the whole catalog as cheap - and there a chain of judges
     #: would spend more on checking than on answering.
-    verify_budget = 1
+    verify_budget = router.verify.max_escalations
     #: The verdict that made this turn escalate, kept across the retry.
     checked = None
     for attempt in range(1, MAX_ATTEMPTS + 1):
@@ -247,7 +270,7 @@ async def chat_completions(request: Request) -> Any:
         started = time.perf_counter()
         try:
             resp = await client().post(f"{provider.base_url}/chat/completions",
-                                       headers=provider_headers(provider), json=payload)
+                                       headers=provider_headers(provider), json=provider_payload(provider, payload))
             data = resp.json() if resp.content else {}
         except (httpx.HTTPError, json.JSONDecodeError) as exc:
             resp, data = None, {"error": type(exc).__name__}
@@ -267,17 +290,19 @@ async def chat_completions(request: Request) -> Any:
                            switched=False, escalated=bool(result.tried))
             if cut is None:
                 answer = answer_text(data)
-                verdict = await asyncio.to_thread(router.check, result, prompt, answer)
+                verdict = await asyncio.to_thread(router.check, result, prompt, answer,
+                                                  tool_calls=has_tool_calls(data))
                 # The escalated answer is reported with the verdict that caused
                 # the escalation, not with the "not checked" verdict its own
                 # stronger route earns: what the caller wants to know is why it
                 # got a second answer.
-                verdict = checked or verdict
-                if verdict.escalate and verify_budget > 0:
+                if checked is not None and not verdict.verified:
+                    verdict = checked
+                if verdict.escalate and not verdict.escalated_to and verify_budget > 0:
                     verify_budget -= 1
                     retry, messages, verdict = await asyncio.to_thread(
                         router.escalate_after_verdict, result, verdict, body.get("messages") or [],
-                        answer)
+                        answer, exclude_subscriptions=True)
                     if retry is not None:
                         checked = verdict
                         metrics.record_error(result.model.name)
@@ -356,6 +381,8 @@ def record_observed(result: RouteResult, status: str, http_status: int | None,
         cost, basis = None, f"no usage reported ({status})"
     elif model.subscription:
         cost, basis = None, f"subscription route {model.subscription}: no marginal cash cost"
+    elif model.local:
+        cost, basis = None, "local model: ~zero cost, local electricity not counted"
     elif model.prices.is_free:
         cost, basis = None, "route configured as free: no cash cost to measure"
     else:
@@ -400,9 +427,10 @@ async def _stream_upstream(body: dict, result: RouteResult, state: dict):
     usage = Usage()
     finish_reason: str | None = None
     text: list[str] = []
+    tool_calls = False
     started = time.perf_counter()
     async with client().stream("POST", f"{provider.base_url}/chat/completions",
-                               headers=provider_headers(provider), json=payload) as resp:
+                               headers=provider_headers(provider), json=provider_payload(provider, payload)) as resp:
         if resp.status_code != 200:
             await resp.aread()
             metrics.record_error(result.model.name)
@@ -427,6 +455,8 @@ async def _stream_upstream(body: dict, result: RouteResult, state: dict):
                             piece = (choice.get("delta") or {}).get("content")
                             if isinstance(piece, str):
                                 text.append(piece)
+                            if (choice.get("delta") or {}).get("tool_calls"):
+                                tool_calls = True
                             # With several choices, a length stop on any of them
                             # is the honest verdict for the turn.
                             reason = choice.get("finish_reason")
@@ -446,7 +476,8 @@ async def _stream_upstream(body: dict, result: RouteResult, state: dict):
         metrics.record_error(result.model.name)
     metrics.record(category=result.request.category, model=result.model,
                    classification_ms=result.classification_ms, usage=usage)
-    state.update(answered=cut is None, text="".join(text))
+    state.update(answered=cut is None, text="".join(text),
+                 tool_calls=tool_calls or finish_reason == "tool_calls")
 
 
 def _x_router_chunk(result: RouteResult, verdict, first: RouteResult, more: bool) -> str:
@@ -474,6 +505,10 @@ def _x_router_chunk(result: RouteResult, verdict, first: RouteResult, more: bool
 async def _openai_stream(body: dict, result: RouteResult):
     convo = [m for m in (body.get("messages") or []) if m.get("role") != "system"]
     prompt = request_text(convo)
+    if router.buffers_stream(result, prompt):
+        async for line in _buffered_openai_stream(body, result, prompt):
+            yield line
+        return
     opt_in = bool((body.get("x_router") or {}).get("stream_escalate")) or stream_escalation_allowed()
     first = result
     verdict = None
@@ -481,17 +516,57 @@ async def _openai_stream(body: dict, result: RouteResult):
     async for line in _stream_upstream(body, result, state):
         yield line
     if state.get("answered"):
-        verdict = await asyncio.to_thread(router.check, result, prompt, state.get("text", ""))
+        verdict = await asyncio.to_thread(router.check, result, prompt, state.get("text", ""),
+                                          tool_calls=bool(state.get("tool_calls")))
         if verdict.escalate and opt_in:
             retry, messages, verdict = await asyncio.to_thread(
                 router.escalate_after_verdict, result, verdict, body.get("messages") or [],
-                state.get("text", ""))
+                state.get("text", ""), exclude_subscriptions=True)
             if retry is not None:
                 metrics.record_error(result.model.name)
                 yield _x_router_chunk(result, verdict, first, more=True)
                 result = retry
                 async for line in _stream_upstream({**body, "messages": messages}, retry, {}):
                     yield line
+    yield _x_router_chunk(result, verdict, first, more=False)
+    yield "data: [DONE]\n\n"
+
+
+async def _buffered_openai_stream(body: dict, result: RouteResult, prompt: str):
+    """Stream a below-threshold route only after its answer has been graded.
+
+    The upstream stream is collected, graded, and either released unchanged or
+    discarded in favour of a stronger route's stream, which is collected and
+    handled the same way while escalations are left. The client sees one
+    ordinary answer - the one that passed or the last escalation - never two.
+    The price is latency: nothing reaches the client until the first answer
+    is complete and graded. An upstream error is released as it came.
+    """
+    first = result
+    verdict = None
+    budget = router.verify.max_escalations
+    checked = None
+    while True:
+        state: dict = {}
+        lines = [line async for line in _stream_upstream(body, result, state)]
+        if not state.get("answered"):
+            break
+        verdict = await asyncio.to_thread(router.check, result, prompt, state.get("text", ""),
+                                          tool_calls=bool(state.get("tool_calls")))
+        if checked is not None and not verdict.verified:
+            verdict = checked
+        if not (verdict.escalate and not verdict.escalated_to and budget > 0):
+            break
+        budget -= 1
+        retry, messages, verdict = await asyncio.to_thread(
+            router.escalate_after_verdict, result, verdict, body.get("messages") or [],
+            state.get("text", ""), exclude_subscriptions=True)
+        if retry is None:
+            break
+        metrics.record_error(result.model.name)
+        checked, result, body = verdict, retry, {**body, "messages": messages}
+    for line in lines:
+        yield line
     yield _x_router_chunk(result, verdict, first, more=False)
     yield "data: [DONE]\n\n"
 
@@ -584,7 +659,6 @@ async def proxy_openai_as_anthropic(body: dict, result: RouteResult) -> Any:
         return JSONResponse({"type": "error", "error": {"type": "invalid_request_error", "message": detail}},
                             status_code=400, headers=headers)
 
-    provider = provider_for(result)
     payload: dict[str, Any] = {
         "model": result.model.upstream_id,
         "messages": openai_messages,
@@ -599,52 +673,123 @@ async def proxy_openai_as_anthropic(body: dict, result: RouteResult) -> Any:
     if choice is not None:
         payload["tool_choice"] = choice
     label = body.get("model") or result.model.name
+    from .router import last_user_text
+    prompt = last_user_text(body.get("messages") or [])
 
     if body.get("stream"):
         payload["stream"] = True
         payload["stream_options"] = {"include_usage": True}
-        return StreamingResponse(_anthropic_stream(payload, provider, result, label),
+        if router.buffers_stream(result, prompt):
+            return StreamingResponse(_buffered_anthropic_stream(payload, body, result, label, prompt),
+                                     media_type="text/event-stream", headers=headers)
+        return StreamingResponse(_anthropic_stream(payload, provider_for(result), result, label),
                                  media_type="text/event-stream", headers=headers)
 
-    started = time.perf_counter()
-    resp = await client().post(f"{provider.base_url}/chat/completions",
-                               headers=provider_headers(provider), json=payload)
-    latency_ms = (time.perf_counter() - started) * 1000
-    if resp.status_code != 200:
-        metrics.record_error(result.model.name)
-        record_observed(result, "upstream_error", resp.status_code, latency_ms, None, 1, result,
-                        error=f"http_{resp.status_code}")
-        return JSONResponse({"type": "error", "error": {"type": "api_error",
-                                                        "message": f"upstream returned {resp.status_code}"}},
-                            status_code=resp.status_code, headers=headers)
-    data = resp.json()
-    try:
-        message = openai_response_to_anthropic(data, label)
-    except TranslationError as exc:
-        metrics.record_error(result.model.name)
-        return JSONResponse({"type": "error", "error": {"type": "api_error",
-                                                        "message": f"response translation failed: {exc}"}},
-                            status_code=502, headers=headers)
-    usage = parse_openai_usage(data.get("usage") or {})
-    cut = truncation_label(data)
-    router.commit(result, usage.total_input or None, usage.output)
-    record_observed(result, "truncated" if cut else "ok", 200, latency_ms, usage, 1, result,
-                    error=cut)
-    if cut:
-        # This surface has no attempt loop to fall back through; the record is
-        # still honest about what the route did.
-        metrics.record_error(result.model.name)
-    metrics.record(category=result.request.category, model=result.model,
-                   classification_ms=result.classification_ms, usage=usage)
-    return JSONResponse(message, headers=headers)
+    #: Same budget and the same rule as the OpenAI surface: a final answer from
+    #: a checked route is graded, and a rejected one is replaced by a stronger
+    #: route's answer before anything is returned to the agent.
+    budget = router.verify.max_escalations
+    checked = None
+    while True:
+        provider = provider_for(result)
+        payload = {**payload, "model": result.model.upstream_id,
+                   "max_tokens": min(body.get("max_tokens") or 4096, result.model.max_output_tokens)}
+        started = time.perf_counter()
+        resp = await client().post(f"{provider.base_url}/chat/completions",
+                                   headers=provider_headers(provider), json=provider_payload(provider, payload))
+        latency_ms = (time.perf_counter() - started) * 1000
+        if resp.status_code != 200:
+            metrics.record_error(result.model.name)
+            record_observed(result, "upstream_error", resp.status_code, latency_ms, None, 1, result,
+                            error=f"http_{resp.status_code}")
+            return JSONResponse({"type": "error", "error": {"type": "api_error",
+                                                            "message": f"upstream returned {resp.status_code}"}},
+                                status_code=resp.status_code, headers=result.headers)
+        data = resp.json()
+        try:
+            message = openai_response_to_anthropic(data, label)
+        except TranslationError as exc:
+            metrics.record_error(result.model.name)
+            return JSONResponse({"type": "error", "error": {"type": "api_error",
+                                                            "message": f"response translation failed: {exc}"}},
+                                status_code=502, headers=result.headers)
+        usage = parse_openai_usage(data.get("usage") or {})
+        cut = truncation_label(data)
+        router.commit(result, usage.total_input or None, usage.output)
+        record_observed(result, "truncated" if cut else "ok", 200, latency_ms, usage, 1, result,
+                        error=cut)
+        if cut:
+            # This surface has no attempt loop to fall back through; the record is
+            # still honest about what the route did.
+            metrics.record_error(result.model.name)
+        metrics.record(category=result.request.category, model=result.model,
+                       classification_ms=result.classification_ms, usage=usage)
+        if cut:
+            return JSONResponse(message, headers=result.headers)
+        answer = answer_text(data)
+        verdict = await asyncio.to_thread(router.check, result, prompt, answer,
+                                          tool_calls=has_tool_calls(data))
+        if checked is not None and not verdict.verified:
+            verdict = checked
+        if verdict.escalate and not verdict.escalated_to and budget > 0:
+            budget -= 1
+            retry, messages, verdict = await asyncio.to_thread(
+                router.escalate_after_verdict, result, verdict, payload["messages"], answer,
+                exclude_subscriptions=True)
+            if retry is not None:
+                metrics.record_error(result.model.name)
+                checked, result = verdict, retry
+                payload = {**payload, "messages": messages}
+                continue
+        return JSONResponse(message, headers=result.headers)
 
 
-async def _anthropic_stream(payload: dict, provider: Provider, result: RouteResult, label: str):
+async def _buffered_anthropic_stream(payload: dict, body: dict, result: RouteResult, label: str,
+                                     prompt: str):
+    """The Anthropic stream of a below-threshold route, released only after grading.
+
+    See ``_buffered_openai_stream``: the translated events are collected, the
+    answer is graded, and either the events are released or a stronger route
+    is streamed (and collected) in their place.
+    """
+    budget = router.verify.max_escalations
+    checked = None
+    while True:
+        state: dict = {}
+        payload = {**payload, "model": result.model.upstream_id,
+                   "max_tokens": min(body.get("max_tokens") or 4096, result.model.max_output_tokens)}
+        events = [event async for event in
+                  _anthropic_stream(payload, provider_for(result), result, label, state)]
+        if not state.get("answered"):
+            break
+        outcome: StreamOutcome = state["outcome"]
+        answer = "".join(outcome.text)
+        verdict = await asyncio.to_thread(router.check, result, prompt, answer,
+                                          tool_calls=outcome.tool_calls > 0)
+        if checked is not None and not verdict.verified:
+            verdict = checked
+        if not (verdict.escalate and not verdict.escalated_to and budget > 0):
+            break
+        budget -= 1
+        retry, messages, verdict = await asyncio.to_thread(
+            router.escalate_after_verdict, result, verdict, payload["messages"], answer,
+            exclude_subscriptions=True)
+        if retry is None:
+            break
+        metrics.record_error(result.model.name)
+        checked, result = verdict, retry
+        payload = {**payload, "messages": messages}
+    for event in events:
+        yield event
+
+
+async def _anthropic_stream(payload: dict, provider: Provider, result: RouteResult, label: str,
+                            state: dict | None = None):
     outcome = StreamOutcome()
     started = time.perf_counter()
     try:
         async with client().stream("POST", f"{provider.base_url}/chat/completions",
-                                   headers=provider_headers(provider), json=payload) as resp:
+                                   headers=provider_headers(provider), json=provider_payload(provider, payload)) as resp:
             if resp.status_code != 200:
                 raw = (await resp.aread()).decode(errors="replace")[:600]
                 metrics.record_error(result.model.name)
@@ -679,6 +824,8 @@ async def _anthropic_stream(payload: dict, provider: Provider, result: RouteResu
         metrics.record_error(result.model.name)
     metrics.record(category=result.request.category, model=result.model,
                    classification_ms=result.classification_ms, usage=outcome.usage)
+    if state is not None:
+        state.update(answered=cut is None, outcome=outcome)
 
 
 @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"])

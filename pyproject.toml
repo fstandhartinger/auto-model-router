@@ -21,3 +21,6 @@ auto-router-delegate = "auto_router.delegate:main"
 
 [tool.setuptools.packages.find]
 include = ["auto_router*"]
+
+[tool.setuptools.package-data]
+auto_router = ["data/*.json"]

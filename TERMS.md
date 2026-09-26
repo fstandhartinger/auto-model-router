@@ -1,25 +1,24 @@
-# Using the auto router *with* a Claude Max or ChatGPT Pro plan: what the terms allow
+# Using the auto router *with* a Claude or ChatGPT plan: what vendor documentation says
 
-Re-read on **19 September 2026** from the vendors' own current pages (the text of every
-Anthropic page quoted below is identical to the 18 Sep reading kept at the end of this file). Quotes are
-verbatim, each followed by its link. This is a reading of published documentation, not
-legal advice.
+Anthropic's gateway, compatibility, and legal pages and Codex's authentication and config
+pages were rechecked on **26 September 2026**. Older quotes retain their individual retrieval
+dates. This is a source-based product note, not legal advice; check current terms and your
+organisation's policy for your own account.
 
-## The short answer
+## Current summary — 26 September 2026
 
-| Design | Allowed? | The deciding sentence |
+| Design | What the published documentation establishes | What this router does |
 |---|---|---|
-| **A. Intercepting proxy** – Claude Code signed in with the plan, `ANTHROPIC_BASE_URL` → local router; router forwards some requests unchanged to Anthropic and answers others with a different model | **Forwarding unchanged: documented and allowed. Answering with a non-Claude model: not forbidden, but "not supported" by Anthropic.** Personal use on your own machine only. | "Setting only that variable … a saved claude.ai login remains the active credential, so its usage limits and billing apply" / "doesn't support routing Claude Code to non-Claude models through any gateway" |
-| **B. Switch mode** – cheap mode = Claude Code with the router's own gateway credential; plan mode = Claude Code signed in with the plan, talking to Anthropic directly; one conversation moves between them with `--resume` | **Allowed.** Both modes are documented, the router never touches the plan's login, and the plan side is the unmodified client used by its owner. | "the credential replaces the subscription login for that session" + "Nor does it prevent an end user from signing in to the unmodified Claude Code binary with their own Claude subscription" |
-| **C. Job launcher** – decide per task which official CLI to start | **Allowed.** | as B |
-| **D. Delegate tool** – the plan model stays in charge inside the official client; an MCP tool hands sub-tasks to cheap models | **Allowed.** MCP servers and tools are ordinary documented features; no credential is involved. | — |
-| Any design that lifts the plan's OAuth token out of the client, or serves other people from one plan | **Not allowed** | "developers may not collect, store, or intermediate Claude.ai credentials or session tokens" / "route requests through Free, Pro, or Max plan credentials on behalf of their users" |
+| **A. Claude Code gateway pass-through** – `ANTHROPIC_BASE_URL` points to a local router, without a gateway credential | Anthropic documents that the saved subscription login remains active and plan limits and billing apply. It says non-Claude routing through gateways is unsupported. Its legal page restricts developers from collecting, storing, or intermediating Claude.ai credentials or session tokens. These statements do not settle how the restriction applies to each user's local setup. | The gateway is a separate opt-in. By default, subscription-authenticated traffic passes through to Anthropic unchanged. Use only with your own login on your own machine, and check your agreement and organisation policy. |
+| **B. Claude Code switch mode** – the official client runs on the user's plan or on a separate provider credential | The vendor documents both client sign-in modes; in plan mode the unmodified client connects directly to Anthropic. | Available through `auto-router switch`; recommended when users do not want the router to receive subscription-authenticated traffic. |
+| **C. `route-run`** – choose which official CLI runs a task | Running the vendor's own CLI uses its ordinary account limits and terms. | Available for Claude Code and Codex; the official CLI performs the plan-backed work. |
+| **D. MCP delegation** – the official plan client calls a local tool for a sub-task | MCP is a documented integration mechanism. Users remain responsible for their account and data policies. | Available as an opt-in local tool; it does not extract a plan login. |
+| **Codex gateway configuration** | Codex documents custom providers and ChatGPT authentication for proxy use. This router has not implemented or live-tested that gateway path. | The supported plan paths use the official Codex CLI through `route-run` or MCP delegation. |
 
-Codex / ChatGPT plan: the same split. A proxy in front of Codex with the ChatGPT sign-in is
-documented ("useful when you access OpenAI models through an LLM proxy server"); switching
-between ChatGPT sign-in and an API-key/custom provider is two documented modes; an MCP tool
-is a documented feature. Nothing in OpenAI's Terms of Use forbids any of these for your own
-account. What is technically possible today differs — see the bottom of this file.
+Codex / ChatGPT plan: Codex documents custom providers and ChatGPT authentication for proxy
+use. This repository has not implemented or live-tested a ChatGPT-authenticated Codex gateway,
+and this note makes no broader legal conclusion. Its plan paths run the user's own official
+Codex CLI through `route-run` or MCP delegation.
 
 ---
 
@@ -29,11 +28,11 @@ account. What is technically possible today differs — see the bottom of this f
 
 > `ANTHROPIC_BASE_URL` is the variable that points Claude Code at the gateway. Setting only that variable, without a gateway credential, doesn't replace the subscription. Requests still route through the gateway, but a saved claude.ai login remains the active credential, so its usage limits and billing apply. Gateways that pass this traffic on to Anthropic must forward the OAuth capability in `anthropic-beta`; see the request headers reference.
 
-— <https://code.claude.com/docs/en/llm-gateway> § *Subscriptions and gateways* (retrieved 19 Sep 2026)
+— <https://code.claude.com/docs/en/llm-gateway> § *Subscriptions and gateways* (retrieved 26 Sep 2026)
 
 > `anthropic-beta` … When the developer authenticates with a claude.ai login, which is possible when `ANTHROPIC_BASE_URL` is set without a gateway credential variable, this header also carries an OAuth capability that the upstream requires, and stripping it fails those requests with `401`
 
-— <https://code.claude.com/docs/en/llm-gateway-protocol#request-headers> (retrieved 19 Sep 2026)
+— <https://code.claude.com/docs/en/llm-gateway-protocol#request-headers> (retrieved 26 Sep 2026)
 
 So a local router that forwards a plan-authenticated request unchanged to `api.anthropic.com`
 is a configuration Anthropic describes and tells gateway authors how to implement.
@@ -42,14 +41,11 @@ is a configuration Anthropic describes and tells gateway authors how to implemen
 
 > Any gateway that exposes a supported API format works. Anthropic doesn't endorse, maintain, or audit third-party gateway products, and doesn't support routing Claude Code to non-Claude models through any gateway.
 
-— <https://code.claude.com/docs/en/llm-gateway> (retrieved 19 Sep 2026)
+— <https://code.claude.com/docs/en/llm-gateway> (retrieved 26 Sep 2026)
 
-"Doesn't support" is a support statement, not a prohibition: nothing in the Consumer Terms,
-the Usage Policy or the legal page forbids a local gateway from answering a request itself.
-When it does, the plan's token is not used for that request at all (the router authenticates
-to the other provider with its own key). But it is exactly the configuration Anthropic says it
-will not help with, and it breaks in ways Anthropic will not fix (we hit two such breaks in
-one morning — §5).
+Anthropic's support statement does not settle the legal status of every local use. This
+repository keeps non-Claude routing behind a separate opt-in, explains the vendor's support
+and credential language, and recommends switch mode or MCP delegation.
 
 ### 1.3 The line that matters for a *published* tool
 
@@ -59,22 +55,19 @@ one morning — §5).
 
 > Anthropic reserves the right to take measures to enforce these restrictions and may do so without prior notice.
 
-— <https://code.claude.com/docs/en/legal-and-compliance> § *Authentication and credential use* (retrieved 19 Sep 2026)
+— <https://code.claude.com/docs/en/legal-and-compliance> § *Authentication and credential use* (retrieved 26 Sep 2026)
 
 How this applies:
 
 - **(a) personal use vs a product for others.** A developer running a gateway on their own machine,
-  for their own login, is the documented gateway configuration of §1.1. Publishing software
-  that *other people* run the same way is where "developers may not … intermediate Claude.ai
-  credentials or session tokens" becomes relevant: in design A the plan's token passes
-  through the router process on every request, even though it is only forwarded, never read,
-  stored or sent elsewhere. Anthropic documents gateways that do exactly this, so it is not
-  clearly forbidden — but it is the one design whose published form sits closest to that
-  sentence. Hence: design A stays **off by default** in the published router, labelled
-  "unsupported by Anthropic, for your own login on your own machine", and the page
-  recommends design B.
-- **(b) forwarding unchanged vs answering with another model.** Forwarding: documented.
-  Answering: unsupported, not forbidden (§1.2).
+  for their own login, is the gateway configuration Anthropic documents in §1.1. The same
+  legal page restricts developers from intermediating Claude.ai credentials. Because a public
+  router can be installed by others, this repository does not claim that local pass-through
+  is legally cleared: it stays opt-in, is labelled for a user's own login on their own machine,
+  and the page recommends design B.
+- **(b) forwarding unchanged vs answering with another model.** Forwarding: documented in the
+  gateway setup page. Answering: unsupported by Anthropic. Neither statement is a complete
+  legal analysis (§1.2).
 - **(c) switching between the two supported modes (design B).** Each half is documented on
   its own: with a gateway credential "the credential replaces the subscription login for that
   session, and the subscription's usage limits don't apply"
@@ -94,7 +87,7 @@ How this applies:
 
 > Claude Code usage is subject to the Anthropic Usage Policy. Advertised usage limits for Pro and Max plans assume ordinary, individual usage of Claude Code and the Agent SDK.
 
-— <https://code.claude.com/docs/en/legal-and-compliance> § *Acceptable use* (retrieved 19 Sep 2026)
+— <https://code.claude.com/docs/en/legal-and-compliance> § *Acceptable use* (retrieved 26 Sep 2026)
 
 Claude Code — including its headless `-p` mode, hooks and `--resume` — is the explicitly
 permitted way to use a plan by program. Every design above keeps the plan inside Claude
@@ -111,7 +104,7 @@ individual usage" is still the ceiling: one person's own work, not a server farm
 
 > When you sign in with an API key, Codex uses standard API pricing instead of included ChatGPT plan credits.
 
-— <https://learn.chatgpt.com/docs/auth> (the page `developers.openai.com/codex/auth` redirects to; retrieved 19 Sep 2026)
+— <https://learn.chatgpt.com/docs/auth> (the page `developers.openai.com/codex/auth` redirects to; retrieved 26 Sep 2026)
 
 > You can also target a specific session ID with `codex exec resume <SESSION_ID>`.
 
@@ -119,7 +112,7 @@ individual usage" is still the ceiling: one person's own work, not a server farm
 
 > `mcp_servers.<id>.default_tools_approval_mode` — auto | prompt | writes | approve — Default approval behavior for MCP tools on this server unless a per-tool override exists.
 
-— <https://learn.chatgpt.com/docs/config-file/config-reference> (retrieved 19 Sep 2026)
+— <https://learn.chatgpt.com/docs/config-file/config-reference> (retrieved 26 Sep 2026)
 
 OpenAI **Terms of Use** (effective 1 January 2026), read on 19 Sep 2026 in a normal browser
 session (the page answers scripted requests with HTTP 403; it was opened once as an
@@ -144,7 +137,7 @@ models" was found.
 
 | Mode | In the router | Default |
 |---|---|---|
-| A. intercepting proxy | `AUTO_ROUTER_SUBSCRIPTION_MODE=route_others` (existing; two translation bugs fixed today) | **off**; documented as "unsupported by Anthropic; own login, own machine" |
+| A. intercepting proxy | `AUTO_ROUTER_SUBSCRIPTION_MODE=route_others` | **off**; separate opt-in; states Anthropic's support position and credential restrictions |
 | B. switch mode | `python -m auto_router.switch` (new) | the recommended way to combine a plan with the router |
 | C. job launcher | `route-run` / `python -m auto_router.launcher` (existing) | unchanged |
 | D. delegate tool | `python -m auto_router.delegate` (new MCP server) | opt-in per client |
@@ -154,13 +147,13 @@ Hard rules kept in code (`auto_router/plan_auth.py`, `switch.py`): a plan creden
 `ANTHROPIC_BASE_URL` and no credential variable; the gateway never picks a plan route for a
 request that does not carry the plan's own login.
 
-## 4. Codex: what is allowed is not all possible yet
+## 4. Codex: the proxy path is not implemented here
 
 A Codex "cheap mode" needs an OpenAI **Responses API** endpoint (`wire_api = "responses"` is
 "the only supported value"). The router has none. The local LiteLLM Responses bridge was
 tried on 19 Sep: Codex got a malformed stream ("OutputTextDelta without active item") with
-one model and a reconnect loop with another. So for Codex, A and B are allowed but not built;
-C and D work (D verified live with `codex exec` on the ChatGPT plan).
+one model and a reconnect loop with another. This router does not expose that Codex gateway;
+`route-run` and MCP delegation call the official `codex exec` client and are covered by tests.
 
 ## 5. Why "unsupported" is not an empty word (measured 19 Sep 2026)
 
@@ -177,6 +170,10 @@ Both are fixed in the router, with tests. The next one will arrive with a Claude
 ---
 
 ## Earlier reading (18 Sep 2026)
+
+Historical source excerpts follow. The legal and product-status conclusions from 18 September
+are superseded by the current 26 September summary above. In particular, the earlier use of
+"allowed" and "not forbidden" was too categorical and must not be relied on.
 
 ### Using a flat-rate coding plan through a router — what the vendors actually allow
 
@@ -217,10 +214,10 @@ The compatibility guide says the same thing from the gateway operator's side, in
 — <https://code.claude.com/docs/en/llm-gateway-protocol#request-headers>
 
 So: Claude Code, signed in with its own claude.ai login, talking to a gateway that
-forwards its requests to Anthropic, is a configuration Anthropic describes, supports
-and tells gateway authors how to implement. The plan pays. That is exactly what
-Florian asked for — "the original Claude Code http request is basically used in a way
-that uses that Opus 5 model from the Claude quota" — and it is allowed.
+forwards its requests to Anthropic, is a configuration the gateway documentation
+describes and tells gateway authors how to implement. The plan pays. The legal page's
+separate restrictions on developer handling of subscription credentials still apply;
+see the current summary above.
 
 Two limits stated on the same page:
 

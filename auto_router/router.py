@@ -156,6 +156,8 @@ class RouteResult:
             head["X-Router-Cache"] = self.explanation.cache.status
             if self.explanation.selection.safe_fallback:
                 head["X-Router-Safe-Fallback"] = self.explanation.selection.safe_fallback
+            if self.model.capability_assumed_from:
+                head["X-Router-Capability-Assumed-From"] = self.model.capability_assumed_from
             verdict = self.explanation.verification
             if verdict is not None and verdict.verified and verdict.p_adequate is not None:
                 head["X-Router-Verified"] = f"{verdict.p_adequate:.2f}"
@@ -181,7 +183,14 @@ class Router:
         #: same - but no judge, and then nothing is ever checked and nothing is
         #: priced as if it were.
         self.verify = VerifyPolicy.from_config(config.policy or {})
-        self.judge = judge or (jev.judge if os.environ.get("TYPESAFE_API_KEY") else None)
+        if self.verify.threshold_active:
+            self.verify = replace(self.verify, reference=config.intelligence_reference)
+        self.judge = judge or jev.judge_from_config(config.policy)
+        #: Which judge answers, for the decision record.
+        self.judge_backend = (None if self.judge is None else
+                              jev.LOCAL_SOURCE if isinstance(getattr(self.judge, "__self__", None),
+                                                             jev.LocalJevClass)
+                              else "hosted-jev" if self.judge is jev.judge else "custom")
         if isinstance(self.policy, ExpectedCostPolicy) and self.policy.verify is None:
             self.policy.verify = self.verify
             self.policy.judge_available = self.judge is not None
@@ -233,8 +242,11 @@ class Router:
         for entry in self.config.raw.get("models") or []:
             if entry.get("subscription") and entry.get("list_price_model"):
                 refs[entry["name"]] = entry["list_price_model"]
+        reference = self.config.catalog
+        if self.config.reference_models is not None:
+            reference = Catalog(self.config.reference_models.all() + self.config.catalog.all())
         return Context(self.config.catalog, self.success, self.quota(), refs,
-                       reference_catalog=self.config.catalog)
+                       reference_catalog=reference)
 
     # -- routing -------------------------------------------------------------
     def conversation_id(self, messages: list[dict], system: Any, tools: Any) -> str:
@@ -556,6 +568,11 @@ class Router:
                          f"basis: {chosen.capability_basis}.")
         if any(c.evidence_stale for c in candidates):
             notes.append("At least one candidate was priced from stale benchmark data.")
+        if model.capability_assumed_from:
+            notes.append(f"Assumed capability: {model.name} was never measured; its capability is "
+                         f"taken from {model.capability_assumed_from} (capability_like).")
+        if model.local:
+            notes.append(f"{model.name} runs locally: priced at zero, local electricity not counted.")
 
         classification = self._classification_record(cls, req, cls_ms, turn_start)
         cache = self._cache_decision(model, conv, req, prefix)
@@ -721,7 +738,8 @@ class Router:
             self.estimator.observe(raw_estimate, prompt_tokens)
 
     # -- verification --------------------------------------------------------
-    def check(self, result: RouteResult, request_text: str, answer: str) -> Verdict:
+    def check(self, result: RouteResult, request_text: str, answer: str, *,
+              tool_calls: bool = False) -> Verdict:
         """Ask the judge whether a cheap route's answer really answers the request.
 
         The request text is a parameter rather than something the router kept:
@@ -735,19 +753,31 @@ class Router:
         judge was never asked".
         """
         carried = result.explanation.verification if result.explanation is not None else None
-        if carried is not None and carried.escalated_to:
-            # This route *is* the second attempt. The verdict that produced it
-            # is the verdict that belongs on it, and grading a stronger model's
-            # answer is the one thing this whole module refuses to do.
-            return carried
         req = result.request
-        applies, why = self.verify.applies(
+        applies, why, info = self.verify.gate(
             result.model, req.category, request_chars=req.request_chars or len(request_text),
             needs_long_context=req.needs_long_context,
             evidence_discount=self.success.evidence_discount,
             judge_available=self.judge is not None)
+        escalations = 0
+        if carried is not None and carried.escalated_to:
+            # This route *is* the second attempt. The verdict that produced it
+            # is the verdict that belongs on it, and grading a stronger model's
+            # answer is the one thing this whole module refuses to do - with
+            # one configured exception: a second route that is itself still
+            # below the intelligence threshold is graded again while the turn
+            # has escalations left (``verify.max_escalations``).
+            if not (applies and info.get("rule") == "intelligence-threshold"
+                    and carried.escalations < self.verify.max_escalations):
+                return carried
+            escalations = carried.escalations
         if not applies:
             verdict = not_verified(why, model=result.model.name, category=req.category)
+        elif tool_calls:
+            # A step that calls a tool is not an answer yet; grading it as one
+            # would flag every healthy step of an agent's tool loop.
+            verdict = not_verified("intermediate tool-call step; only final answers are graded",
+                                   model=result.model.name, category=req.category)
         elif not answer.strip():
             verdict = not_verified("the route returned no text to check",
                                    model=result.model.name, category=req.category)
@@ -760,11 +790,58 @@ class Router:
                                        model=result.model.name, category=req.category)
             else:
                 verdict = verdict_from(judgement, self.verify, req.category, result.model.name)
+        verdict = replace(verdict, rule=info.get("rule"),
+                          intelligence={k: v for k, v in info.items() if k != "rule"},
+                          judge_backend=self.judge_backend if verdict.verified else None,
+                          escalations=escalations)
+        if verdict.judge_failed:
+            verdict = replace(verdict, reason="the judge was unreachable or unusable; "
+                                              "the original answer is returned")
         self._attach_verdict(result, verdict)
+        self._log_check(result, verdict)
         return verdict
 
+    def buffers_stream(self, result: RouteResult, request_text: str) -> bool:
+        """Should this route's stream be held back until its answer is graded?
+
+        Only for routes the intelligence-threshold rule checks, and only when
+        ``verify.buffer_streams`` is on: the caller then gets the whole answer
+        at once (time to first token = generation time plus the judge call),
+        and an escalated answer *replaces* the rejected one instead of being
+        appended after bytes that are already on the wire. Every other route
+        streams exactly as before.
+        """
+        if not self.verify.buffer_streams:
+            return False
+        req = result.request
+        applies, _why, info = self.verify.gate(
+            result.model, req.category, request_chars=req.request_chars or len(request_text),
+            needs_long_context=req.needs_long_context,
+            evidence_discount=self.success.evidence_discount,
+            judge_available=self.judge is not None)
+        return applies and info.get("rule") == "intelligence-threshold"
+
+    def _log_check(self, result: RouteResult, verdict: Verdict) -> None:
+        """Log one check and, once the decision is already in the ledger, append it there.
+
+        The ledger line for a decision is written when its outcome is observed,
+        which is before the answer can be graded, so a check that a rule asked
+        for is followed by a complete second copy of the record carrying the
+        verdict, marked ``"event": "verification"``, with the same decision id.
+        """
+        record = verdict.to_dict()
+        log.info("answer check: model=%s rule=%s intelligence=%s threshold=%s verified=%s "
+                 "p_adequate=%s escalate=%s judge=%s latency_ms=%s reason=%s",
+                 verdict.model, verdict.rule, verdict.intelligence.get("intelligence"),
+                 verdict.intelligence.get("threshold"), verdict.verified, record["p_adequate"],
+                 verdict.escalate, verdict.judge_backend, record["latency_ms"], verdict.reason)
+        if (result.explanation is not None and result.explanation.observed is not None
+                and (verdict.verified or verdict.rule)):
+            self.ledger.write(result.explanation, event="verification")
+
     def escalate_after_verdict(self, result: RouteResult, verdict: Verdict,
-                               messages: list[dict], answer: str
+                               messages: list[dict], answer: str, *,
+                               exclude_subscriptions: bool = False
                                ) -> tuple[RouteResult | None, list[dict], Verdict]:
         """Route the second attempt at a turn the judge rejected.
 
@@ -779,22 +856,27 @@ class Router:
         conv = self.conversations.setdefault(result.conversation_id, Conversation())
         with self._lock:
             bump_floor(conv, verdict, self.verify, result.request.now)
-        retry = self._verified_retry(result, conv) or self.escalate(result)
+        retry = (self._verified_retry(result, conv, verdict.rule, exclude_subscriptions)
+                 or self.escalate(result, exclude_subscriptions=exclude_subscriptions))
         if retry is None:
             verdict = replace(verdict, reason="no stronger route available; the answer stands")
             self._attach_verdict(result, verdict)
+            self._log_check(result, verdict)
             return None, messages, verdict
-        verdict = replace(verdict, escalated_to=retry.model.name)
+        verdict = replace(verdict, escalated_to=retry.model.name,
+                          escalations=verdict.escalations + 1)
         self._attach_verdict(result, verdict)
         self._attach_verdict(retry, verdict)
+        self._log_check(result, verdict)
         return retry, retry_messages(messages, answer, verdict, self.verify), verdict
 
-    def _verified_retry(self, result: RouteResult, conv: Conversation) -> RouteResult | None:
+    def _verified_retry(self, result: RouteResult, conv: Conversation, rule: str | None = None,
+                        exclude_subscriptions: bool = False) -> RouteResult | None:
         """A route clearly stronger than the one the judge rejected, if there is one."""
-        ctx = self.context()
+        ctx = self._retry_context(exclude_subscriptions)
         tried = result.tried | {result.model.name}
         choice = escalation_choice(self.policy, conv, result.request, ctx, result.model.name,
-                                   tried, self.verify)
+                                   tried, self.verify, rule=rule)
         if choice is None:
             return None
         name, reason = choice
@@ -809,7 +891,15 @@ class Router:
         if result.explanation is not None:
             result.explanation.verification = verdict
 
-    def escalate(self, result: RouteResult, *, availability: bool = False) -> RouteResult | None:
+    def _retry_context(self, exclude_subscriptions: bool = False) -> Context:
+        """The routing context for a second attempt; plans dropped when they cannot serve it."""
+        ctx = self.context()
+        if exclude_subscriptions:
+            ctx = replace(ctx, catalog=Catalog([m for m in ctx.catalog.all() if not m.subscription]))
+        return ctx
+
+    def escalate(self, result: RouteResult, *, availability: bool = False,
+                 exclude_subscriptions: bool = False) -> RouteResult | None:
         """Pick a retry route after a failure signal.
 
         Two different failures are handled differently. A *capability* failure
@@ -822,7 +912,7 @@ class Router:
         genuinely nowhere left to go.
         """
         conv = self.conversations.setdefault(result.conversation_id, Conversation())
-        ctx = self.context()
+        ctx = self._retry_context(exclude_subscriptions)
         tried = result.tried | {result.model.name}
         retry = self.policy.on_failure(conv, result.request, ctx, result.model.name, tried)
         reason = retry.reason if retry else ""

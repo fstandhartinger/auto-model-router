@@ -1,0 +1,158 @@
+# A complete, ready-to-edit model list. Point AUTO_ROUTER_CONFIG at a copy
+# (*.local.yaml is git-ignored). API keys are referenced by environment variable
+# name only.
+#
+# Choose which models are routable without editing the list below:
+#   enabled: [...]                      in this file, or
+#   AUTO_ROUTER_MODELS=glm-5.3-flash,bonsai-2-local,sonnet-5-api   (wins over enabled:)
+# An unknown name is an error, so a typo cannot silently shrink the catalog.
+#
+# bench_id values are Benchmark Heaven variant ids (GET /api/models/{id}), checked
+# on 25 Sep 2026. Which reasoning-effort variant a client actually runs is an
+# assumption noted per model: the router passes the caller's request through
+# unchanged and does not set the effort itself.
+
+enabled: [opus-5.5-plan, sonnet-5-plan, opus-5.5-api, sonnet-5-api, gpt-6-luna, gpt-6-astra,
+          glm-5.3-flash, bonsai-2-local]
+
+providers:
+  # Anthropic's metered API through its OpenAI-compatible endpoint.
+  anthropic-api:
+    base_url: https://api.anthropic.com/v1
+    api_key_env: ANTHROPIC_API_KEY
+    cache: anthropic
+  # The Claude plan: requests carrying the user's own claude.ai login are passed
+  # through unchanged by a gateway on the user's own machine (opt-in; the router
+  # never stores or logs the token). See the README, "Four ways to use a flat-rate plan".
+  anthropic:
+    base_url: https://api.anthropic.com/v1
+    api: anthropic
+    cache: anthropic
+  openai:
+    base_url: https://api.openai.com/v1
+    api_key_env: OPENAI_API_KEY
+    cache: openai
+    max_tokens_field: max_completion_tokens   # GPT-6 models reject max_tokens
+  tensorx:
+    base_url: https://api.tensorx.ai/v1      # verified with GET /models on 25 Sep 2026
+    api_key_env: TENSORX_API_KEY
+    cache: generic
+  # Free local targets: loopback URLs are "local" automatically (price 0, no key).
+  llama-cpp:
+    base_url: http://127.0.0.1:8080/v1        # llama-server --port 8080
+  lm-studio:
+    base_url: http://127.0.0.1:1234/v1
+  ollama:
+    base_url: http://127.0.0.1:11434/v1
+
+subscriptions:
+  claude:
+    budget_file: ~/.agent-budget.json
+    weekly_reserve: 0.65
+    hard_stop: 0.80
+
+policy:
+  name: F_expected
+  # Routing classifier. local-jev = an open Jev-class decision model on this
+  # machine (for example JevK5 v0.2 GGUF, Apache-2.0, served by llama-server).
+  # Alternatives: {backend: local} (Laya on CPU), {backend: hosted} (Jev with
+  # your own TYPESAFE_API_KEY), {backend: heuristic}.
+  classifier:
+    backend: local-jev
+    base_url: http://127.0.0.1:8081/v1
+    model: jevk5-v0.2-q4_k_m
+    prompt_format: chatml         # raw ChatML via /completions; use `chat` for Ollama
+    temperature: 1.532            # the JevK5 v0.2 card's calibration temperature
+  verify:
+    enabled: true
+    judge: same-as-classifier     # or {backend: hosted} / {backend: local-jev, base_url: ...}
+    # Grade every final answer from a route whose intelligence is below GPT-5.6
+    # Terra's on Benchmark Heaven, and escalate when the judge rejects it.
+    intelligence_threshold:
+      enabled: true
+      reference_model: gpt-5.6-terra::max   # AA Intelligence Index 42.1 on 25 Sep 2026
+      value: 42.1                           # used only if the reference is not in the data
+      per_category: true
+      unknown: check                        # a route with no intelligence data is checked
+    max_escalations: 1
+    buffer_streams: true          # hold a checked route's stream until it is graded
+
+models:
+  # -- Claude through the user's own plan (pass-through, never graded) ---------
+  - name: opus-5.5-plan
+    provider: anthropic
+    upstream_id: claude-opus-5-5
+    bench_id: claude-opus-5.5::high      # assumption: the client runs high effort
+    success_key: claude-opus-5.5
+    subscription: claude
+    list_price_model: opus-5.5-api       # shadow price when the plan's quota gets tight
+    cache_family: anthropic
+    vision: true
+  - name: sonnet-5-plan
+    provider: anthropic
+    upstream_id: claude-sonnet-5
+    bench_id: claude-sonnet-5::high
+    success_key: claude-sonnet-5
+    subscription: claude
+    list_price_model: sonnet-5-api
+    cache_family: anthropic
+    vision: true
+
+  # -- Claude, metered API -----------------------------------------------------
+  - name: opus-5.5-api
+    provider: anthropic-api
+    upstream_id: claude-opus-5-5
+    bench_id: claude-opus-5.5::high
+    bench_offer: {platform: Anthropic, provider: Anthropic}   # $4 / $20, read $0.20, write $5
+    success_key: claude-opus-5.5
+    vision: true
+  - name: sonnet-5-api
+    provider: anthropic-api
+    upstream_id: claude-sonnet-5
+    bench_id: claude-sonnet-5::high
+    bench_offer: {platform: Anthropic, provider: Anthropic}   # $2 / $10, read $0.20, write $2.50
+    success_key: claude-sonnet-5
+    vision: true
+
+  # -- OpenAI API ---------------------------------------------------------------
+  - name: gpt-6-luna
+    provider: openai
+    upstream_id: gpt-6-luna
+    bench_id: gpt-6-luna::medium          # assumption: API default effort
+    bench_offer: {platform: OpenRouter, provider: OpenAI}     # base tier $0.10 / $0.50
+    cache_write_premium: false            # OpenAI bills cache writes as plain input
+  - name: gpt-6-astra
+    provider: openai
+    upstream_id: gpt-6-astra
+    bench_id: gpt-6-astra::medium
+    bench_offer: {platform: OpenRouter, provider: OpenAI}     # base tier $10 / $50
+    cache_write_premium: false
+    vision: true
+
+  # -- GLM-5.3 Flash on TensorX ------------------------------------------------
+  - name: glm-5.3-flash
+    provider: tensorx
+    upstream_id: z-ai/glm-5.3-flash
+    bench_id: glm-5.3-flash::default
+    # List price; overrides whatever offer the benchmark data lists.
+    prices: {input: 0.20, output: 0.50, cache_read: 0.05}
+    context_tokens: 1048576
+
+  # -- Free local models ---------------------------------------------------------
+  # Bonsai 2: prism-ml/Ternary-Bonsai-2-27B-gguf served by llama.cpp or LM Studio.
+  # Price 0 (~zero cost, local electricity not counted). Benchmark Heaven lists
+  # the model but has no scores for it, so its capability is ASSUMED equal to
+  # Qwen3.8 27B (medium) - the base family of this ternary build. Not measured;
+  # every decision record that involves it says so.
+  - name: bonsai-2-local
+    provider: llama-cpp
+    upstream_id: ternary-bonsai-2-27b
+    bench_id: ternary-bonsai-2-27b::default
+    capability_like: qwen3.8-27b::medium
+    context_tokens: 131072
+    latency_s: 3
+  # Any other model on LM Studio or Ollama works the same way, for example:
+  # - name: local-qwen
+  #   provider: ollama
+  #   upstream_id: qwen3.8:27b
+  #   capability_like: qwen3.8-27b::medium
