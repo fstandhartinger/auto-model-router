@@ -1,6 +1,6 @@
 # Changes
 
-## Unreleased — live benchmark data, local models, intelligence-threshold check (26 Sep 2026)
+## 0.5.0 — live benchmark data, local models, quality escalation (26 Sep 2026)
 
 - **Benchmark Heaven endpoints checked against the live site** (25 Sep 2026):
   `/api/models/{id}` and `/api/benchmaxxing?report={id}` were current; the
@@ -39,11 +39,15 @@
   `verify.buffer_streams`, `verify.judge`. Every check is logged with the
   numbers and appended to the ledger as an `"event": "verification"` copy.
   Intermediate tool-call steps are no longer graded on any rule.
+- **Optional installers** for Linux, macOS, WSL and Windows PowerShell. They detect
+  installed harnesses, check API-key variable names without printing values, ask which
+  model groups and harnesses to configure, and provide `auto-router doctor` for an
+  offline installation smoke check. Local Bonsai 2 and Jev-class packages are opt-in.
 - Tests: `test_bench_live_data.py`, `test_local_models.py`,
   `test_intelligence_threshold.py`, `test_cache_warmth.py` (fake servers on
   loopback; no real network).
 
-## Unreleased — copy symlinks and installer control-flow tests (22 Sep 2026)
+## 0.5.0 — copy symlinks and installer control-flow tests (22 Sep 2026)
 
 Follow-up to 0.4.0 (commit b7bda45). Not independently reviewed; no live
 worker or real installation was run.
