@@ -35,6 +35,21 @@ not start below the level this one just proved it needs.
 Thresholds and the measured rates that go with them live in the config under
 ``policy.verify``; the defaults here are the ones the calibration in
 ``experiments/verify_calibrate.py`` chose on the 78-task set.
+
+The intelligence-threshold rule
+-------------------------------
+A second, independent reason to check an answer: the route's model is *less
+intelligent than a named reference model* - by default GPT-5.6 Terra - on the
+benchmark data (``policy.verify.intelligence_threshold``). The comparison is
+per category when both models have a directly measured score for the request's
+category, and on the headline intelligence index otherwise. A route whose
+intelligence is unknown is checked. The reference's number comes from the
+benchmark data (network, disk cache or bundled snapshot); a configured
+``value`` is used when the reference is not in the data. This rule was set by
+the operator, not calibrated: the catch and false-flag rates above were
+measured on the cheap tier and are assumed, not measured, for these routes.
+Answers served through a plan's own login pass through unchanged and are never
+graded by either rule.
 """
 
 from __future__ import annotations
@@ -138,6 +153,20 @@ class VerifyPolicy:
     min_capability_gain: float = 4.0
     judge_usd: float = DEFAULT_JUDGE_USD
     judge_seconds: float = DEFAULT_JUDGE_SECONDS
+    #: ``{enabled, reference_model, value, per_category, unknown}``; None = off.
+    #: See the module docstring.
+    intelligence_threshold: dict | None = None
+    #: The resolved reference (``config.resolve_reference``): its intelligence
+    #: index and per-category capability, and where they came from.
+    reference: dict | None = None
+    #: Verified escalations allowed per turn. Above 1 a second route that is
+    #: still below the intelligence threshold is graded again.
+    max_escalations: int = 1
+    #: Hold back a streamed answer from a below-threshold route until it has
+    #: been graded, so an escalated answer can replace it instead of being
+    #: appended. Costs the whole generation time as time-to-first-token on
+    #: those routes only; off means stream-then-check as before.
+    buffer_streams: bool = True
 
     @classmethod
     def from_config(cls, policy: dict[str, Any] | None) -> "VerifyPolicy":
@@ -154,7 +183,56 @@ class VerifyPolicy:
                 default = dict(getattr(cls(), name))
                 default.update({str(k): float(v) for k, v in (kwargs[name] or {}).items()})
                 kwargs[name] = default
+        if "max_escalations" in kwargs:
+            kwargs["max_escalations"] = max(0, int(kwargs["max_escalations"]))
+        if kwargs.get("intelligence_threshold") is not None and not isinstance(
+                kwargs["intelligence_threshold"], dict):
+            raise ValueError("verify.intelligence_threshold must be a mapping")
         return cls(**kwargs)
+
+    # -- the intelligence threshold -----------------------------------------
+    @property
+    def threshold_active(self) -> bool:
+        conf = self.intelligence_threshold
+        return isinstance(conf, dict) and conf.get("enabled", True) is not False
+
+    def intelligence_gate(self, model: ModelInfo, category: str) -> tuple[bool | None, dict]:
+        """Is ``model`` below the reference? ``(None, info)`` when the rule cannot decide.
+
+        ``info`` is what the decision record logs: the model's number, the
+        threshold, which scale they were compared on and where the threshold
+        came from. It never contains request or answer text.
+        """
+        if not self.threshold_active:
+            return None, {}
+        conf = self.intelligence_threshold or {}
+        ref = self.reference or {}
+        info: dict[str, Any] = {
+            "reference_model": ref.get("resolved_id") or conf.get("reference_model"),
+            "threshold_source": ref.get("source") or "none",
+            "intelligence": model.intelligence_index,
+        }
+        if model.capability_assumed_from:
+            info["intelligence_assumed_from"] = model.capability_assumed_from
+        ref_cat = (ref.get("capability") or {}).get(category) or {}
+        if (conf.get("per_category", True) and ref_cat.get("strength") == "direct"
+                and model.capability_strength.get(category) == "direct"
+                and category in model.capability):
+            info.update(intelligence=round(model.capability[category], 2),
+                        threshold=ref_cat.get("value"), threshold_basis=f"category:{category}")
+            return model.capability[category] < float(ref_cat["value"]), info
+        threshold = ref.get("intelligence_index")
+        if threshold is None and conf.get("value") is not None:
+            threshold = float(conf["value"])
+            info["threshold_source"] = "configured-value"
+        info.update(threshold=threshold, threshold_basis="intelligence_index")
+        if threshold is None:
+            info["note"] = "no threshold: the reference is not in the benchmark data and no value is configured"
+            return None, info
+        if model.intelligence_index is None:
+            info["note"] = "the route's intelligence is unknown"
+            return (str(conf.get("unknown", "check")).lower() != "skip"), info
+        return model.intelligence_index < float(threshold), info
 
     # -- per-category numbers ------------------------------------------------
     def threshold(self, category: str) -> float:
@@ -188,10 +266,23 @@ class VerifyPolicy:
                 needs_long_context: bool = False, evidence_discount: float = 0.0,
                 judge_available: bool = True) -> tuple[bool, str]:
         """Should this answer be checked? Returns (yes, reason-when-not)."""
+        ok, why, _info = self.gate(model, category, request_chars=request_chars,
+                                   needs_long_context=needs_long_context,
+                                   evidence_discount=evidence_discount,
+                                   judge_available=judge_available)
+        return ok, why
+
+    def gate(self, model: ModelInfo, category: str, *, request_chars: int = 0,
+             needs_long_context: bool = False, evidence_discount: float = 0.0,
+             judge_available: bool = True) -> tuple[bool, str, dict]:
+        """``applies`` plus which rule fired and the intelligence numbers behind it."""
+        below, info = (self.intelligence_gate(model, category)
+                       if model.name not in self.never and not model.subscription
+                       else (None, {}))
         if not self.enabled:
-            return False, "verification disabled"
+            return False, "verification disabled", info
         if not judge_available:
-            return False, "no judge configured"
+            return False, "no judge configured", info
         # The request's own reasons come first. Whether the judge can see what
         # the answer depends on is a property of the *question*, true of every
         # route; reporting "this route is too strong to grade" instead would
@@ -199,13 +290,20 @@ class VerifyPolicy:
         # which route happened to answer.
         if category in self.skip_categories or needs_long_context:
             return False, ("the judge cannot see the document this answer depends on "
-                           f"(category {category})")
+                           f"(category {category})"), info
         if request_chars > self.max_request_chars:
             return False, (f"request is {request_chars} characters; beyond "
-                           f"{self.max_request_chars} the judge would grade what it cannot read")
-        if not self.tier_ok(model, category, evidence_discount):
-            return False, f"{model.name} is above the verified cheap tier"
-        return True, ""
+                           f"{self.max_request_chars} the judge would grade what it cannot read"), info
+        if self.tier_ok(model, category, evidence_discount):
+            return True, "", {**info, "rule": "cheap-tier"}
+        if below:
+            return True, "", {**info, "rule": "intelligence-threshold"}
+        why = f"{model.name} is above the verified cheap tier"
+        if below is False:
+            why += (f" and not below the intelligence threshold "
+                    f"({info.get('intelligence')} >= {info.get('threshold')}, "
+                    f"{info.get('threshold_basis')})")
+        return False, why, info
 
 
 @dataclass(frozen=True)
@@ -231,6 +329,15 @@ class Verdict:
     category: str = ""
     model: str = ""
     escalated_to: str | None = None
+    #: Which rule asked for the check: ``cheap-tier`` or ``intelligence-threshold``.
+    rule: str | None = None
+    #: The intelligence-threshold numbers (model, threshold, basis, source);
+    #: empty when the rule is off. Numbers and ids only.
+    intelligence: dict = field(default_factory=dict)
+    #: Which judge answered: ``hosted-jev`` or ``local-jev-class``.
+    judge_backend: str | None = None
+    #: Verified escalations that already happened in this turn before this check.
+    escalations: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -246,6 +353,11 @@ class Verdict:
             "judge_model": self.judge_model or None,
             "escalated_to": self.escalated_to,
             "reason": self.reason or None,
+            "rule": self.rule,
+            "intelligence": dict(self.intelligence) or None,
+            "judge_backend": self.judge_backend,
+            "judge_latency_ms": round(self.latency_ms, 1) if self.verified else None,
+            "escalations": self.escalations,
         }
 
     def chip(self, label: str | None = None) -> str:
@@ -313,7 +425,7 @@ def retry_messages(messages: list[dict], answer: str, verdict: Verdict,
 
 
 def escalation_choice(routing_policy, conversation, request, ctx, failed: str, tried: set[str],
-                      policy: VerifyPolicy):
+                      policy: VerifyPolicy, rule: str | None = None):
     """The cheapest *meaningfully* stronger route by the policy's own ranking.
 
     ``Policy.on_failure`` accepts any route rated more than one capability point
@@ -335,9 +447,17 @@ def escalation_choice(routing_policy, conversation, request, ctx, failed: str, t
               and value != float("inf")]
     if not scored:
         return None
+    note = ""
+    if rule == "intelligence-threshold":
+        # The rule is "below the reference is checked", so the step up prefers
+        # a route that is not below it; only when none exists does it settle
+        # for the strongest step it can get.
+        above = [(v, m) for v, m in scored if policy.intelligence_gate(m, request.category)[0] is False]
+        if above:
+            scored, note = above, " at or above the intelligence threshold"
     value, model = min(scored, key=lambda pair: pair[0])
     return model.name, (f"the judge rejected {failed}: escalating to the cheapest route at least "
-                        f"{policy.min_capability_gain:g} capability points stronger "
+                        f"{policy.min_capability_gain:g} capability points stronger{note} "
                         f"(expected ${value:.4f})")
 
 

@@ -39,10 +39,22 @@ class RoutingLedger:
     def enabled(self) -> bool:
         return self.path is not None
 
-    def write(self, explanation) -> bool:
+    def write(self, explanation, *, event: str | None = None) -> bool:
+        """Append one decision record.
+
+        ``event`` marks a later, complete copy of a decision that was already
+        written - the answer check happens after the outcome line - with the
+        same ``id``. A reader keeps the last line per id.
+        """
+        record = explanation.to_dict()
+        if event:
+            record["event"] = event
+        return self._append(record)
+
+    def _append(self, record: dict) -> bool:
         if self.path is None:
             return False
-        line = json.dumps(explanation.to_dict(), separators=(",", ":"), default=str)
+        line = json.dumps(record, separators=(",", ":"), default=str)
         with self._lock:
             try:
                 self.path.parent.mkdir(parents=True, exist_ok=True)

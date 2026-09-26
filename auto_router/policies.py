@@ -134,7 +134,9 @@ def turn_call_cost(model: ModelInfo, req: TurnRequest, warm_tokens: int, ctx: Co
         return math.inf
     total = 0.0
     prompt, warm = req.prompt_tokens, warm_tokens
-    per_step_out = max(1, req.output_tokens // max(1, req.steps))
+    # A model's measured tokens per benchmark task scale what it is expected
+    # to write for the same turn (1.0 when unmeasured; see config.py).
+    per_step_out = max(1, int(req.output_tokens * model.output_appetite) // max(1, req.steps))
     for _ in range(max(1, req.steps)):
         total += turn_cost(effective, prompt, warm, per_step_out)
         warm = prompt + per_step_out

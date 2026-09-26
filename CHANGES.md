@@ -1,5 +1,48 @@
 # Changes
 
+## Unreleased — live benchmark data, local models, intelligence-threshold check (26 Sep 2026)
+
+- **Benchmark Heaven endpoints checked against the live site** (25 Sep 2026):
+  `/api/models/{id}` and `/api/benchmaxxing?report={id}` were current; the
+  client now also reads `efficiency.global_io_ratio` from `/api/price-comparison`.
+  New last-resort **bundled snapshot** (`auto_router/data/bench-snapshot.json`,
+  minimal fields, fetch date and source URL) used only when neither the network
+  nor the disk cache has a document; provenance `bundled-snapshot`, always
+  stale. `AUTO_ROUTER_BENCH_SNAPSHOT=0` disables it; it never stands in for a
+  different benchmark origin.
+- **Cost per task feeds the cost model.** Measured output tokens per benchmark
+  task scale each route's expected output relative to the catalog median
+  (bounded 0.25x-4x; `policy.token_appetite: false` turns it off). The decision
+  evidence records the numbers.
+- **`python -m auto_router.bench`**: `--show <id>` (scores, prices, tokens and
+  cost per task, provenance), `--refresh [ids]`, `--write-snapshot`.
+- **`examples/models.yaml`**: Claude Opus 5.5 and Sonnet 5 (plan pass-through
+  and metered), GPT-6 Luna and Astra, GLM-5.3 Flash on TensorX, Bonsai 2 on
+  llama.cpp, local Jev-class classifier and judge. `enabled:` and
+  `AUTO_ROUTER_MODELS` choose the routable models; an unknown name is an error.
+  A disabled route still prices a plan route that names it as `list_price_model`.
+- **Free local targets.** Loopback providers (LM Studio, llama.cpp, Ollama) are
+  `local`: no key, price 0, "local electricity not counted" in the record.
+- **`capability_like`** borrows another model's benchmark data for an
+  unmeasured model (Bonsai 2 -> Qwen3.8 27B). Recorded as an assumption in the
+  basis, the evidence, a decision note and `X-Router-Capability-Assumed-From`.
+- **`cache_write_premium: false`** and provider **`max_tokens_field`** (GPT-6
+  models reject `max_tokens`; found by a live smoke test).
+- **Local open Jev-class backend** (`classifier.backend: local-jev`,
+  `verify.judge`): option-letter log-probability readout over an
+  OpenAI-compatible endpoint, following the JevK5 v0.2 recipe. Usable as
+  classifier and judge; outages degrade like the hosted backend.
+- **Intelligence-threshold check** (`verify.intelligence_threshold`): answers of
+  models below a reference (GPT-5.6 Terra) are graded and escalated when
+  rejected, on the OpenAI and Anthropic gateway surfaces, streaming included
+  (buffered for those routes only). `verify.max_escalations`,
+  `verify.buffer_streams`, `verify.judge`. Every check is logged with the
+  numbers and appended to the ledger as an `"event": "verification"` copy.
+  Intermediate tool-call steps are no longer graded on any rule.
+- Tests: `test_bench_live_data.py`, `test_local_models.py`,
+  `test_intelligence_threshold.py`, `test_cache_warmth.py` (fake servers on
+  loopback; no real network).
+
 ## Unreleased — copy symlinks and installer control-flow tests (22 Sep 2026)
 
 Follow-up to 0.4.0 (commit b7bda45). Not independently reviewed; no live

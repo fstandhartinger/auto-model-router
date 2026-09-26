@@ -38,6 +38,11 @@ class StreamOutcome:
     #: the budget failure would be invisible. Nothing formats this into a
     #: response; only the observation reads it.
     finish_reason: str | None = None
+    #: The streamed answer text and the number of tool calls, kept only so a
+    #: buffered stream can be graded before it is released (verify.py). Never
+    #: written to a record.
+    text: list[str] = field(default_factory=list)
+    tool_calls: int = 0
 
 
 async def translate_stream(
@@ -99,6 +104,7 @@ async def translate_stream(
         content = delta.get("content")
         if content:
             outcome.saw_content = True
+            outcome.text.append(content)
             if text_block is None:
                 text_block = next_index
                 next_index += 1
@@ -122,6 +128,7 @@ async def translate_stream(
                 )
                 next_index += 1
                 tools[oi] = acc
+                outcome.tool_calls += 1
             fn = call.get("function") or {}
             if fn.get("name"):
                 acc.name = fn["name"]

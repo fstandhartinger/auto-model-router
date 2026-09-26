@@ -6,8 +6,8 @@ solved at the lowest expected cost. As a local gateway it sits in front of
 Claude Code (Codex, opencode and Cursor have no gateway mode here yet; see
 "Four ways to use a flat-rate plan"). It can also route *whole jobs* to a coding
 agent's official CLI, and it offers an MCP tool through which Claude Code, Codex,
-opencode or Cursor can hand bounded sub-tasks to cheaper routed workers. What
-the vendors allow there is quoted, with links, in [`TERMS.md`](TERMS.md).
+opencode or Cursor can hand bounded sub-tasks to cheaper routed workers. The
+vendor documentation and its stated limits are linked in [`TERMS.md`](TERMS.md).
 
 Status: experimental, measured. Full method and numbers: [`EXPERIMENTS.md`](EXPERIMENTS.md).
 
@@ -124,8 +124,10 @@ router stays on the turn's model):
    (5xx, a broken connection, an answer the provider says it never finished)
    falls back sideways to the next usable route, because a 503 is not evidence
    that the model was too weak.
-5. **Check the answer — but only a cheap one.** When the answering route is in
-   the cheap tier, Jev is asked one typed question about what came back, and a
+5. **Check the answer — when the route is cheap or below a reference model.**
+   When the answering route is in the cheap tier, or its benchmark intelligence
+   is below a configured reference (GPT-5.6 Terra in `examples/models.yaml`),
+   a Jev-class judge is asked one typed question about what came back, and a
    rejected answer is re-run on a stronger route. See below.
 6. **Record** the decision as four separate objects, plus the verdict — see below.
 
@@ -184,11 +186,62 @@ Three deliberate limits:
   verdict arrives in a final `x_router` chunk and in the decision record, and
   the second answer is only appended for a client that asked for it
   (`"x_router": {"stream_escalate": true}`, or `AUTO_ROUTER_STREAM_ESCALATE=1`).
+  The exception is the intelligence-threshold rule below, which buffers.
 
 The expected-cost policy prices all of this: the judge's own cost, the second
 calls its false alarms buy, and the failures it catches that the user would
 not have. That is what makes a cheap route *more* attractive than it was —
 see "How F decides, plainly".
+
+### Checking any answer from a model below a reference
+
+A second, independent rule (`policy.verify.intelligence_threshold`): when the
+answering model is **less intelligent than a reference model** on Benchmark
+Heaven, its finished answer is graded the same way, whatever it costs.
+
+```yaml
+verify:
+  judge: {backend: local-jev, base_url: http://127.0.0.1:8081/v1}   # or hosted (own TYPESAFE_API_KEY)
+  intelligence_threshold:
+    reference_model: gpt-5.6-terra::max   # AA Intelligence Index 42.1 on 25 Sep 2026
+    value: 42.1                           # used only if the reference is not in the data
+    per_category: true                    # compare the request's category when both sides are measured
+    unknown: check                        # a route with no intelligence data is checked
+  max_escalations: 1
+  buffer_streams: true
+```
+
+- **The comparison.** Per category when both the route and the reference have
+  a directly measured score for the request's category (for coding:
+  `aa_coding_index`, Terra 76.7), otherwise on the headline
+  `aa_intelligence_index` (Terra 42.1). The reference's numbers come from the
+  benchmark data (network, disk cache or bundled snapshot); the configured
+  `value` is used only when the reference is not in the data. On the example
+  model list, Claude Sonnet 5, GPT-6 Luna, GLM-5.3 Flash (41.8) and Bonsai 2 are
+  below; Claude Opus 5.5 and GPT-6 Astra are not.
+- **What happens.** Pass: the answer is returned. Fail: the turn is re-run on
+  the cheapest route that is clearly stronger, preferring one that is not below
+  the threshold, and *that* answer goes back to the coding agent. Judge
+  unreachable: the original answer is returned and the reason is recorded.
+  Intermediate tool-call steps of an agent loop are not graded, only final
+  answers. `max_escalations` above 1 grades a second route again if it is
+  itself still below the threshold.
+- **Streaming.** On the gateway (OpenAI and Anthropic surfaces) a checked
+  route's stream is held back until the answer is graded, so an escalated
+  answer *replaces* the rejected one. The trade-off is latency: on these routes
+  only, nothing reaches the client until the whole first answer is generated and
+  graded (plus a whole second answer when it escalates). Every other route
+  streams as before. `buffer_streams: false` restores stream-then-check.
+- **What is logged.** Every check lands in the decision record's
+  `verification` block: rule, model, its intelligence, the threshold, the basis
+  and source of the threshold, verdict, probability, judge backend, judge
+  latency and escalation target. Because the ledger line is written when the
+  outcome is observed, a checked decision is written a second time with
+  `"event": "verification"` and the same id; keep the last line per id.
+- **Assumptions.** The rule is the operator's choice, not a calibration: the
+  catch and false-flag rates in EXPERIMENTS.md were measured on the cheap tier
+  and are assumed, not measured, for these stronger routes. Answers served
+  through a plan's own login are passed through unchanged and never graded.
 
 ### An answer the provider says it never finished
 
@@ -348,6 +401,7 @@ Choose the routing classifier under `policy.classifier`:
 
 ```yaml
 classifier: {backend: local, model: convaiinnovations/laya, threads: 4}
+# classifier: {backend: local-jev, base_url: http://127.0.0.1:8081/v1, model: jevk5}
 # classifier: {backend: hosted}    # set TYPESAFE_API_KEY
 # classifier: {backend: heuristic} # zero inference cost and latency
 ```
@@ -355,6 +409,68 @@ classifier: {backend: local, model: convaiinnovations/laya, threads: 4}
 Local means the scrubbed routing input stays on the machine. Hosted uses the
 existing Jev API path. If local inference or model loading fails, routing falls
 back cautiously instead of failing the user's LLM call.
+
+**A local open Jev-class model** (`local-jev`) is any decision model served
+behind an OpenAI-compatible endpoint by `llama-server` or LM Studio. The
+backend asks one question per call for a single option letter and turns the
+letters' log-probabilities into probabilities (the published JevK5 v0.2 recipe:
+its ChatML prompt, temperature 1.532); `prompt_format: chat` uses
+`/chat/completions` instead, for servers without raw completions. The same
+backend can grade answers (`verify.judge: same-as-classifier`). Open candidates
+and licences (JevBench v1.4.2 notes): JevK5 v0.2 (Apache-2.0, official GGUF
+Q4_K_M 2.71 GB; a separate local test measured 43/50 on a public 50-item sample
+at 189 ms median on an RTX 3070) and decider-4b v2 (Apache-2.0, BF16 only,
+~8.4 GB). No model is
+downloaded by the router and no non-commercially licensed model is a default.
+The prompt recipe is ported, not re-measured through this backend.
+
+### Models, local targets and benchmark data
+
+[`examples/models.yaml`](examples/models.yaml) is a complete model list:
+Claude Opus 5.5 and Claude Sonnet 5 (plan pass-through and metered API),
+GPT-6 Luna and GPT-6 Astra (OpenAI API), GLM-5.3 Flash on TensorX
+(`https://api.tensorx.ai/v1`, `z-ai/glm-5.3-flash`, $0.20 / $0.50, cache read
+$0.05, 1,048,576 tokens) and Bonsai 2 on llama.cpp, plus a local Jev-class
+classifier and judge. Switch models on and off with `enabled: [...]` in the
+file or `AUTO_ROUTER_MODELS=a,b,c` (which wins); an unknown name is an error.
+
+**Free local targets.** A provider whose `base_url` is on loopback - LM Studio
+(`http://127.0.0.1:1234/v1`), `llama-server` (`http://127.0.0.1:8080/v1`),
+Ollama (`http://127.0.0.1:11434/v1`) - is `local`: no key is sent and its models
+are priced at zero (~zero cost; local electricity and hardware are not
+counted), whatever a hosted offer for the same weights costs.
+
+**Bonsai 2** (`prism-ml/Ternary-Bonsai-2-27B-gguf`) is listed on Benchmark Heaven
+without scores, so its capability is **assumed**, not measured:
+`capability_like: qwen3.8-27b::medium` borrows Qwen3.8 27B's numbers. Every
+basis then reads "assumed like ...", the evidence strength is at most weak,
+the decision record carries a note and the response an
+`X-Router-Capability-Assumed-From` header.
+
+**Benchmark data.** The client reads `GET /api/models/{id}`,
+`GET /api/benchmaxxing?report={id}` and, for cost per task only,
+`efficiency.global_io_ratio` from `GET /api/price-comparison` on
+benchmarkheaven.com (checked 25 Sep 2026). It uses, in order: the network, the
+disk cache (24 h fresh, 7 days stale), then a small bundled snapshot
+(`auto_router/data/bench-snapshot.json`, minimal fields, with fetch date and
+source, provenance `bundled-snapshot`, always treated as stale). Measured
+**output tokens per benchmark task** feed the cost model: each route's
+expected output is scaled by its tokens per task relative to the catalog
+median (bounded 0.25x-4x; `policy.token_appetite: false` turns it off), which
+is the "token appetite" part of Benchmark Heaven's cost per task.
+
+```bash
+python -m auto_router.bench --show gpt-5.6-terra::max   # scores, prices, tokens and cost per task
+python -m auto_router.bench --refresh                   # re-fetch every id in $AUTO_ROUTER_CONFIG
+python -m auto_router.bench --write-snapshot --config examples/models.yaml
+```
+
+**Prompt cache.** Each route is priced at its real cache state: a warm prefix
+is read at the cache-read price, new or expired tokens are written (1.25x input
+on Anthropic's 5-minute cache, plain input elsewhere), the warmth expires with
+the provider's TTL measured from the start of the request, and switching model
+starts cold on the new one. `tests/test_cache_warmth.py` follows this through a
+conversation.
 
 ### Measured classifier comparison (20 September 2026)
 
@@ -392,6 +508,8 @@ Point OpenAI clients at `http://127.0.0.1:8787/v1`, or Claude Code at it with
 | `AUTO_ROUTER_POLICY` | policy name if the config does not set one (default `F_expected`) |
 | `AUTO_ROUTER_BENCH_URL` | benchmark API base URL (default `https://benchmarkheaven.com`) |
 | `AUTO_ROUTER_BENCH_OFFLINE` | `1` = use cached benchmark data only |
+| `AUTO_ROUTER_BENCH_SNAPSHOT` | `0` = never fall back to the bundled benchmark snapshot |
+| `AUTO_ROUTER_MODELS` | comma list of routable model names; overrides `enabled:` |
 | `AUTO_ROUTER_CACHE_DIR` | where benchmark responses are cached |
 | `AUTO_ROUTER_SUBSCRIPTION_MODE` | `passthrough_only` (default) or `route_others`; see "Two ways to use a plan" |
 | `AUTO_ROUTER_REWRITE_MODEL` | allow replacing Claude Code's requested model on passthrough (off) |
@@ -404,7 +522,7 @@ Responses carry `X-Router-Model`, `X-Router-Category`, `X-Router-Difficulty`,
 `X-Router-Reason`, `X-Router-Conversation`, `X-Router-Turn-Start`,
 `X-Router-Decision` (the id of the decision record), `X-Router-Evidence`
 (0–1 evidence confidence), `X-Router-Cache` and, when one applies,
-`X-Router-Safe-Fallback`.
+`X-Router-Safe-Fallback` and `X-Router-Capability-Assumed-From`.
 
 ## Four ways to use a flat-rate plan
 
@@ -414,12 +532,12 @@ client. There are four honest ways to put a router next to it, and this
 repository implements all four. [`TERMS.md`](TERMS.md) quotes the vendor
 documentation behind each, including the parts that say no.
 
-| | how it works | plan's login touches the router? | Anthropic's position | pick it when |
+| | how it works | plan's login touches the router? | vendor documentation and limits | pick it when |
 |---|---|---|---|---|
 | **1. `route-run`** | decide per job which official CLI to start | no | ordinary use of the client | whole jobs, scripts, agents |
-| **2. gateway** | `ANTHROPIC_BASE_URL` → router; plan turns forwarded unchanged, others answered by cheaper models (`route_others`) | yes, in flight (forwarded, never stored) | forwarding documented; other models "not supported" | your own machine, if you accept maintaining it |
+| **2. gateway** | `ANTHROPIC_BASE_URL` → router; default forwards plan-authenticated turns unchanged; `route_others` is a separate opt-in | yes, in flight | Anthropic documents the billing behavior, says non-Claude routing is unsupported, and restricts developers from intermediating Claude.ai credentials; see [`TERMS.md`](TERMS.md) | only after reviewing those limits for your own login and machine |
 | **3. switch mode** | one conversation moves between *cheap mode* (router, its own credential) and *plan mode* (Claude Code direct to Anthropic) | **no** | both modes documented | **interactive Claude Code — the recommended way** |
-| **4. delegate tool** | the plan model stays in charge; an MCP tool hands sub-tasks to cheap models | no | ordinary MCP use | long plan sessions with big, separable sub-tasks; also Codex |
+| **4. delegate tool** | the plan model stays in charge; an MCP tool hands sub-tasks to cheap models | no | documented MCP integration; follow your account and organisation policies | long plan sessions with big, separable sub-tasks; also Codex |
 
 Measured on 19 Sep 2026 on three small coding tasks (details in
 [`EXPERIMENTS.md`](EXPERIMENTS.md) §15): every mode finished every task; the
@@ -490,23 +608,28 @@ ANTHROPIC_BASE_URL=http://127.0.0.1:8787 claude       # ANTHROPIC_API_KEY unset
 
 The turn is forwarded to Anthropic byte for byte — every `anthropic-*` header
 verbatim, the system array untouched, the stream and its keep-alive pings
-relayed as they arrive — and it is billed to the plan. Set a gateway credential
-instead and the same endpoint meters the traffic against that credential; both
-are legitimate, and which one is in force is not a guess: the OAuth capability
-on the request says so ([`auto_router/plan_auth.py`](auto_router/plan_auth.py)).
+relayed as they arrive — and it is billed to the plan. The local gateway checks
+the credential type and destination while it is in flight; it does not write the
+credential to the routing ledger or logs. Set a gateway credential instead and
+the same endpoint meters the traffic against that credential; the OAuth
+capability on the request distinguishes the modes
+([`auto_router/plan_auth.py`](auto_router/plan_auth.py)).
 
 What the router does with a subscription-authenticated turn is a setting:
 
 | `AUTO_ROUTER_SUBSCRIPTION_MODE` | behaviour |
 |---|---|
 | `passthrough_only` (default) | Forward every turn unchanged and record the decision the policy *would* have made as `not_taken`. Claude Code behaves exactly as it does with no gateway, and the ledger still answers "how much of this week's plan use could have gone somewhere cheaper". |
-| `route_others` | Additionally let the policy serve a turn from another provider on **your own** API key. It works — but Anthropic "doesn't support routing Claude Code to non-Claude models through any gateway", so you maintain it yourself. |
+| `route_others` | Additionally let the policy serve a turn from another provider on **your own** API key. Anthropic says it does not support routing Claude Code to non-Claude models through a gateway; this mode can break as Claude Code changes and is not the recommended path. |
 
-Use `route_others` only for **your own login on your own machine**: in this mode
-the plan's token passes through the router on every request (forwarded, never
-read or stored), which is the configuration closest to Anthropic's rule that
-developers "may not collect, store, or intermediate Claude.ai credentials or
-session tokens". Switch mode (3) gets the same result without that. "Not
+The gateway mode is an explicit local setup for **your own login on your own
+machine**. The router inspects the authorization header only to identify the
+credential type and enforce the Anthropic-only upstream rule; it does not persist
+the credential and redacts it from logs. Anthropic's legal page also says
+developers may not collect, store, or intermediate Claude.ai credentials or
+session tokens. This repository does not claim that its local gateway is legally
+cleared for every user or organisation. Switch mode (3) avoids sending the plan
+login through the router. "Not
 supported" is also not an empty word: a real session on 19 Sep 2026 broke twice
 until the translation learned that Claude Code now sends `role: "system"`
 messages mid-conversation, and that a tool-call id such as `functions.Write:0`
@@ -912,23 +1035,21 @@ whose terms restrict use in competing commercial products. Fine for personal
 and internal experiments; a commercial deployment needs its own licensed or
 self-measured capability data.
 
-A subscription is for your own sessions on your own plan, through the vendor's
-official client. [`TERMS.md`](TERMS.md) quotes what each vendor documents, with
-links and with the dates they were read; the two sentences that matter are that
-Anthropic describes a gateway in front of Claude Code with a claude.ai login as
-a configuration where "its usage limits and billing apply", and that plan OAuth
-is reserved for ordinary use of the unmodified client - a developer may not
-offer Claude.ai login in their own product, route other people's requests
-through plan credentials, or collect, store or intermediate those credentials.
-This router keeps to both: it forwards a subscription credential to Anthropic
-and to nowhere else, never reads or stores one, and paces plan use well below
-the plan's own limits. An earlier version of this file called the gateway a
-grey area; the documentation quoted in `TERMS.md` is clearer than that, in both
-directions.
+A plan-backed job is launched through the user's own official client. In the
+optional Claude gateway mode, Anthropic documents that a saved login stays active
+and plan billing and limits apply when only `ANTHROPIC_BASE_URL` is set. Its
+gateway guide says routing Claude Code to non-Claude models is unsupported; its
+legal page restricts developers from handling or intermediating session
+credentials. This router checks the authorization header in memory, forwards a
+subscription credential only to Anthropic, and does not persist it or include it
+in logs. Those implementation controls do not decide whether the mode fits a
+particular user's agreement or organisation policy. It is opt-in; switch mode is
+recommended when users do not want the router in the plan-authenticated path.
 
-A ChatGPT plan is reachable only through the Codex CLI, so it is configured as a
-`launch_only` route: the launcher starts that CLI, and the HTTP surface never
-offers it.
+A ChatGPT plan is reachable through the user's Codex CLI in this router, so it is
+configured as a `launch_only` route: the launcher starts that CLI, and the HTTP
+surface never offers it. The Codex custom-provider proxy setting is not
+implemented or live-tested here.
 
 ## Licence
 

@@ -154,6 +154,25 @@ class ModelInfo:
     #: invite an implementation to send one vendor's login to another. Such a
     #: route is a candidate for the launcher and for nothing else.
     launch_only: bool = False
+    #: Headline intelligence index from the benchmark document (Benchmark
+    #: Heaven serves Artificial Analysis' Intelligence Index), or None. Used by
+    #: the intelligence-threshold answer check in verify.py.
+    intelligence_index: float | None = None
+    #: Measured output tokens per benchmark task (the model's "token appetite"),
+    #: or None when the benchmark data has no measurement.
+    task_tokens: float | None = None
+    #: Multiplier on the expected output tokens of a call, from ``task_tokens``
+    #: relative to the catalog's median (config.apply_token_appetite). 1.0
+    #: when unmeasured. A model that writes three times as many tokens per task
+    #: is priced as writing three times as many tokens per call.
+    output_appetite: float = 1.0
+    #: Benchmark id whose capability this route *borrows*, when its own model
+    #: was never measured (``capability_like`` in the config). Every number
+    #: derived from it is an assumption, and the decision record says so.
+    capability_assumed_from: str | None = None
+    #: Served on the operator's own machine (LM Studio, llama.cpp, Ollama):
+    #: priced at zero, local electricity not counted.
+    local: bool = False
 
     @property
     def measurement_key(self) -> str:

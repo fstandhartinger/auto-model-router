@@ -31,6 +31,7 @@ caps how much of any field is sent at all.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import threading
@@ -38,6 +39,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
+from typing import Any
 
 ENDPOINT = os.environ.get("AUTO_ROUTER_JEV_URL", "https://api.typesafe.ai/v1/systemone")
 MODEL = os.environ.get("AUTO_ROUTER_JEV_MODEL", "jev-latest")
@@ -508,12 +510,264 @@ class LocalLayaClassifier:
             return FALLBACK
 
 
+#: Letters a local decision model answers with, in option order.
+LETTERS = "ABCDEFGHIJKLMNOP"
+
+#: System prompt of the open JevK5 v0.2 recipe (Apache-2.0,
+#: huggingface.co/alibiserikbay/JevK5-GGUF): one option letter, nothing else.
+LOCAL_SYSTEM = ("Apply the supplied criterion to the supplied evidence. Choose exactly one listed "
+                "option. Respond with only its uppercase letter, with no explanation or reasoning.")
+
+#: Softmax temperature over the option-letter log-probabilities. 1.532 is the
+#: value the JevK5 v0.2 card publishes for its calibration; another model
+#: should be given its own (``temperature`` in the config).
+LOCAL_TEMPERATURE = 1.532
+
+#: Name the local backend reports in decision records.
+LOCAL_SOURCE = "local-jev-class"
+
+
+def _options(question: dict) -> list[tuple[str, str]]:
+    """(option id, description) pairs in the order the letters are assigned."""
+    kind = question.get("type")
+    criteria = question.get("criteria") or {}
+    if kind == "noul":
+        return [("true", str(criteria.get("true") or "The proposition is true.")),
+                ("false", str(criteria.get("false") or "The proposition is false."))]
+    if kind == "score":
+        return [(str(i), str(text)) for i, text in enumerate(criteria)]
+    return [(str(k), str(v)) for k, v in criteria.items()]
+
+
+class LocalJevClass:
+    """A local open Jev-class decision model behind an OpenAI-compatible endpoint.
+
+    Serves the same typed questions as hosted Jev (``classify`` and ``judge``)
+    from a model on the user's own machine: llama.cpp's ``llama-server`` or LM
+    Studio serving, for example, JevK5 v0.2 GGUF (Apache-2.0) or decider-4b
+    (Apache-2.0). Nothing leaves the machine and no key is needed.
+
+    Each question is one call that asks for a single option letter and reads
+    the letters' log-probabilities (the JevK5 recipe's one-pass readout);
+    probabilities are a temperature softmax over them. A server that returns no
+    log-probabilities still works, with the generated letter taken as certain,
+    which is coarser and is reported as confidence 0.
+
+    ``prompt_format``:
+
+    * ``chatml`` (default) - ``POST /completions`` with the raw ChatML prompt
+      and an empty thinking block, exactly as the recipe prompts. Right for
+      Qwen-based decision models on llama.cpp and LM Studio.
+    * ``chat`` - ``POST /chat/completions`` with ``logprobs``; for servers
+      without a raw completions endpoint (Ollama's OpenAI layer, for example).
+    """
+
+    def __init__(self, base_url: str = "http://127.0.0.1:8080/v1", model: str = "jevk5",
+                 *, api_key_env: str | None = None, temperature: float = LOCAL_TEMPERATURE,
+                 prompt_format: str = "chatml", timeout: float = 30.0, top_logprobs: int = 20,
+                 parallel: int = 4):
+        if prompt_format not in ("chatml", "chat"):
+            raise ValueError(f"unknown prompt_format {prompt_format!r}; use chatml or chat")
+        self.base_url = base_url.rstrip("/")
+        self.model = model
+        self.api_key_env = api_key_env
+        self.temperature = max(1e-3, float(temperature))
+        self.prompt_format = prompt_format
+        self.timeout = timeout
+        self.top_logprobs = max(2, int(top_logprobs))
+        self.parallel = max(1, int(parallel))
+
+    # -- transport -----------------------------------------------------------
+    def _post(self, path: str, body: dict, timeout: float) -> dict:
+        headers = {"Content-Type": "application/json"}
+        key = os.environ.get(self.api_key_env) if self.api_key_env else None
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
+        req = urllib.request.Request(self.base_url + path, data=json.dumps(body).encode(),
+                                     headers=headers)
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read())
+
+    def _letter_logprobs(self, user: str, timeout: float) -> tuple[dict[str, float], str, str]:
+        """Top log-probabilities of the first answer token, the text, and the model id."""
+        if self.prompt_format == "chatml":
+            prompt = (f"<|im_start|>system\n{LOCAL_SYSTEM}<|im_end|>\n<|im_start|>user\n{user}"
+                      "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n")
+            data = self._post("/completions", {
+                "model": self.model, "prompt": prompt, "max_tokens": 1, "temperature": 0,
+                "logprobs": self.top_logprobs, "cache_prompt": False}, timeout)
+            choice = (data.get("choices") or [{}])[0]
+            text = str(choice.get("text") or "")
+        else:
+            data = self._post("/chat/completions", {
+                "model": self.model, "max_tokens": 1, "temperature": 0, "logprobs": True,
+                "top_logprobs": self.top_logprobs,
+                "chat_template_kwargs": {"enable_thinking": False},
+                "messages": [{"role": "system", "content": LOCAL_SYSTEM},
+                             {"role": "user", "content": user}]}, timeout)
+            choice = (data.get("choices") or [{}])[0]
+            text = str(((choice.get("message") or {}).get("content")) or "")
+        return _top_logprobs(choice.get("logprobs")), text, str(data.get("model") or self.model)
+
+    # -- one typed question ----------------------------------------------------
+    def ask(self, state: dict, question: dict, timeout: float | None = None) -> tuple[dict, str]:
+        """Answer one typed question in the hosted API's answer shape."""
+        options = _options(question)
+        if not 2 <= len(options) <= len(LETTERS):
+            raise ValueError(f"a local decision model needs 2..{len(LETTERS)} options")
+        user = json.dumps({
+            "evidence": state, "criterion": question.get("instructions", ""),
+            "options": [{"letter": LETTERS[i], "description": f"{oid}: {text}"}
+                        for i, (oid, text) in enumerate(options)]})
+        top, text, model = self._letter_logprobs(user, timeout or self.timeout)
+        letters = LETTERS[:len(options)]
+        confidence_known = any(letter in top for letter in letters)
+        if confidence_known:
+            floor = min(top.values()) - 2.0
+            logits = [top.get(letter, floor) for letter in letters]
+            peak = max(logits)
+            weights = [math.exp((x - peak) / self.temperature) for x in logits]
+        else:
+            first = text.strip()[:1].upper()
+            if first not in letters:
+                raise ValueError("the local decision model answered with no option letter")
+            weights = [1.0 if letter == first else 0.0 for letter in letters]
+        total = sum(weights)
+        probs = {oid: w / total for (oid, _), w in zip(options, weights)}
+        best = max(probs, key=probs.get)
+        confidence = probs[best] if confidence_known else 0.0
+        kind = question.get("type")
+        if kind == "noul":
+            return {"noul": probs["true"]}, model
+        if kind == "score":
+            score = sum(int(oid) * p for oid, p in probs.items())
+            return {"score": score, "confidence": confidence, "probabilities": probs}, model
+        return {"choice": best, "probabilities": probs, "confidence": confidence}, model
+
+    def evaluate(self, state: dict, questions: dict, timeout: float | None = None) -> dict:
+        """All questions, in parallel up to ``parallel`` (llama-server ``--parallel``)."""
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=min(self.parallel, len(questions))) as pool:
+            futures = {name: pool.submit(self.ask, state, q, timeout)
+                       for name, q in questions.items()}
+            results = {name: f.result() for name, f in futures.items()}
+        model = next((m for _a, m in results.values()), self.model)
+        return {"answers": {name: a for name, (a, _m) in results.items()}, "model": model}
+
+    # -- the two jobs ----------------------------------------------------------
+    def classify(self, request: str, context: str = "") -> Classification:
+        started = time.perf_counter()
+        try:
+            state = {"request": scrub(request, REQUEST_CHARS),
+                     "context": scrub(context, CONTEXT_CHARS) or "(new conversation)"}
+            payload = self.evaluate(state, QUESTIONS)
+            a = payload["answers"]
+            return Classification(
+                category=a["category"]["choice"],
+                category_probs=a["category"].get("probabilities") or {},
+                category_confidence=_confidence(a["category"]),
+                difficulty=_score01(a["difficulty"], len(QUESTIONS["difficulty"]["criteria"])),
+                difficulty_confidence=_confidence(a["difficulty"]),
+                needs_tools=float(a["needs_tools"]["noul"]),
+                needs_vision=float(a["needs_vision"]["noul"]),
+                needs_long_context=float(a["needs_long_context"]["noul"]),
+                follow_up=float(a["follow_up"]["noul"]),
+                stakes=_score01(a["stakes"], len(QUESTIONS["stakes"]["criteria"])),
+                latency_s=time.perf_counter() - started,
+                model=str(payload.get("model") or self.model),
+                raw=a,
+                source_name=LOCAL_SOURCE,
+            )
+        except Exception:  # noqa: BLE001 - a local model outage must not break routing
+            return FALLBACK
+
+    __call__ = classify
+
+    def judge(self, request: str, response: str, *, api_key: str | None = None,
+              timeout: float | None = None, category: str = "") -> Judgement:
+        """Same contract as the hosted ``judge``: failures return 0.5 with ``failed``."""
+        started = time.perf_counter()
+        try:
+            state = {"request": scrub(request, REQUEST_CHARS),
+                     "response": scrub(response, RESPONSE_CHARS)}
+            questions = verify_questions(category) if category else JUDGE_QUESTION
+            payload = self.evaluate(state, questions, timeout)
+            answers = payload["answers"]
+            failure_answer = answers.get("failure") or {}
+            choice = failure_answer.get("choice")
+            return Judgement(
+                p_adequate=float(answers["adequate"]["noul"]),
+                latency_s=time.perf_counter() - started,
+                failure=str(choice) if choice in FAILURE_OPTIONS else "unknown",
+                failure_probs={k: float(v) for k, v in
+                               (failure_answer.get("probabilities") or {}).items()},
+                model=f"{LOCAL_SOURCE}:{payload.get('model') or self.model}",
+            )
+        except Exception:  # noqa: BLE001 - same contract as the hosted judge
+            return Judgement(0.5, time.perf_counter() - started, failed=True)
+
+
+def _top_logprobs(logprobs: Any) -> dict[str, float]:
+    """Letter -> log-probability of the first generated token, across response shapes.
+
+    Chat completions carry ``content[0].top_logprobs`` as a list of
+    ``{token, logprob}``; legacy completions carry ``top_logprobs[0]`` as a
+    ``{token: logprob}`` map; llama.cpp's completions endpoint may use either.
+    A token with surrounding whitespace counts as its letter.
+    """
+    out: dict[str, float] = {}
+
+    def add(token: Any, value: Any) -> None:
+        if not isinstance(token, str) or not isinstance(value, (int, float)):
+            return
+        key = token.strip()
+        if key and math.isfinite(float(value)):
+            out[key] = max(out.get(key, -math.inf), float(value))
+
+    if not isinstance(logprobs, dict):
+        return out
+    content = logprobs.get("content")
+    if isinstance(content, list) and content:
+        for item in (content[0] or {}).get("top_logprobs") or []:
+            if isinstance(item, dict):
+                add(item.get("token"), item.get("logprob"))
+    top = logprobs.get("top_logprobs")
+    if isinstance(top, list) and top and isinstance(top[0], dict):
+        first = top[0]
+        if "token" in first and "logprob" in first:
+            for item in top:
+                if isinstance(item, dict):
+                    add(item.get("token"), item.get("logprob"))
+        else:
+            for token, value in first.items():
+                add(token, value)
+    return out
+
+
+def local_from_config(cfg: dict) -> LocalJevClass:
+    """A ``LocalJevClass`` from a ``classifier`` or ``verify.judge`` config block."""
+    return LocalJevClass(
+        str(cfg.get("base_url") or "http://127.0.0.1:8080/v1"),
+        str(cfg.get("model") or "jevk5"),
+        api_key_env=cfg.get("api_key_env"),
+        temperature=float(cfg.get("temperature") or LOCAL_TEMPERATURE),
+        prompt_format=str(cfg.get("prompt_format") or "chatml"),
+        timeout=float(cfg.get("timeout_s") or 30.0),
+        top_logprobs=int(cfg.get("top_logprobs") or 20),
+        parallel=int(cfg.get("parallel") or 4))
+
+
+LOCAL_BACKENDS = {"local-jev", "jev-local", "local-jev-class", "openai-compatible"}
+
+
 def classifier_from_config(policy: dict | None):
     """Build the selected classifier backend from ``policy.classifier``.
 
-    ``local`` uses Laya on CPU, ``hosted`` uses the existing TypeSafe/Jev API,
-    and ``heuristic`` disables model inference.  Returning ``None`` preserves
-    the router's existing cautious heuristic path.
+    ``local`` uses Laya on CPU, ``local-jev`` a local open Jev-class model
+    behind an OpenAI-compatible endpoint (see ``LocalJevClass``), ``hosted``
+    uses the TypeSafe/Jev API with the user's own key, and ``heuristic``
+    disables model inference. Returning ``None`` preserves the router's
+    existing cautious heuristic path.
     """
     cfg = (policy or {}).get("classifier") or {}
     backend = str(cfg.get("backend") or "").lower()
@@ -522,11 +776,41 @@ def classifier_from_config(policy: dict | None):
     if backend == "local":
         return LocalLayaClassifier(str(cfg.get("model") or "convaiinnovations/laya"),
                                    int(cfg.get("threads") or 4))
+    if backend in LOCAL_BACKENDS:
+        return local_from_config(cfg)
     if backend in {"hosted", "jev"}:
         return classify
     if backend in {"heuristic", "none", "disabled"}:
         return None
-    raise ValueError(f"unknown classifier backend {backend!r}; use local, hosted, or heuristic")
+    raise ValueError(f"unknown classifier backend {backend!r}; "
+                     "use local, local-jev, hosted, or heuristic")
+
+
+def judge_from_config(policy: dict | None):
+    """The answer judge from ``policy.verify.judge``, or None when there is none.
+
+    ``hosted`` is Jev with the user's own ``TYPESAFE_API_KEY`` (and is None
+    without one); ``local-jev`` a local open Jev-class model; ``same-as-classifier``
+    reuses the ``local-jev`` classifier block; ``none`` switches judging off.
+    Unset keeps the old default: hosted when the key is set.
+    """
+    verify = (policy or {}).get("verify") or {}
+    cfg = verify.get("judge") or {}
+    if isinstance(cfg, str):
+        cfg = {"backend": cfg}
+    backend = str(cfg.get("backend") or "").lower()
+    if backend == "same-as-classifier":
+        cls_cfg = (policy or {}).get("classifier") or {}
+        if str(cls_cfg.get("backend") or "").lower() in LOCAL_BACKENDS:
+            return local_from_config(cls_cfg).judge
+        backend = str(cls_cfg.get("backend") or "").lower()
+    if not backend or backend in {"hosted", "jev"}:
+        return judge if os.environ.get("TYPESAFE_API_KEY") else None
+    if backend in LOCAL_BACKENDS:
+        return local_from_config(cfg).judge
+    if backend in {"none", "disabled", "heuristic", "local"}:
+        return None
+    raise ValueError(f"unknown judge backend {backend!r}; use hosted, local-jev, or none")
 
 
 @dataclass
