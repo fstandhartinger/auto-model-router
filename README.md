@@ -48,6 +48,18 @@ capability basis, and competes on those.
 
 ## Results in short
 
+**Measured in Claude Code (26 Sep 2026, paired A/B).** 20 coding tasks (7 easy, 7 medium,
+6 hard; Python/JS modules with hidden tests and single-file web apps), each run in Claude Code
+once with Opus 5.5 for every turn and once through this router (v0.5.1 settings, answer check
+on). At list prices the router arm cost **2.4× less** ($3.21 against $7.73; median task 10×),
+with a **noticeable quality drop**: mean judge score 8.19 against 9.16 out of 10, hidden tests
+172/179 against 177/179, and both blind judges preferred the Opus run on 13 of 20 tasks. With
+the answer check off the router was 13× cheaper but much worse (117/179 tests). The answer
+check rejected 34 of 43 final answers, mostly short summaries of work done in tools that the
+judge cannot see; its escalations were about 80 % of the router arm's spend. Raw data, charts
+and limits: <https://whichmodel.app.mintapis.com/evidence>.
+
+Everything below this paragraph is older and mostly simulated:
 Eight models on 78 graded tasks, a replay of one week of real coding-agent traffic
 (1,638 sessions, 57,696 calls, 8.7B input tokens, 96 % of them cache reads), and a live run
 of the router server.
@@ -55,7 +67,7 @@ of the router server.
 > **Read the table as a simulation, because it is one.** Every dollar figure below
 > is *replay arithmetic*: real traffic and measured per-model success rates, priced at
 > public list prices. **No money was saved and none was measured.** No invoice was
-> compared, no A/B test was run against production, and the replay knows the whole week
+> compared, no A/B test was run against production traffic, and the replay knows the whole week
 > in advance in a way a live router does not. The numbers rank policies against each
 > other under one set of assumptions; they are not a cash result and must not be quoted
 > as one. Live, paired, *measured* results are in [`EXPERIMENTS.md`](EXPERIMENTS.md).
