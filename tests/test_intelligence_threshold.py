@@ -375,3 +375,25 @@ def test_a_second_route_still_below_the_threshold_is_graded_again(harness):
     assert v["model"] == BELOW2.name and v["escalations"] == 1
     assert v["reason"] == "no stronger route available; the answer stands"
     assert body["choices"][0]["message"]["content"] == ANSWERS[BELOW2.upstream_id]
+
+
+def test_a_cheap_route_below_the_threshold_is_named_by_the_threshold_rule():
+    # GPT-6 Luna in the 26 Sep study: cheap enough for the cheap tier *and*
+    # below Terra. Reported as cheap-tier, its streams were never held back,
+    # so no Claude Code answer from it was ever graded.
+    cheap = ModelInfo("cheap-below", "stub", "stub/cheap-below", Prices(0.1, 0.5, 0.01), CACHE,
+                      capability={"coding": 46.0, "general": 46.0},
+                      capability_basis={"coding": "aa_coding_index", "general": "ii"},
+                      capability_strength={"coding": "direct", "general": "derived"},
+                      intelligence_index=29.5)
+    ok, _why, info = _gate_policy().gate(cheap, "coding")
+    assert ok and info["rule"] == "intelligence-threshold"
+
+
+def test_the_judge_grades_against_the_request_not_the_last_tool_result():
+    messages = [
+        {"role": "user", "content": [{"type": "text", "text": PROMPT}]},
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "Write", "input": {}}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]},
+    ]
+    assert server.request_text(messages) == PROMPT

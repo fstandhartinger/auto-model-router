@@ -80,14 +80,22 @@ def has_tool_calls(data: dict) -> bool:
 
 
 def request_text(messages: list[dict]) -> str:
-    """The user's own last message: what the judge is asked to grade against."""
+    """The user's own last message: what the judge is asked to grade against.
+
+    Messages that only feed tool results back are skipped: at the end of an
+    agent's tool loop the newest "user" message is a tool result, and the
+    request the final answer has to satisfy is the text before it.
+    """
     for message in reversed(messages):
         if message.get("role") != "user":
             continue
         content = message.get("content")
         if isinstance(content, list):
-            return "".join(p.get("text", "") for p in content if isinstance(p, dict))
-        if isinstance(content, str):
+            text = "".join(p.get("text", "") for p in content
+                           if isinstance(p, dict) and p.get("type", "text") == "text")
+            if text.strip():
+                return text
+        elif isinstance(content, str) and content.strip():
             return content
     return ""
 

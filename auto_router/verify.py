@@ -294,10 +294,13 @@ class VerifyPolicy:
         if request_chars > self.max_request_chars:
             return False, (f"request is {request_chars} characters; beyond "
                            f"{self.max_request_chars} the judge would grade what it cannot read"), info
-        if self.tier_ok(model, category, evidence_discount):
-            return True, "", {**info, "rule": "cheap-tier"}
+        # The threshold rule is named first when both fire: it is the one that
+        # holds a stream back for grading (``Router.buffers_stream``), and a
+        # cheap route below the reference is exactly what it exists for.
         if below:
             return True, "", {**info, "rule": "intelligence-threshold"}
+        if self.tier_ok(model, category, evidence_discount):
+            return True, "", {**info, "rule": "cheap-tier"}
         why = f"{model.name} is above the verified cheap tier"
         if below is False:
             why += (f" and not below the intelligence threshold "
