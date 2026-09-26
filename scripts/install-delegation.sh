@@ -1,7 +1,7 @@
 #!/bin/sh
 # Install the delegate MCP server and skill for one agent, from a pinned commit.
 #
-#   sh install-delegation.sh claude|codex|opencode|cursor <commit-sha> [install-delegation.py options]
+#   sh install-delegation.sh claude|codex|opencode|cursor|openclaw|hermes|copilot <commit-sha> [install-delegation.py options]
 #
 # The commit is required and must be a full 40-character SHA you have
 # reviewed: the script never installs whatever a branch points at today. It
@@ -15,8 +15,8 @@ set -eu
 
 tool=${1:-}
 ref=${2:-}
-case "$tool" in claude|codex|opencode|cursor) ;; *)
-  echo "usage: install-delegation.sh claude|codex|opencode|cursor <commit-sha> [--config FILE] [--project DIR] [--force]" >&2
+case "$tool" in claude|codex|opencode|cursor|openclaw|hermes|copilot) ;; *)
+  echo "usage: install-delegation.sh claude|codex|opencode|cursor|openclaw|hermes|copilot <commit-sha> [--config FILE] [--project DIR] [--force]" >&2
   exit 2
 esac
 if ! printf '%s' "$ref" | grep -Eq '^[0-9a-f]{40}$'; then

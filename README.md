@@ -6,7 +6,8 @@ solved at the lowest expected cost. As a local gateway it sits in front of
 Claude Code (Codex, opencode and Cursor have no gateway mode here yet; see
 "Four ways to use a flat-rate plan"). It can also route *whole jobs* to a coding
 agent's official CLI, and it offers an MCP tool through which Claude Code, Codex,
-opencode or Cursor can hand bounded sub-tasks to cheaper routed workers. The
+opencode, Cursor, OpenClaw, Hermes Agent or GitHub Copilot can hand bounded
+sub-tasks to cheaper routed workers. The
 vendor documentation and its stated limits are linked in [`TERMS.md`](TERMS.md).
 
 Status: experimental, measured. Full method and numbers: [`EXPERIMENTS.md`](EXPERIMENTS.md).
@@ -864,7 +865,8 @@ credential:
 REF=<full 40-character commit SHA you reviewed>
 git clone https://github.com/fstandhartinger/auto-model-router.git && cd auto-model-router
 git checkout --detach "$REF" && less scripts/install-delegation.sh scripts/install-delegation.py
-sh scripts/install-delegation.sh claude "$REF" --config ~/router.local.yaml   # or codex, opencode, cursor
+sh scripts/install-delegation.sh claude "$REF" --config ~/router.local.yaml
+# or: codex, opencode, cursor, openclaw, hermes, copilot in place of claude
 ```
 
 `--config` (or `AUTO_ROUTER_CONFIG` set when you install) is recorded in the MCP
@@ -873,14 +875,49 @@ server reads `AUTO_ROUTER_CONFIG` from the environment it starts in. Claude Code
 and Codex get a user-level skill and MCP entry through their own `mcp` commands;
 opencode gets its skill and an entry in `~/.config/opencode/opencode.json`;
 Cursor gets an entry in `~/.cursor/mcp.json`, and the project rule only with
-`--project DIR`. The shell script installs into its own virtualenv under
+`--project DIR`.
+
+The OpenClaw, Hermes Agent and GitHub Copilot targets write these files; none
+of them runs the agent's own CLI:
+
+| Target | Command | File and key written | Skill / instructions |
+| --- | --- | --- | --- |
+| OpenClaw | `sh scripts/install-delegation.sh openclaw "$REF" --config ~/router.local.yaml` | `~/.openclaw/openclaw.json`, `mcp.servers.auto-router-delegate` (`command`, `args`, `env`); `OPENCLAW_CONFIG_PATH` / `OPENCLAW_STATE_DIR` are honoured | `~/.openclaw/skills/plan-with-cheap-workers/SKILL.md` |
+| Hermes Agent | `sh scripts/install-delegation.sh hermes "$REF" --config ~/router.local.yaml` | `~/.hermes/config.yaml` (or `$HERMES_HOME`), `mcp_servers.auto-router-delegate` (`command`, `args`, `env`) | `~/.hermes/skills/plan-with-cheap-workers/SKILL.md` |
+| Copilot CLI | `sh scripts/install-delegation.sh copilot "$REF" --config ~/router.local.yaml` | `~/.copilot/mcp-config.json` (or `$COPILOT_HOME`), `mcpServers.auto-router-delegate` (`type: local`, `command`, `args`, `tools: ["*"]`, `env`) | none |
+| Copilot in VS Code | `sh scripts/install-delegation.sh copilot "$REF" --project DIR --config ~/router.local.yaml` | `DIR/.vscode/mcp.json`, `servers.auto-router-delegate` (`type: stdio`, `command`, `args`, `env`) | `DIR/.github/copilot-instructions.md`, only if absent |
+
+OpenClaw's settings are JSON5: a file with comments or unquoted keys is refused
+and the entry printed, together with the equivalent `openclaw mcp set`
+command; restart the OpenClaw gateway afterwards. Hermes's YAML is edited as
+text so your comments stay: the entry goes right below an existing
+`mcp_servers:` block or is appended as a new one, the file is backed up, and
+the result must parse to your old settings plus this one entry. An inline
+`mcp_servers: {}` or a differing `auto-router-delegate` entry is refused with
+the snippet to paste, even with `--force`. Hermes passes a stdio server only
+`PATH`, `HOME` and a few other variables plus the entry's `env`, so pass
+`--config` there, and add the API-key variables your routes name under `env`
+yourself if you want them (the installer writes no credential). An existing
+`.github/copilot-instructions.md` is never replaced, not even with `--force`;
+the text to add is printed instead. The formats come from
+[docs.openclaw.ai](https://docs.openclaw.ai/gateway/config-extensions), Hermes
+Agent's own documentation (`website/docs/user-guide/features/mcp.md`,
+checked at commit `b20cc5f`),
+[GitHub's Copilot CLI docs](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-mcp-servers)
+and [VS Code's MCP reference](https://code.visualstudio.com/docs/copilot/reference/mcp-configuration),
+checked on 26 September 2026; the installer has not been run against a real
+OpenClaw, Hermes or Copilot.
+
+The shell script installs into its own virtualenv under
 `~/.auto-router`; Python dependencies come from PyPI at the versions
 `pyproject.toml` allows.
 
 What has been tested: `tests/test_install_delegation_e2e.py` runs both entry
 points end to end, through their own argument parsing, in a disposable HOME
-with fake `git`, `python3 -m venv`, `pip`, `claude`, `codex`, `cursor` and
-`opencode` commands that only record their calls. That proves the control flow:
+with fake `git`, `python3 -m venv`, `pip`, `claude`, `codex`, `cursor`,
+`opencode`, `openclaw`, `hermes` and `copilot` commands that only record their
+calls; `tests/test_install_delegation_targets.py` covers the OpenClaw, Hermes
+and Copilot files in a temporary HOME. That proves the control flow:
 the order of steps, what is written where, and that a dirty checkout, a
 fetched commit that differs from the pin, a foreign `auto-router-delegate`
 link, a missing `--config` file, JSONC settings and an existing MCP entry all

@@ -11,7 +11,8 @@ log and then imitates just enough of the real tool:
   (and drops a stub ``auto-router-delegate``) and whose ``python`` is this
   interpreter, so the real Python installer runs.
 - ``claude`` and ``codex`` keep their MCP entries as files under ``tmp_path``.
-- ``cursor`` and ``opencode`` exist only to prove the installer never calls them.
+- ``cursor``, ``opencode``, ``openclaw``, ``hermes`` and ``copilot`` exist only
+  to prove the installer never calls them.
 
 HOME is a directory in ``tmp_path`` and PATH holds only the fakes and the
 system directories. This proves the installers' control flow, not that they
@@ -104,7 +105,9 @@ def fake(tmp_path):
     log = tmp_path / "calls.log"
     for name, body in {"git": FAKE_GIT, "python3": FAKE_PYTHON3, "venv-pip": FAKE_PIP,
                        "claude": FAKE_AGENT_CLI, "codex": FAKE_AGENT_CLI,
-                       "cursor": NEVER_CALLED, "opencode": NEVER_CALLED}.items():
+                       "cursor": NEVER_CALLED, "opencode": NEVER_CALLED,
+                       "openclaw": NEVER_CALLED, "hermes": NEVER_CALLED,
+                       "copilot": NEVER_CALLED}.items():
         (bin_dir / name).write_text(body)
         (bin_dir / name).chmod(0o755)
     env = {"HOME": str(home), "PATH": f"{bin_dir}:/usr/bin:/bin", "LANG": "C.UTF-8",
@@ -226,6 +229,46 @@ def test_shell_installer_for_cursor_and_opencode_writes_json_and_calls_no_cli(fa
         NAME: {"type": "local", "command": [str(fake.link)], "enabled": True}}}
     tools = set(_tools(fake.calls()))
     assert tools == {"git", "python3", "pip"}, "cursor, opencode, claude and codex were never run"
+
+
+def test_shell_installer_for_openclaw_hermes_and_copilot_edits_files_and_calls_no_cli(fake):
+    import yaml
+
+    hermes = fake.home / ".hermes/config.yaml"
+    hermes.parent.mkdir(parents=True)
+    hermes.write_text("# mine\nmodel:\n  default: x\n")
+    project = fake.tmp / "project"
+    project.mkdir()
+    for argv in (("openclaw",), ("hermes",), ("copilot",), ("copilot", "--project", str(project))):
+        proc = fake.run(argv[0], SHA, *argv[1:])
+        assert proc.returncode == 0, proc.stderr
+        assert f"Installed auto-router delegation for {argv[0]}." in proc.stdout
+    link = str(fake.link)
+    assert json.loads((fake.home / ".openclaw/openclaw.json").read_text()) == {
+        "mcp": {"servers": {NAME: {"command": link, "args": []}}}}
+    assert hermes.read_text().startswith("# mine\nmodel:\n  default: x\n")
+    assert yaml.safe_load(hermes.read_text())["mcp_servers"] == {NAME: {"command": link, "args": []}}
+    assert json.loads((fake.home / ".copilot/mcp-config.json").read_text()) == {"mcpServers": {
+        NAME: {"type": "local", "command": link, "args": [], "tools": ["*"]}}}
+    assert json.loads((project / ".vscode/mcp.json").read_text()) == {"servers": {
+        NAME: {"type": "stdio", "command": link, "args": []}}}
+    assert (project / ".github/copilot-instructions.md").exists()
+    for skills in (".openclaw/skills", ".hermes/skills"):
+        assert (fake.home / skills / "plan-with-cheap-workers/SKILL.md").read_bytes() == \
+            (ROOT / "skills/plan-with-cheap-workers/SKILL.md").read_bytes()
+    assert set(_tools(fake.calls())) == {"git", "python3", "pip"}, "no agent CLI was run"
+
+
+def test_a_refused_hermes_entry_leaves_the_yaml_and_skills_alone(fake):
+    hermes = fake.home / ".hermes/config.yaml"
+    hermes.parent.mkdir(parents=True)
+    text = f"mcp_servers:\n  {NAME}:\n    command: /mine\n"
+    hermes.write_text(text)
+    proc = fake.run("hermes", "--server", "/opt/delegate", "--force", entry="py")
+    assert proc.returncode == 1 and "edit it by hand" in proc.stderr
+    assert "command: \"/opt/delegate\"" in proc.stderr, "the snippet to paste is printed"
+    assert hermes.read_text() == text
+    assert sorted(p.name for p in hermes.parent.iterdir()) == ["config.yaml"]
 
 
 def test_a_checkout_with_local_changes_is_left_alone(fake):

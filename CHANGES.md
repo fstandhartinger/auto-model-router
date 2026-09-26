@@ -15,6 +15,19 @@
   from it was graded. The threshold rule now takes precedence.
 - **The answer judge sees the user's request**, not the empty tool-result
   message that ends an agent's tool loop.
+- **Delegation installer: OpenClaw, Hermes Agent and GitHub Copilot.**
+  `install-delegation.sh openclaw|hermes|copilot` writes the
+  `auto-router-delegate` stdio entry to `~/.openclaw/openclaw.json`
+  (`mcp.servers`) plus the skill in `~/.openclaw/skills`; to
+  `~/.hermes/config.yaml` (`mcp_servers`, inserted as text so comments stay,
+  re-parsed and backed up) plus the skill in `~/.hermes/skills`; and to
+  `~/.copilot/mcp-config.json` (`mcpServers`) or, with `--project DIR`,
+  `DIR/.vscode/mcp.json` (`servers`) and a new
+  `DIR/.github/copilot-instructions.md` (never replaced). Same rules as the
+  other targets: no differing entry replaced without `--force`, backups, every
+  refusal before any write, no credential. JSON5 and YAML the installer cannot
+  edit safely are refused with the snippet to paste. Formats from the vendors'
+  docs; not run against the real agents.
 
 ## 0.5.0 — live benchmark data, local models, quality escalation (26 Sep 2026)
 
