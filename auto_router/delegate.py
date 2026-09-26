@@ -33,10 +33,11 @@ third-party model with a shell:
   in ``not_diffed``. A single worker runs in
   ``cwd`` itself. Tool calls are served one at a time.
 - **Copies left behind** by a server that was killed, or kept because a
-  worker could not be stopped, carry an owner record; a later server deletes
-  them when it starts only once their server is gone and no process holds
+  worker could not be stopped, carry an owner record. A later server, when it
+  starts, stops the workers such a server left running (nobody can collect
+  their results any more), then deletes the copies once no process holds
   anything inside them or still carries the copy's ``COPY_ENV`` variable
-  (:func:`sweep_copies`), and names what it keeps.
+  (:func:`sweep_copies`), and names what it stops and keeps.
 """
 
 from __future__ import annotations
@@ -578,8 +579,14 @@ def _remove_copies(scratch: Path) -> None:
     shutil.rmtree(scratch, ignore_errors=True)
 
 
-def _orphan(scratch: Path) -> tuple[bool, str, int | None]:
-    """(reclaimable, why not, the locked record fd) for one scratch directory.
+def _marker(scratch: Path) -> bytes:
+    """The environment entry every worker in ``scratch`` is started with."""
+    return f"{COPY_ENV}={scratch}".encode()
+
+
+def _orphan(scratch: Path) -> tuple[bool, str, int | None, set[int]]:
+    """(reclaimable, why not, the locked record fd, pids stopped) for one
+    scratch directory.
 
     Reclaimable only if all of: a directory (not a link) this user owns, with
     an owner record naming this very path, made in this boot and pid
@@ -588,19 +595,25 @@ def _orphan(scratch: Path) -> tuple[bool, str, int | None]:
     inside it (working or root directory, executable, open or mapped file)
     and none started after its owner carries ``COPY_ENV`` naming it, while
     every process that cannot be inspected started before its owner did.
+
+    Once its owner is gone and the record's lock is held, the processes that
+    started after the owner and carry ``COPY_ENV`` naming this very path are
+    stopped first (:func:`procs.stop_marked`): they are that server's workers
+    or what they started, and no reply will ever carry their results. A server
+    that is itself part of such a job (:func:`_part_of`) stops none.
     """
     try:
         st = os.lstat(scratch)
     except OSError as exc:
-        return False, f"cannot inspect it ({exc.strerror})", None
+        return False, f"cannot inspect it ({exc.strerror})", None, set()
     if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid():
-        return False, "not a directory of this user", None
+        return False, "not a directory of this user", None, set()
     try:
         fd = os.open(scratch / OWNER_RECORD, os.O_RDONLY | os.O_NOFOLLOW)
     except FileNotFoundError:
-        return False, "no owner record (copies a result handed over, or not ours)", None
+        return False, "no owner record (copies a result handed over, or not ours)", None, set()
     except OSError as exc:
-        return False, f"owner record unreadable ({exc.strerror})", None
+        return False, f"owner record unreadable ({exc.strerror})", None, set()
     try:
         record = json.loads(os.read(fd, 65536) or b"null")
         pid, start = record["pid"], record["start"]
@@ -609,7 +622,7 @@ def _orphan(scratch: Path) -> tuple[bool, str, int | None]:
             raise ValueError
     except (OSError, ValueError, TypeError, KeyError):
         os.close(fd)
-        return False, "owner record not understood", None
+        return False, "owner record not understood", None, set()
     if record.get("boot_id") != _boot_id() or _boot_id() is None:
         why = "made before the last reboot or on another machine"
     elif record.get("pid_ns") != _pid_ns() or _pid_ns() is None:
@@ -623,12 +636,27 @@ def _orphan(scratch: Path) -> tuple[bool, str, int | None]:
             why = "its owner record is locked by a running process"
         else:
             why = ""
-    if not why:
-        why = _in_use(scratch, since=start)
+    stopped: set[int] = set()
+    try:
+        if not why and not _part_of(scratch):
+            stopped = procs.stop_marked(_marker(scratch), since=start)
+        if not why:
+            why = _in_use(scratch, since=start)
+    except BaseException:
+        os.close(fd)
+        raise
     if why:
         os.close(fd)
-        return False, why, None
-    return True, "", fd
+        return False, why, None, stopped
+    return True, "", fd, stopped
+
+
+def _part_of(scratch: Path) -> bool:
+    """Whether this server runs inside one of ``scratch``'s jobs: it carries
+    the copy's ``COPY_ENV`` entry, or descends from a process started with it.
+    Such a server stops none of that job's processes (they include its own
+    ancestors)."""
+    return os.environ.get(COPY_ENV) == str(scratch) or procs.lineage_carries(_marker(scratch))
 
 
 def _in_use(scratch: Path, *, since: int) -> str:
@@ -641,7 +669,7 @@ def _in_use(scratch: Path, *, since: int) -> str:
                 inodes.add((entry.st_dev, entry.st_ino))
     except OSError as exc:
         return f"cannot list it ({exc.strerror})"
-    seen = procs.holders(inodes, since=since, environ=f"{COPY_ENV}={scratch}".encode())
+    seen = procs.holders(inodes, since=since, environ=_marker(scratch))
     if seen is None:
         return "cannot tell which processes use it (/proc unreadable)"
     if seen[0]:
@@ -657,9 +685,10 @@ def _raise(exc: OSError) -> None:
 
 
 def sweep_copies(tmpdir: str | None = None) -> list[str]:
-    """Delete scratch directories a dead server left in ``tmpdir`` (default
-    ``$TMPDIR``) that no process can still write to (:func:`_orphan`); keep
-    every other ``COPY_PREFIX*`` entry. Returns one line per entry.
+    """Stop the workers a dead server left running, and delete the scratch
+    directories it left in ``tmpdir`` (default ``$TMPDIR``) that no process can
+    still write to (:func:`_orphan`); keep every other ``COPY_PREFIX*`` entry.
+    Returns a line per entry, and one before it for the workers it stopped.
     """
     lines = []
     base = Path(tmpdir or tempfile.gettempdir())
@@ -668,7 +697,10 @@ def sweep_copies(tmpdir: str | None = None) -> list[str]:
     except OSError:
         return lines
     for scratch in entries:
-        ok, why, fd = _orphan(scratch)
+        ok, why, fd, stopped = _orphan(scratch)
+        if stopped:
+            lines.append(f"stopped {scratch}: pid {', '.join(map(str, sorted(stopped)))} still "
+                         f"worked for its server, which had ended")
         if not ok:
             lines.append(f"kept {scratch}: {why}")
             continue

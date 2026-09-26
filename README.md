@@ -780,22 +780,33 @@ with a shell:
   A second `SIGTERM`/`SIGHUP` while the server is stopping is ignored, so it
   cannot cut that cleanup short; `SIGKILL` still ends the server at once and
   leaves the copies, and its running workers go on running (each is in a
-  session of its own) with no timeout applied. `Ctrl-C` runs the same cleanup,
+  session of its own) with no timeout applied and no one to stop them until
+  the next server starts, which stops them (below). `Ctrl-C` runs the same cleanup,
   and a further `Ctrl-C`, `SIGTERM` or `SIGHUP` during it is ignored as well.
   In `route-run`, a further `Ctrl-C`, `SIGTERM` or `SIGHUP` after the first
   `Ctrl-C` is ignored, so the agent keeps its full grace period before
   `SIGKILL`, and `route-run` exits as interrupted by `Ctrl-C`. Without a
   `Ctrl-C` first, a `SIGTERM`/`SIGHUP` still ends `route-run` promptly, after
   stopping the agent with a shorter grace period (0.5 s).
-- **Copies left behind are reclaimed when the next server starts, only if
-  nothing can still write to them.** Each run's scratch directory holds an
+- **Workers a killed server left running are stopped, and its copies
+  reclaimed, when the next server starts; a copy is deleted only if nothing can
+  still write to it.** Each run's scratch directory holds an
   owner record (`.auto-router-owner.json`: the server's pid and start time,
   the boot id and the pid namespace), which the server keeps locked while it
   runs and deletes when a result hands the copies over. When the server starts,
   it deletes an `$TMPDIR/auto-router-delegate-*` directory only if all of
   these hold: it is a directory (not a link) owned by you; its record names
   that very path and comes from this boot and this pid namespace; no process
-  has the recorded pid and start time and the record's lock is free; no
+  has the recorded pid and start time and the record's lock is free. Holding
+  that lock, it first stops that dead server's job: every process that started
+  after the server did and was started with `AUTO_ROUTER_DELEGATE_COPY` naming
+  that very directory gets `SIGTERM`, 2 s to end, then `SIGKILL`, each only
+  through a pidfd that still shows the start time and the variable found (so
+  a pid reused meanwhile, an older process, a process of another copy or one
+  that merely holds a file there is never signalled; without pidfd support
+  nothing is), and it names them on stderr (`stopped …`). A server that itself
+  runs inside that job (it has the variable, or descends from a process that
+  had it) stops nothing. Then it deletes the directory only if: no
   process visible in `/proc` holds anything inside it (working or root
   directory, executable, open or mapped file); no process started after that
   server was started with `AUTO_ROUTER_DELEGATE_COPY` naming that directory in
@@ -806,8 +817,9 @@ with a shell:
   server did. Everything else stays and is named, with the reason, on the
   server's stderr: copies a result handed over (they have no record; delete
   them yourself once applied), directories without a readable record, copies
-  from before a reboot or from another container, and copies still in use,
-  which a later start reclaims once they are not. The record is deleted last,
+  from before a reboot or from another container, and copies still in use
+  (by a process it may not stop), which a later start reclaims once they are
+  not. The record is deleted last,
   so an interrupted reclaim is finished by the next start; a server killed in
   the moment between creating the directory and writing the record leaves an
   empty directory (at most an empty record in it) that is never reclaimed. What the check cannot see is a
@@ -817,8 +829,13 @@ with a shell:
   its tools, or by an `env -i`/`exec` of its own), or one that got the path
   some other way (a file, a socket). /proc keeps no other link from such a
   process to the copy once its parent has exited; only running the workers in
-  a cgroup or sandbox contains that. Nothing is reclaimed while a server runs,
-  only when one starts.
+  a cgroup or sandbox contains that; such a process is neither stopped nor
+  seen. Nor is a single worker, which runs in `cwd` itself with no copy, no
+  record and no variable: a killed server's single worker runs until it ends.
+  Nothing is stopped or reclaimed while a server runs, only when one starts,
+  so between a `SIGKILL` of the server and the next start its workers run
+  unsupervised (closing that needs `PR_SET_PDEATHSIG` on the workers, or a
+  cgroup).
 - **Symlinks in copies.** A copy keeps a symlink only if its target is relative
   and stays inside the copy, both as written and after following every link on
   the way. Absolute links (even into the project, which would lead back to the

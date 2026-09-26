@@ -28,6 +28,7 @@ choice (README, "Use it as a subagent layer").
 from __future__ import annotations
 
 import os
+import select
 import signal
 import subprocess
 import sys
@@ -37,6 +38,8 @@ from typing import Any
 
 #: Seconds between SIGTERM and SIGKILL.
 GRACE_S = 2.0
+#: SIGKILL rounds of :func:`stop_marked`, each after a fresh scan.
+KILL_ROUNDS = 3
 
 #: Jobs currently running under :func:`run`, so a supervisor that is itself
 #: told to stop can end them (:func:`terminate_all`).
@@ -159,19 +162,149 @@ def holders(inodes: set[tuple[int, int]], *, since: int,
                 continue
             started = int(fields[19])
             refs = _references(base, majors)
-            marked = False
-            if environ is not None and started >= since:
-                with open(f"{base}/environ", "rb") as fh:
-                    marked = environ in fh.read().split(b"\0")
+            carries = environ is not None and started >= since and _carries(base, environ)
         except (FileNotFoundError, ProcessLookupError):
             continue  # gone meanwhile
         except (OSError, IndexError, ValueError):
             if started is None or started >= since:
                 unreadable.add(pid)
             continue
-        if marked or refs & inodes:
+        if carries or refs & inodes:
             holding.add(pid)
     return holding, unreadable
+
+
+def _carries(base: str, environ: bytes) -> bool:
+    """Whether the process at ``base`` was started with exactly the entry ``environ``.
+
+    ``/proc/<pid>/environ`` is the environment as it was exec'd; a later
+    ``unsetenv`` does not remove an entry from it.
+    """
+    with open(f"{base}/environ", "rb") as fh:
+        return environ in fh.read().split(b"\0")
+
+
+def marked(environ: bytes, *, since: int) -> dict[int, int] | None:
+    """pid -> start time of each live process started at or after ``since``
+    whose environment, as it was started, has the entry ``environ``
+    (``b"NAME=value"``). None when ``/proc`` cannot be read at all; a process
+    whose environment cannot be read is not in it.
+    """
+    try:
+        names = os.listdir("/proc")
+    except OSError:
+        return None
+    found: dict[int, int] = {}
+    for name in names:
+        if not name.isdigit() or int(name) == os.getpid():
+            continue
+        try:
+            with open(f"/proc/{name}/stat", "rb") as fh:
+                raw = fh.read().decode("utf-8", "replace")
+            fields = raw[raw.rfind(")") + 2:].split()
+            started = int(fields[19])
+            if fields[0] not in ("Z", "X") and started >= since and _carries(f"/proc/{name}", environ):
+                found[int(name)] = started
+        except (OSError, IndexError, ValueError):
+            continue
+    return found
+
+
+def _pin(pid: int, start: int, environ: bytes) -> int | None:
+    """A pidfd for ``pid`` if it is still the process that started at
+    ``start`` and carries ``environ``, else None.
+
+    Checked after the pidfd is open: a pid is never held by two processes at
+    once, so a process that shows that start time then is the one the fd
+    refers to, and a pid reused before the check fails it.
+    """
+    try:
+        fd = os.pidfd_open(pid)
+    except (AttributeError, OSError):  # no pidfd support, or already gone
+        return None
+    try:
+        if start_time(pid) == start and _carries(f"/proc/{pid}", environ):
+            return fd
+    except OSError:
+        pass
+    os.close(fd)
+    return None
+
+
+def _ended(pidfd: int) -> bool:
+    poller = select.poll()
+    poller.register(pidfd, select.POLLIN)
+    return bool(poller.poll(0))
+
+
+def stop_marked(environ: bytes, *, since: int, grace_s: float = GRACE_S) -> set[int]:
+    """Stop what :func:`marked` finds: ``SIGTERM``, ``grace_s`` to go, then ``SIGKILL``.
+
+    For the jobs of a supervisor that is gone, so none of them is a child of
+    this process and each may have ended and its pid been reused by the time
+    it is signalled. Each is therefore signalled only through a pidfd
+    (:func:`_pin`); a process that cannot be pinned so is not signalled at
+    all. Before each ``SIGKILL`` round the scan is repeated, so what the job
+    started meanwhile (a ``SIGTERM`` trap's commands, a fork) is found too; the
+    rounds are bounded, and whatever still runs after them is left to the
+    caller's own check. Returns the pids signalled.
+    """
+    pinned: dict[tuple[int, int], int] = {}
+    signalled: set[int] = set()
+    rounds = ((signal.SIGTERM, grace_s),) + ((signal.SIGKILL, 5.0),) * KILL_ROUNDS
+    try:
+        for sig, wait_s in rounds:
+            for key in (marked(environ, since=since) or {}).items():
+                if key not in pinned:
+                    fd = _pin(*key, environ)
+                    if fd is not None:
+                        pinned[key] = fd
+            live = {key: fd for key, fd in pinned.items() if not _ended(fd)}
+            if not live:
+                break
+            for (pid, _), fd in live.items():
+                try:
+                    signal.pidfd_send_signal(fd, sig)
+                    signalled.add(pid)
+                except (ProcessLookupError, PermissionError):
+                    pass
+            deadline = time.monotonic() + wait_s
+            while not all(_ended(fd) for fd in live.values()) and time.monotonic() < deadline:
+                time.sleep(0.02)
+    finally:
+        for fd in pinned.values():
+            os.close(fd)
+    return signalled
+
+
+def lineage_carries(environ: bytes) -> bool:
+    """Whether this process, or one it descends from, was started with the
+    entry ``environ``. An ancestor whose environment cannot be read (another
+    user's, such as init, or a non-dumpable one) does not count, but the walk
+    goes on past it.
+    """
+    pid = os.getpid()
+    seen: set[int] = set()
+    while pid > 0 and pid not in seen:
+        seen.add(pid)
+        try:
+            if _carries(f"/proc/{pid}", environ):
+                return True
+        except OSError:
+            if pid == os.getpid():
+                return True  # cannot even read itself: assume it is part of the job
+        pid = _parent(pid)
+    return False
+
+
+def _parent(pid: int) -> int:
+    """The parent pid of ``pid``; 0 when there is none or it cannot be read."""
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as fh:
+            raw = fh.read().decode("utf-8", "replace")
+        return int(raw[raw.rfind(")") + 2:].split()[1])
+    except (OSError, IndexError, ValueError):
+        return 0
 
 
 def _signal(root: int, targets: set[int] | None, sig: int) -> None:

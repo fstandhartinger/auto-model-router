@@ -1654,25 +1654,111 @@ def test_copies_of_a_killed_server_are_reclaimed_once_their_workers_are_gone(
         _kill_workers(marks)
 
 
-def test_copies_a_worker_of_a_killed_server_still_writes_to_are_kept(hermetic, tmp_path):
+def test_copies_a_worker_of_a_killed_server_still_writes_to_are_deleted_only_after_it_is_stopped(
+        hermetic, tmp_path):
+    # Until round 13 this pinned the opposite (a later server "must leave them
+    # be" and keep the copies until yet another start after they ended). That
+    # left the dead server's workers running with no supervisor and no timeout,
+    # and no stop request reached them. Now the next server stops them first -
+    # nobody can collect their results any more - and deletes the copies only
+    # once nothing runs there.
     scratch, marks, env = _killed_server_copies(hermetic, tmp_path)
+    workers = _worker_pids(marks)
     try:
-        # The workers outlived the server (their sessions are their own) and
-        # keep writing into their copies: a later server must leave them be.
-        assert len(_alive(_worker_pids(marks))) == 2
-        said = _start_server(hermetic, env)
-        assert (scratch / "worker-1" / "a.txt").exists() and (scratch / "worker-2").is_dir()
-        assert f"kept {scratch}" in said and "in use by pid" in said
-        before = (scratch / "worker-1" / "written.txt").read_text()
-        time.sleep(0.3)
-        assert (scratch / "worker-1" / "written.txt").read_text() != before, "worker stopped"
-        # Once they are gone, the next server reclaims the copies.
-        _kill_workers(marks)
-        _wait_gone(_worker_pids(marks))
-        _start_server(hermetic, env)
+        assert len(_alive(workers)) == 2
+        said = _start_server(hermetic, env).splitlines()
+        assert not _alive(workers)
+        stopped = [i for i, line in enumerate(said) if f"stopped {scratch}: pid" in line]
+        removed = [i for i, line in enumerate(said) if f"removed {scratch}" in line]
+        assert stopped and removed and stopped[0] < removed[0], said
+        assert all(str(pid) in said[stopped[0]] for pid in workers)
         assert not scratch.exists()
     finally:
         _kill_workers(marks)
+
+
+POLITE_WORKER = """
+# $1 marks, $2 its copy: writes there until $1/quit appears; on SIGTERM notes
+# that it was asked to stop, and does. Its output goes nowhere: the pipes to
+# its server have no reader once that server is killed, and a shell that
+# reports its SIGTERM'd `sleep` there dies of SIGPIPE before its trap runs.
+exec >/dev/null 2>&1
+trap 'touch "$1/term-$$"; exit 0' TERM
+echo $$ > "$1/.p$$" && mv "$1/.p$$" "$1/pid-$$"
+while [ ! -e "$1/quit" ]; do date +%s%N > "$2/written.txt"; sleep 0.05; done
+"""
+
+
+def _serving_server(hermetic: Path, env: dict) -> subprocess.Popen:
+    """Start a fresh server and return it once it serves (its start-up sweep is over)."""
+    proc = subprocess.Popen([sys.executable, "-m", "auto_router.delegate"], cwd=hermetic,
+                            env=env, text=True, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE)
+    proc.stdin.write(json.dumps({"jsonrpc": "2.0", "id": 1, "method": "ping"}) + "\n")
+    proc.stdin.flush()
+    assert json.loads(proc.stdout.readline())["id"] == 1
+    return proc
+
+
+def _alive_after(pids: list[int], seconds: float) -> list[int]:
+    deadline = time.monotonic() + seconds
+    while _alive(pids) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    return _alive(pids)
+
+
+def test_workers_a_killed_server_left_running_are_stopped_by_the_next_server(
+        hermetic, tmp_path):
+    scratch, marks, env = _killed_server_copies(hermetic, tmp_path, POLITE_WORKER)
+    workers = _worker_pids(marks)
+    try:
+        # Nobody supervises them now: their server is gone and their sessions
+        # are their own, so they run on and keep writing into their copies.
+        time.sleep(0.5)
+        assert len(_alive(workers)) == 2
+        said = _start_server(hermetic, env)
+        assert not _alive(workers), f"the next server left them running: {said!r}"
+        # Asked to stop the way their own server would have: SIGTERM first.
+        assert sorted(p.name for p in marks.glob("term-*")) == sorted(f"term-{p}" for p in workers)
+        [stopped] = [line for line in said.splitlines() if f"stopped {scratch}" in line]
+        assert all(str(pid) in stopped for pid in workers)
+        assert f"removed {scratch}" in said and not scratch.exists()
+    finally:
+        _kill_workers(marks)
+
+
+def test_a_killed_servers_copy_does_not_wait_for_yet_another_start_once_its_workers_end(
+        hermetic, tmp_path):
+    scratch, marks, env = _killed_server_copies(hermetic, tmp_path, POLITE_WORKER)
+    workers = _worker_pids(marks)
+    server = _serving_server(hermetic, env)
+    try:
+        # Whatever ends them - that server, or they themselves - once they have
+        # ended, their copy is not left on disk until some later server starts.
+        (marks / "quit").touch()
+        _wait_gone(workers)
+        assert not scratch.exists(), "the copy stays until yet another server starts"
+    finally:
+        _kill_workers(marks)
+        server.communicate(timeout=30)
+
+
+def test_a_stop_request_to_the_next_server_leaves_no_killed_servers_worker_running(
+        hermetic, tmp_path):
+    scratch, marks, env = _killed_server_copies(hermetic, tmp_path, POLITE_WORKER)
+    workers = _worker_pids(marks)
+    server = _serving_server(hermetic, env)
+    try:
+        # The only stop request a live path takes is one to a running server.
+        server.send_signal(signal.SIGTERM)
+        server.communicate(timeout=30)
+        assert server.returncode == 128 + signal.SIGTERM
+        assert not _alive_after(workers, 3), "no stop request can reach the dead server's workers"
+    finally:
+        _kill_workers(marks)
+        if server.poll() is None:
+            server.kill()
+            server.communicate(timeout=30)
 
 
 DETACHING_WORKER = """
@@ -1704,8 +1790,13 @@ def _kill_detached(pids: list[int]) -> None:
                 pass
 
 
-def test_a_copy_a_detached_descendant_of_a_dead_worker_may_write_to_is_kept(
+def test_a_detached_descendant_of_a_dead_worker_is_stopped_before_its_copy_is_reclaimed(
         hermetic, tmp_path):
+    # Until round 13 the next server kept this copy "in use" and left the
+    # detached processes running, to be reclaimed at some later start. They
+    # carry the copy's COPY_ENV entry and started after its dead server, so
+    # they are that server's job: now they are stopped, and only then is the
+    # copy deleted. A live process still never writes into a deleted copy.
     scratch, marks, env = _killed_server_copies(hermetic, tmp_path, DETACHING_WORKER)
     detached = _detached_pids(marks, 2)
     try:
@@ -1719,20 +1810,13 @@ def test_a_copy_a_detached_descendant_of_a_dead_worker_may_write_to_is_kept(
         for pid in detached:
             assert os.getsid(pid) == pid and os.readlink(f"/proc/{pid}/cwd") == "/"
         said = _start_server(hermetic, env)
+        assert not _alive(detached), said
+        [stopped] = [line for line in said.splitlines() if f"stopped {scratch}" in line]
+        assert all(str(pid) in stopped for pid in detached)
+        assert f"removed {scratch}" in said and not scratch.exists()
         (marks / "go").touch()
-        deadline = time.monotonic() + 10
-        while len(list(marks.glob("wrote-*"))) < 2 and time.monotonic() < deadline:
-            time.sleep(0.05)
-        late = sorted(scratch.glob("worker-*/late.txt"))
-        assert not (f"removed {scratch}" in said and late), (
-            f"the sweep reclaimed a copy a live process then wrote into: {said!r} {late}")
-        assert f"kept {scratch}" in said and "in use by pid" in said, said
-        assert (scratch / "worker-1" / "a.txt").exists() and len(late) == 2
-        # Once the detached processes are gone, the next server reclaims it.
-        _kill_detached(detached)
-        _wait_gone(detached)
-        assert f"removed {scratch}" in _start_server(hermetic, env)
-        assert not scratch.exists()
+        time.sleep(0.5)
+        assert not list(marks.glob("wrote-*")) and not scratch.exists()
     finally:
         _kill_workers(marks)
         _kill_detached(detached)
@@ -1814,19 +1898,244 @@ def _marked(scratch: Path) -> subprocess.Popen:
                                  delegate.COPY_ENV: str(scratch)})
 
 
-def test_a_copy_a_later_process_carries_the_copy_variable_of_is_kept(tmp_path):
+def _gone(proc: subprocess.Popen) -> bool:
+    return proc.poll() is not None
+
+
+def _stop_line(scratch: Path, *pids: int) -> str:
+    return (f"stopped {scratch}: pid {', '.join(map(str, sorted(pids)))} still worked for its "
+            f"server, which had ended")
+
+
+def test_a_later_process_carrying_a_dead_servers_copy_variable_is_stopped_then_reclaimed(
+        tmp_path):
+    # Until round 13 this pinned "kept: in use by pid" and the process was left
+    # running. Started after the copy's server and carrying its COPY_ENV entry,
+    # it is part of that dead server's job: it is now stopped, politely first,
+    # and the copy reclaimed in the same sweep. A process carrying another
+    # copy's entry whose name starts the same is not touched.
     scratch = _left_copy(tmp_path)
-    other = _marked(Path(f"{scratch}2"))  # another copy, whose name starts the same
+    other = _marked(Path(f"{scratch}2"))
     marked = _marked(scratch)
     try:
         assert delegate.sweep_copies(str(tmp_path)) == [
-            f"kept {scratch}: in use by pid {marked.pid}"]
-        assert (scratch / "worker-1" / "a.txt").exists()
+            _stop_line(scratch, marked.pid),
+            f"removed {scratch}: its server and every worker had ended"]
+        assert marked.wait(5) == -signal.SIGTERM
+        assert not _gone(other), "a process of another copy was signalled"
     finally:
         for proc in (marked, other):
             proc.kill()
             proc.wait()
-    assert delegate.sweep_copies(str(tmp_path))[0].startswith(f"removed {scratch}")
+
+
+def test_a_copy_whose_marked_process_cannot_be_pinned_is_kept_and_nothing_signalled(
+        tmp_path, monkeypatch):
+    # Without pidfds a process that is not a child cannot be signalled safely
+    # (its pid may be reused meanwhile), so nothing is, and the copy stays in
+    # use as before round 13.
+    monkeypatch.delattr(procs.os, "pidfd_open")
+    scratch = _left_copy(tmp_path)
+    marked = _marked(scratch)
+    try:
+        assert delegate.sweep_copies(str(tmp_path)) == [
+            f"kept {scratch}: in use by pid {marked.pid}"]
+        assert not _gone(marked) and (scratch / "worker-1" / "a.txt").exists()
+    finally:
+        marked.kill()
+        marked.wait()
+
+
+def test_the_sweep_never_signals_a_process_older_than_the_dead_server(tmp_path):
+    older = _marked(tmp_path / "auto-router-delegate-left")
+    try:
+        time.sleep(0.1)  # a later clock tick than the owner's start
+        scratch = _left_copy(tmp_path)
+        assert procs.start_time(older.pid) < json.loads(
+            (scratch / delegate.OWNER_RECORD).read_text())["start"]
+        assert delegate.sweep_copies(str(tmp_path)) == [
+            f"removed {scratch}: its server and every worker had ended"]
+        time.sleep(0.2)
+        assert not _gone(older)
+    finally:
+        older.kill()
+        older.wait()
+
+
+def test_a_reused_pid_is_never_signalled(tmp_path, monkeypatch):
+    # What the scan found may end and its pid go to another process before the
+    # signal: only a pidfd whose process still shows the start time and the
+    # entry found is used. Here the scan reports a start the pid does not have.
+    scratch = _left_copy(tmp_path)
+    marker = delegate._marker(scratch)
+    marked = _marked(scratch)
+    try:
+        start = procs.start_time(marked.pid)
+        assert procs._pin(marked.pid, start + 1, marker) is None
+        assert procs._pin(marked.pid, start, marker + b"2") is None
+        fd = procs._pin(marked.pid, start, marker)
+        assert fd is not None
+        os.close(fd)
+        monkeypatch.setattr(procs, "marked", lambda environ, since: {marked.pid: start + 1})
+        assert procs.stop_marked(marker, since=0, grace_s=0.2) == set()
+        time.sleep(0.2)
+        assert not _gone(marked)
+    finally:
+        marked.kill()
+        marked.wait()
+
+
+def test_a_holder_without_the_copy_variable_is_never_signalled(tmp_path):
+    scratch = _left_copy(tmp_path)
+    holder = subprocess.Popen([sys.executable, "-c",
+                               "import sys,time; f=open(sys.argv[1]); print(1, flush=True); "
+                               "time.sleep(30)", str(scratch / "worker-1" / "a.txt")],
+                              cwd="/", stdout=subprocess.PIPE, text=True)
+    try:
+        holder.stdout.readline()
+        assert delegate.sweep_copies(str(tmp_path)) == [
+            f"kept {scratch}: in use by pid {holder.pid}"]
+        assert not _gone(holder)
+    finally:
+        holder.kill()
+        holder.wait()
+
+
+def test_nothing_is_signalled_while_the_copys_server_runs(tmp_path):
+    scratch = _left_copy(tmp_path, pid=os.getpid(), start=procs.start_time(os.getpid()))
+    marked = _marked(scratch)
+    try:
+        assert delegate.sweep_copies(str(tmp_path)) == [
+            f"kept {scratch}: its server (pid {os.getpid()}) is still running"]
+        time.sleep(0.2)
+        assert not _gone(marked)
+    finally:
+        marked.kill()
+        marked.wait()
+
+
+def test_nothing_is_signalled_while_the_owner_record_is_locked(tmp_path):
+    scratch = _left_copy(tmp_path)
+    locker = subprocess.Popen([sys.executable, "-c",
+                               "import fcntl,sys,time; f=open(sys.argv[1]); "
+                               "fcntl.flock(f, fcntl.LOCK_EX); print(1, flush=True); time.sleep(30)",
+                               str(scratch / delegate.OWNER_RECORD)],
+                              stdout=subprocess.PIPE, text=True)
+    marked = _marked(scratch)
+    try:
+        locker.stdout.readline()
+        assert delegate.sweep_copies(str(tmp_path)) == [
+            f"kept {scratch}: its owner record is locked by a running process"]
+        time.sleep(0.2)
+        assert not _gone(marked)
+    finally:
+        for proc in (marked, locker):
+            proc.kill()
+            proc.wait()
+
+
+def test_a_server_inside_the_dead_servers_job_stops_none_of_it(tmp_path, monkeypatch):
+    # A server started by one of that job's workers (it carries the entry, or
+    # descends from a process that does) would otherwise stop its own
+    # ancestors.
+    scratch = _left_copy(tmp_path)
+    marked = _marked(scratch)
+    try:
+        monkeypatch.setenv(delegate.COPY_ENV, str(scratch))
+        assert delegate.sweep_copies(str(tmp_path)) == [
+            f"kept {scratch}: in use by pid {marked.pid}"]
+        monkeypatch.delenv(delegate.COPY_ENV)
+        # The parent shell carries the entry; the sweeping server was started
+        # with it removed.
+        env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "PYTHONPATH": str(ROOT),
+               delegate.COPY_ENV: str(scratch)}
+        code = ("import sys; from auto_router import delegate; "
+                "print(repr(delegate.sweep_copies(sys.argv[1])))")
+        child = subprocess.run(
+            ["sh", "-c", f'env -u {delegate.COPY_ENV} "$0" -c "$1" "$2"; echo "shell $$ lived"',
+             sys.executable, code, str(tmp_path)],
+            env=env, capture_output=True, text=True, timeout=60)
+        assert child.returncode == 0, child.stderr
+        assert "stopped" not in child.stdout and "lived" in child.stdout, child.stdout
+        assert not _gone(marked)
+    finally:
+        marked.kill()
+        marked.wait()
+
+
+def test_the_walk_up_goes_past_an_ancestor_it_cannot_read(monkeypatch):
+    # A non-dumpable ancestor (sudo, ssh) must not hide a marked one above it.
+    # The chain is made up: this process -> 1001 (unreadable) -> 1002 (marked).
+    me = os.getpid()
+    chain = {me: 1001, 1001: 1002, 1002: 0}
+
+    def carries(base, environ):
+        pid = int(base.rsplit("/", 1)[1])
+        if pid == 1001:
+            raise PermissionError(13, "Permission denied")
+        return pid == 1002
+
+    monkeypatch.setattr(procs, "_parent", chain.__getitem__)
+    monkeypatch.setattr(procs, "_carries", carries)
+    assert procs.lineage_carries(b"AUTO_ROUTER_DELEGATE_COPY=/nowhere")
+    chain[1001] = 0  # nothing marked above the unreadable one
+    assert not procs.lineage_carries(b"AUTO_ROUTER_DELEGATE_COPY=/nowhere")
+
+
+def test_a_marked_process_that_ignores_sigterm_is_killed_within_the_bound(tmp_path):
+    scratch = _left_copy(tmp_path)
+    stubborn = subprocess.Popen(["sh", "-c", "trap '' TERM; echo ready; while :; do sleep 0.05; done"],
+                                cwd="/", stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, text=True,
+                                env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                                     delegate.COPY_ENV: str(scratch)})
+    try:
+        assert stubborn.stdout.readline() == "ready\n"
+        started = time.monotonic()
+        lines = delegate.sweep_copies(str(tmp_path))
+        took = time.monotonic() - started
+        assert stubborn.wait(5) == -signal.SIGKILL
+        assert procs.GRACE_S <= took < procs.GRACE_S + 5, took
+        assert lines[0].startswith(f"stopped {scratch}: pid ") and str(stubborn.pid) in lines[0]
+        assert lines[1] == f"removed {scratch}: its server and every worker had ended"
+    finally:
+        stubborn.kill()
+        stubborn.wait()
+
+
+SPAWNING_ON_TERM = """
+# $1 marks: on SIGTERM leaves a helper that ignores SIGTERM and detaches, then ends.
+trap 'setsid sh -c "trap \\"\\" TERM; echo \\$\\$ > $1/helper; while :; do sleep 0.05; done" </dev/null >/dev/null 2>&1 & exit 0' TERM
+echo ready
+while :; do sleep 0.05; done
+"""
+
+
+def test_what_a_stopped_process_starts_meanwhile_is_stopped_too(tmp_path):
+    # The scan is repeated before SIGKILL: a helper the job started while it was
+    # being asked to stop carries the entry too and would otherwise keep the copy.
+    scratch = _left_copy(tmp_path)
+    marks = tmp_path / "marks"
+    marks.mkdir()
+    worker = subprocess.Popen([_script(tmp_path / "w.sh", SPAWNING_ON_TERM), str(marks)], cwd="/",
+                              stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, text=True,
+                              env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                                   delegate.COPY_ENV: str(scratch)})
+    try:
+        assert worker.stdout.readline() == "ready\n"
+        lines = delegate.sweep_copies(str(tmp_path))
+        assert worker.wait(5) == 0, lines
+        # Removed means the check after stopping saw no process with the entry:
+        # the helper, which ignores SIGTERM, was found and killed. (It may be
+        # killed before it could note its pid, so that is not relied on.)
+        assert lines[0].startswith(f"stopped {scratch}: pid ") and str(worker.pid) in lines[0]
+        assert lines[1] == f"removed {scratch}: its server and every worker had ended", lines
+        assert len(lines) == 2
+    finally:
+        worker.kill()
+        worker.wait()
+        helper = (marks / "helper").read_text().strip() if (marks / "helper").exists() else ""
+        if helper.isdigit():
+            _kill_detached([int(helper)])
 
 
 def test_a_process_older_than_the_copys_server_does_not_keep_it_by_its_variable(tmp_path):
