@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "auto-model-router"
-version = "0.5.0"
+version = "0.5.1"
 description = "A cost-, cache- and quota-aware LLM router"
 readme = "README.md"
 requires-python = ">=3.10"

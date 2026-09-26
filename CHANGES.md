@@ -1,5 +1,21 @@
 # Changes
 
+## 0.5.1 — fixes found by the paired A/B study (26 Sep 2026)
+
+- **GPT-6 over the Responses API** (`api: responses` on a provider). GPT-6 Luna
+  refuses function tools with reasoning on `/v1/chat/completions` (HTTP 400),
+  so every Claude Code turn routed to it failed. Such providers are now called
+  on `/v1/responses`; answers are converted back to chat-completions shape
+  (usage incl. cached tokens, tool calls, length stops) and streams are
+  replayed as chat SSE. `examples/models.yaml` and the installer use it for
+  OpenAI. `store` is always false.
+- **Streamed answers below the intelligence threshold are graded.** A route
+  that was both cheap-tier and below GPT-5.6 Terra was reported under the
+  cheap-tier rule, so its stream was never held back and no Claude Code answer
+  from it was graded. The threshold rule now takes precedence.
+- **The answer judge sees the user's request**, not the empty tool-result
+  message that ends an agent's tool loop.
+
 ## 0.5.0 — live benchmark data, local models, quality escalation (26 Sep 2026)
 
 - **Benchmark Heaven endpoints checked against the live site** (25 Sep 2026):

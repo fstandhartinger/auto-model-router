@@ -47,7 +47,7 @@ from .truncation import label_for_stop_reason, truncation_label
 
 log = logging.getLogger("auto_router.server")
 
-app = FastAPI(title="auto-model-router", version="0.5.0")
+app = FastAPI(title="auto-model-router", version="0.5.1")
 
 #: Routes only a launched client can reach are not endpoints, so the HTTP
 #: surface never sees them. See ``config.for_http`` and ``launcher.py``.
