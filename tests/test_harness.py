@@ -1,8 +1,12 @@
 """Harness configuration in temporary HOME directories: edits, backups, refusals, undo."""
 import json
 import subprocess
-import tomllib
 from pathlib import Path
+
+try:  # Python 3.10 support; tomli is declared in the test extra there.
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - exercised by Python 3.10 CI
+    import tomli as tomllib
 
 import pytest
 import yaml

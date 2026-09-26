@@ -13,7 +13,7 @@ dependencies = ["fastapi>=0.110", "uvicorn[standard]>=0.29", "httpx>=0.27", "pyy
 
 [project.optional-dependencies]
 local = ["laya>=0.3.4", "torch>=2.0"]
-test = ["pytest>=8.0", "pytest-asyncio>=0.23"]
+test = ["pytest>=8.0", "pytest-asyncio>=0.23", "tomli>=2.0; python_version < '3.11'"]
 
 [project.scripts]
 auto-model-router = "auto_router.server:main"
