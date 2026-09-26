@@ -110,8 +110,9 @@ def render_config(*, groups: list[str], keys: dict[str, bool], src: str,
               "  tensorx:", "    base_url: https://api.tensorx.ai/v1",
               "    api_key_env: TENSORX_API_KEY", "    cache: openai"]
         if keys.get("OPENAI_API_KEY"):
+            # GPT-6 models refuse tools with reasoning on chat completions.
             L += ["  openai:", "    base_url: https://api.openai.com/v1",
-                  "    api_key_env: OPENAI_API_KEY", "    cache: openai"]
+                  "    api_key_env: OPENAI_API_KEY", "    cache: openai", "    api: responses"]
         for name, or_id, bench_id, tx_id, oa_id in CLOUD_MODELS:
             vendor = "Anthropic" if "claude" in name else ("OpenAI" if "gpt" in name else None)
             offer = "{platform: OpenRouter" + (f", provider: {vendor}}}" if vendor else "}")

@@ -18,12 +18,14 @@ import logging
 import os
 import time
 import uuid
+from contextlib import asynccontextmanager
 from typing import Any
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
+from . import responses_api
 from .config import Provider, RouterConfig, for_http, load_config
 from .decision import ObservedOutcome
 from .metrics import metrics
@@ -141,6 +143,37 @@ def provider_payload(provider: Provider, payload: dict) -> dict:
         value = payload.pop("max_tokens")
         payload.setdefault(field_name, value)
     return payload
+
+
+async def upstream_post(provider: Provider, payload: dict) -> httpx.Response:
+    """One unstreamed completion; the answer always comes back in chat-completions shape."""
+    if provider.api != "responses":
+        return await client().post(f"{provider.base_url}/chat/completions",
+                                   headers=provider_headers(provider), json=provider_payload(provider, payload))
+    resp = await client().post(f"{provider.base_url}/responses", headers=provider_headers(provider),
+                               json=responses_api.chat_to_responses(payload))
+    if resp.status_code != 200:
+        return resp
+    return httpx.Response(200, json=responses_api.responses_to_chat(resp.json()))
+
+
+@asynccontextmanager
+async def upstream_stream(provider: Provider, payload: dict):
+    """A streamed completion as chat-completions SSE lines.
+
+    A Responses-API provider is called unstreamed and its answer replayed as
+    SSE (see ``responses_api``), so every caller parses one format.
+    """
+    if provider.api != "responses":
+        async with client().stream("POST", f"{provider.base_url}/chat/completions",
+                                   headers=provider_headers(provider),
+                                   json=provider_payload(provider, payload)) as resp:
+            yield resp
+        return
+    resp = await upstream_post(provider, payload)
+    if resp.status_code == 200:
+        resp = httpx.Response(200, text="\n".join(responses_api.chat_sse(resp.json())) + "\n")
+    yield resp
 
 
 @app.on_event("shutdown")
@@ -269,8 +302,7 @@ async def chat_completions(request: Request) -> Any:
         payload = {**body, "model": result.model.upstream_id}
         started = time.perf_counter()
         try:
-            resp = await client().post(f"{provider.base_url}/chat/completions",
-                                       headers=provider_headers(provider), json=provider_payload(provider, payload))
+            resp = await upstream_post(provider, payload)
             data = resp.json() if resp.content else {}
         except (httpx.HTTPError, json.JSONDecodeError) as exc:
             resp, data = None, {"error": type(exc).__name__}
@@ -429,8 +461,7 @@ async def _stream_upstream(body: dict, result: RouteResult, state: dict):
     text: list[str] = []
     tool_calls = False
     started = time.perf_counter()
-    async with client().stream("POST", f"{provider.base_url}/chat/completions",
-                               headers=provider_headers(provider), json=provider_payload(provider, payload)) as resp:
+    async with upstream_stream(provider, payload) as resp:
         if resp.status_code != 200:
             await resp.aread()
             metrics.record_error(result.model.name)
@@ -695,8 +726,7 @@ async def proxy_openai_as_anthropic(body: dict, result: RouteResult) -> Any:
         payload = {**payload, "model": result.model.upstream_id,
                    "max_tokens": min(body.get("max_tokens") or 4096, result.model.max_output_tokens)}
         started = time.perf_counter()
-        resp = await client().post(f"{provider.base_url}/chat/completions",
-                                   headers=provider_headers(provider), json=provider_payload(provider, payload))
+        resp = await upstream_post(provider, payload)
         latency_ms = (time.perf_counter() - started) * 1000
         if resp.status_code != 200:
             metrics.record_error(result.model.name)
@@ -788,8 +818,7 @@ async def _anthropic_stream(payload: dict, provider: Provider, result: RouteResu
     outcome = StreamOutcome()
     started = time.perf_counter()
     try:
-        async with client().stream("POST", f"{provider.base_url}/chat/completions",
-                                   headers=provider_headers(provider), json=provider_payload(provider, payload)) as resp:
+        async with upstream_stream(provider, payload) as resp:
             if resp.status_code != 200:
                 raw = (await resp.aread()).decode(errors="replace")[:600]
                 metrics.record_error(result.model.name)

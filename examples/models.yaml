@@ -32,7 +32,7 @@ providers:
     base_url: https://api.openai.com/v1
     api_key_env: OPENAI_API_KEY
     cache: openai
-    max_tokens_field: max_completion_tokens   # GPT-6 models reject max_tokens
+    api: responses   # GPT-6 models refuse tools with reasoning on /chat/completions
   tensorx:
     base_url: https://api.tensorx.ai/v1      # verified with GET /models on 25 Sep 2026
     api_key_env: TENSORX_API_KEY

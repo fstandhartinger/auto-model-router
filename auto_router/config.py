@@ -70,7 +70,9 @@ class Provider:
     api_key_env: str | None = None
     cache: str = "generic"
     extra_headers: dict[str, str] = field(default_factory=dict)
-    #: "openai" (chat completions) or "anthropic" (messages passthrough).
+    #: "openai" (chat completions), "responses" (OpenAI /v1/responses, for models
+    #: that refuse tools with reasoning on chat completions) or "anthropic"
+    #: (messages passthrough).
     api: str = "openai"
     #: Runs on this machine (LM Studio, llama.cpp server, Ollama). No key is
     #: needed and nothing is billed; see ``is_loopback``.
