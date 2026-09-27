@@ -764,7 +764,8 @@ def classifier_from_config(policy: dict | None):
     """Build the selected classifier backend from ``policy.classifier``.
 
     ``local`` uses Laya on CPU, ``local-jev`` a local open Jev-class model
-    behind an OpenAI-compatible endpoint (see ``LocalJevClass``), ``hosted``
+    behind an OpenAI-compatible endpoint (see ``LocalJevClass``),
+    ``local-route-head`` the small ONNX routing model (see ``route_head.py``), ``hosted``
     uses the TypeSafe/Jev API with the user's own key, and ``heuristic``
     disables model inference. Returning ``None`` preserves the router's
     existing cautious heuristic path.
@@ -778,12 +779,16 @@ def classifier_from_config(policy: dict | None):
                                    int(cfg.get("threads") or 4))
     if backend in LOCAL_BACKENDS:
         return local_from_config(cfg)
+    if backend in {"local-route-head", "route-head"}:
+        from .route_head import DEFAULT_MODEL, LocalRouteHeadClassifier
+        return LocalRouteHeadClassifier(str(cfg.get("model") or DEFAULT_MODEL),
+                                        str(cfg.get("variant") or "fp16"), int(cfg.get("threads") or 2))
     if backend in {"hosted", "jev"}:
         return classify
     if backend in {"heuristic", "none", "disabled"}:
         return None
     raise ValueError(f"unknown classifier backend {backend!r}; "
-                     "use local, local-jev, hosted, or heuristic")
+                     "use local, local-jev, local-route-head, hosted, or heuristic")
 
 
 def judge_from_config(policy: dict | None):
