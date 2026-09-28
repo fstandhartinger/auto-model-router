@@ -805,6 +805,9 @@ with a shell:
   session of its own) with no timeout applied and no one to stop them until
   the next server starts, which stops them (below). `Ctrl-C` runs the same cleanup,
   and a further `Ctrl-C`, `SIGTERM` or `SIGHUP` during it is ignored as well.
+  Called as a library under the caller's own handlers (`delegate.run_many`), a
+  stop signal during that cleanup waits until it is done and then reaches the
+  caller's handler, so a handler that raises cannot cut it short either.
   In `route-run`, a further `Ctrl-C`, `SIGTERM` or `SIGHUP` after the first
   `Ctrl-C` is ignored, so the agent keeps its full grace period before
   `SIGKILL`, and `route-run` exits as interrupted by `Ctrl-C`. Without a

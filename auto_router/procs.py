@@ -28,6 +28,7 @@ choice (README, "Use it as a subagent layer").
 
 from __future__ import annotations
 
+import contextlib
 import os
 import select
 import signal
@@ -35,7 +36,7 @@ import subprocess
 import sys
 import threading
 import time
-from typing import Any
+from typing import Any, Iterator
 
 #: Seconds between SIGTERM and SIGKILL.
 GRACE_S = 2.0
@@ -367,7 +368,8 @@ class _HeldSignals:
     handler of a stop signal is replaced by this object, which notes the
     signal while held and hands it to the replaced handler once released.
     Blocking the signals instead would not do: the child inherits the mask.
-    The same holding covers :func:`_stop`, for a handler that raises there.
+    The same holding covers :func:`_stop` and :func:`stops_held`, for a handler
+    that raises there.
     """
 
     def __init__(self) -> None:
@@ -411,6 +413,22 @@ def _stop(proc: subprocess.Popen, *, scope: str, grace_s: float) -> None:
     try:
         held.hold()
         terminate(proc, scope=scope, grace_s=grace_s)
+    finally:
+        held.release()
+
+
+@contextlib.contextmanager
+def stops_held() -> Iterator[None]:
+    """Hold the stop signals for the block, as :func:`_stop` does for one job.
+
+    For a caller's own cleanup that stops jobs (``delegate.run_many`` after
+    an interrupt): a signal meanwhile only waits, and reaches its handler once
+    the block is done, so a handler that raises cannot cut the cleanup short.
+    """
+    held = _HeldSignals()
+    try:
+        held.hold()
+        yield
     finally:
         held.release()
 

@@ -5,6 +5,7 @@ that prints what it saw, sleeps, or leaves a background process behind. No
 agent CLI, provider or network is involved.
 """
 
+import contextlib
 import io
 import json
 import os
@@ -1543,6 +1544,209 @@ def test_a_tree_too_large_to_copy_is_refused(hermetic, monkeypatch):
     monkeypatch.setattr(delegate, "COPY_LIMIT_BYTES", 1024)
     result = delegate.run_many(["one", "two"], cwd=str(hermetic), runner=lambda *a: {"ok": True})
     assert not result["ok"] and "too large" in result["error"]
+
+
+#: $1 marks, $2 lead|quiet, $3 the stop signal it sends its caller (- for
+#: none). The lead sends the first stop once both workers run; each worker
+#: answers every SIGTERM with the stop signal and otherwise ignores it, so
+#: only SIGKILL ends it.
+ANSWERING_WORKER = """
+echo $$ > "$1/.p$$" && mv "$1/.p$$" "$1/pid-$$"
+trap '[ "$3" = - ] || kill -$3 $PPID' TERM
+if [ "$2" = lead ]; then
+    while [ "$(ls "$1" | grep -c '^pid-')" -lt 2 ]; do sleep 0.02; done
+    sleep 0.2
+    [ "$3" = - ] || kill -$3 $PPID
+fi
+while :; do sleep 0.05; done
+"""
+
+
+def _answering_run(hermetic: Path, tmp_path: Path, monkeypatch, send: str):
+    """(scratch tmp, marks, runner) for two ANSWERING_WORKERs under run_many."""
+    (hermetic / "a.txt").write_text("a\n")
+    scratch_tmp, marks = tmp_path / "tmp", tmp_path / "marks"
+    scratch_tmp.mkdir()
+    marks.mkdir()
+    monkeypatch.setattr(delegate.tempfile, "tempdir", str(scratch_tmp))
+    worker = _script(tmp_path / "w.sh", ANSWERING_WORKER)
+
+    def runner(task, context, cwd, tier, timeout_s):
+        return {"ok": True, "rc": procs.run([worker, str(marks), task, send], timeout=60,
+                                            cwd=cwd).returncode}
+
+    return scratch_tmp, marks, runner
+
+
+def _end_answering_run(marks: Path, scratch_tmp: Path) -> None:
+    _kill_workers(marks)
+    deadline = time.monotonic() + 10
+    while procs._LIVE and time.monotonic() < deadline:  # the pool threads return
+        time.sleep(0.05)
+    for left in scratch_tmp.iterdir():
+        shutil.rmtree(left, ignore_errors=True)
+
+
+class _RaisingForAll:
+    """A caller's stop handler that raises every time; notes whether any of
+    the workers still ran when it was called."""
+
+    def __init__(self, marks: Path):
+        self.marks, self.calls = marks, []
+
+    def __call__(self, signum, frame):
+        self.calls.append((signum, bool(_alive(_worker_pids(self.marks)))))
+        raise _Stop
+
+
+@pytest.mark.parametrize("signame", ["INT", "TERM", "HUP"])
+@pytest.mark.parametrize("source", ["workers", "grace-poll"])
+def test_a_handler_that_raises_again_cannot_cut_run_manys_cleanup_short(
+        hermetic, tmp_path, monkeypatch, signame, source):
+    # Round 15. A library caller of run_many whose own stop handler raises
+    # every time. After the first stop, run_many stops its workers
+    # (_stop_workers -> procs.terminate_all) and removes their copies; a
+    # second stop lands in terminate_all's grace period - from the workers,
+    # which answer each SIGTERM with it, or raised on the main thread from
+    # the grace poll itself. Before: the handler's exception left the cleanup
+    # before the SIGKILL, both workers ran on and the copies stayed.
+    sig = getattr(signal, "SIG" + signame)
+    scratch_tmp, marks, runner = _answering_run(
+        hermetic, tmp_path, monkeypatch, signame if source == "workers" else "-")
+    if source == "grace-poll":
+        main = threading.main_thread()
+        fired: list = []
+
+        def sleep(seconds):
+            if threading.current_thread() is main and not fired:
+                fired.append(sig)
+                signal.raise_signal(sig)
+            time.sleep(seconds)
+
+        def interrupted(futures):
+            while len(_worker_pids(marks)) < 2:
+                time.sleep(0.02)
+            signal.raise_signal(sig)
+            yield  # pragma: no cover - a generator, like as_completed
+
+        monkeypatch.setattr(procs, "time", types.SimpleNamespace(monotonic=time.monotonic,
+                                                                 sleep=sleep))
+        monkeypatch.setattr(delegate, "as_completed", interrupted)
+    handler = _RaisingForAll(marks)
+    bystander = subprocess.Popen(["sleep", "60"], start_new_session=True)
+    previous = signal.signal(sig, handler)
+    try:
+        with pytest.raises(_Stop):
+            delegate.run_many(["lead", "quiet"], cwd=str(hermetic), parallel=2, runner=runner)
+        assert len(_worker_pids(marks)) == 2, "the workers never started"
+        assert not _alive(_worker_pids(marks)), "the cleanup was cut short, workers left running"
+        assert not list(scratch_tmp.iterdir()), "the worker copies were left behind"
+        # The first stop, then the one held during the cleanup - after it.
+        assert handler.calls[0] == (sig, True)
+        assert handler.calls[1:] == [(sig, False)], handler.calls
+        assert signal.getsignal(sig) is handler, "the caller's handler was not put back"
+        assert bystander.poll() is None, "a process outside the job was signalled"
+    finally:
+        signal.signal(sig, previous)
+        _end_answering_run(marks, scratch_tmp)
+        bystander.kill()
+        bystander.wait()
+
+
+def test_two_ctrl_cs_under_pythons_own_handler_cannot_cut_run_manys_cleanup_short(
+        hermetic, tmp_path, monkeypatch):
+    # The plainest library caller: Python's default SIGINT handler.
+    scratch_tmp, marks, runner = _answering_run(hermetic, tmp_path, monkeypatch, "INT")
+    previous = signal.signal(signal.SIGINT, signal.default_int_handler)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            delegate.run_many(["lead", "quiet"], cwd=str(hermetic), parallel=2, runner=runner)
+        assert len(_worker_pids(marks)) == 2
+        assert not _alive(_worker_pids(marks))
+        assert not list(scratch_tmp.iterdir())
+    finally:
+        signal.signal(signal.SIGINT, previous)
+        _end_answering_run(marks, scratch_tmp)
+
+
+@pytest.mark.parametrize("signame", ["INT", "TERM", "HUP"])
+def test_a_stop_signal_after_run_manys_cleanup_still_reaches_the_caller(
+        hermetic, tmp_path, monkeypatch, signame):
+    # Holding must not swallow anything: the stop that came during the
+    # cleanup is handed on once it is done, and one after it goes straight
+    # to the caller's handler.
+    sig = getattr(signal, "SIG" + signame)
+    scratch_tmp, marks, runner = _answering_run(hermetic, tmp_path, monkeypatch, signame)
+    handler = _RaisingForAll(marks)
+    held = procs.stops_held
+    late = []
+
+    @contextlib.contextmanager
+    def held_then_signal():
+        try:
+            with held():
+                yield
+        except _Stop:
+            late.append(("held stop seen", _alive(_worker_pids(marks)),
+                         bool(list(scratch_tmp.iterdir()))))
+            try:
+                signal.raise_signal(sig)  # the cleanup is done; nothing holds this one
+            except _Stop:
+                late.append("new stop seen")
+            raise
+
+    monkeypatch.setattr(procs, "stops_held", held_then_signal)
+    previous = signal.signal(sig, handler)
+    try:
+        with pytest.raises(_Stop):
+            delegate.run_many(["lead", "quiet"], cwd=str(hermetic), parallel=2, runner=runner)
+        assert late == [("held stop seen", [], False), "new stop seen"], late
+        assert handler.calls == [(sig, True), (sig, False), (sig, False)]
+        with pytest.raises(_Stop):
+            signal.raise_signal(sig)  # and after run_many the handler is the caller's again
+    finally:
+        signal.signal(sig, previous)
+        _end_answering_run(marks, scratch_tmp)
+
+
+def test_run_manys_cleanup_in_a_worker_thread_leaves_the_stop_handlers_alone(
+        hermetic, tmp_path, monkeypatch):
+    # Python runs handlers on the main thread only; run_many called from
+    # another thread neither holds nor replaces them, and still cleans up.
+    scratch_tmp, marks, runner = _answering_run(hermetic, tmp_path, monkeypatch, "-")
+
+    def interrupted(futures):
+        while len(_worker_pids(marks)) < 2:
+            time.sleep(0.02)
+        raise KeyboardInterrupt
+        yield  # pragma: no cover - a generator, like as_completed
+
+    monkeypatch.setattr(delegate, "as_completed", interrupted)
+
+    def handler(signum, frame):
+        pass
+
+    previous = signal.signal(signal.SIGTERM, handler)
+    seen = []
+
+    def call():
+        try:
+            delegate.run_many(["quiet", "quiet"], cwd=str(hermetic), parallel=2, runner=runner)
+        except KeyboardInterrupt:
+            seen.append("interrupted")
+
+    try:
+        thread = threading.Thread(target=call)
+        thread.start()
+        while thread.is_alive():
+            assert signal.getsignal(signal.SIGTERM) is handler
+            time.sleep(0.01)
+        assert seen == ["interrupted"]
+        assert len(_worker_pids(marks)) == 2 and not _alive(_worker_pids(marks))
+        assert not list(scratch_tmp.iterdir())
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+        _end_answering_run(marks, scratch_tmp)
 
 
 # --------------------------------------------------------------------------

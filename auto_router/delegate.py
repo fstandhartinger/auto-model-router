@@ -815,12 +815,16 @@ def run_many(tasks: list[str], *, context: str | None = None, cwd: str | None = 
         # briefs are not started; the exception goes on unchanged. Copies
         # kept for a worker that could not be stopped keep their owner record,
         # so a later server reclaims them once nothing uses them (sweep_copies).
-        stopped = True
-        if pool is not None:
-            pool.shutdown(wait=False, cancel_futures=True)
-            stopped = _stop_workers(pending)
-        if scratch is not None and stopped:
-            _remove_copies(scratch)
+        # A stop signal meanwhile waits until this is done: a handler that
+        # raises would leave it before terminate_all's SIGKILL and before the
+        # copies go. If that handler then raises, its exception goes on instead.
+        with procs.stops_held():
+            stopped = True
+            if pool is not None:
+                pool.shutdown(wait=False, cancel_futures=True)
+                stopped = _stop_workers(pending)
+            if scratch is not None and stopped:
+                _remove_copies(scratch)
         raise
     finally:
         if owner is not None:
