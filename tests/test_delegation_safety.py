@@ -14,6 +14,7 @@ import subprocess
 import sys
 import threading
 import time
+import types
 from pathlib import Path
 
 import pytest
@@ -753,15 +754,18 @@ def test_procs_run_ends_an_exited_jobs_leftover_when_a_stop_signal_interrupts(
         bystander.wait()
 
 
-def test_procs_run_a_second_stop_that_ends_jobs_still_reaches_an_exited_jobs_leftover(tmp_path):
-    # In-process: the first SIGTERM raises in the leftover cleanup, the second
-    # one lands in the except-block's pass and ends the job via terminate_all(),
-    # which sees it only because it is still registered.
+def test_procs_run_a_stop_during_an_exited_jobs_leftover_cleanup_waits_until_it_is_done(tmp_path):
+    # In-process. Until round 14 the first SIGTERM raised inside the leftover
+    # cleanup, which then started over in the except-block, where the second
+    # one landed; only a handler that calls terminate_all() still ended the
+    # leftover then. Now the stop waits until the leftover is gone
+    # (procs._stop), so the cleanup never starts over, the leftover gets one
+    # SIGTERM, and the handler runs once, after the SIGKILL.
     job, marks = _exiting_job(tmp_path)
     calls = []
 
     def handler(signum, frame):
-        calls.append(signum)
+        calls.append((signum, _alive([_leftover_pid(marks)])))
         if len(calls) > 1:
             procs.terminate_all()
         raise _Stop
@@ -771,15 +775,261 @@ def test_procs_run_a_second_stop_that_ends_jobs_still_reaches_an_exited_jobs_lef
     try:
         with pytest.raises(_Stop):
             procs.run([job, str(marks), "TERM,TERM"], timeout=30, scope="group", grace_s=1.0)
-        assert len(calls) == 2, "the second stop signal never came"
+        assert calls == [(signal.SIGTERM, [])], "the stop came before the leftover was gone"
         assert not _alive([_leftover_pid(marks)]), "the leftover was left running"
         assert procs._LIVE == {}, "a finished job stayed registered"
         assert bystander.poll() is None, "a process outside the job was signalled"
+        assert signal.getsignal(signal.SIGTERM) is handler
     finally:
         signal.signal(signal.SIGTERM, previous)
         _kill_group(_leftover_pid(marks))
         bystander.kill()
         bystander.wait()
+
+
+class _Raising:
+    """A caller's own stop handler that raises every time, like Python's
+    default SIGINT handler; notes whether ``pid`` still ran when called."""
+
+    def __init__(self, pidfile: Path):
+        self.pidfile, self.calls = pidfile, []
+
+    def __call__(self, signum, frame):
+        pid = int(self.pidfile.read_text()) if self.pidfile.exists() else None
+        self.calls.append((signum, bool(pid and _alive([pid]))))
+        raise _Stop
+
+
+def _raise_in_grace(monkeypatch, sig: int, times: int) -> list:
+    """Raise ``sig`` on the main thread from procs' first ``times`` sleeps,
+    which are the grace-period polls of a job's stopping."""
+    fired: list = []
+
+    def sleep(seconds):
+        if len(fired) < times:
+            fired.append(sig)
+            signal.raise_signal(sig)
+        time.sleep(seconds)
+
+    monkeypatch.setattr(procs, "time", types.SimpleNamespace(monotonic=time.monotonic, sleep=sleep))
+    return fired
+
+
+#: $1 marks, $2 a signal to send the caller first (- for none). Only SIGKILL
+#: ends it: it never exits by itself.
+STUBBORN_JOB = """
+trap '' TERM
+echo $$ > "$1/.p" && mv "$1/.p" "$1/pid"
+[ "$2" = - ] || kill -$2 $PPID
+while :; do sleep 0.05; done
+"""
+
+#: $1 marks: leaves a process only SIGKILL ends, then exits at once.
+EXITING_STUBBORN_JOB = """
+sh -c 'trap "" TERM; echo $$ > "$0/.p" && mv "$0/.p" "$0/pid"; while :; do sleep 0.05; done' \
+  "$1" </dev/null >/dev/null 2>&1 &
+while [ ! -e "$1/pid" ]; do sleep 0.02; done
+"""
+
+
+def _pid(marks: Path) -> int | None:
+    return int((marks / "pid").read_text()) if (marks / "pid").exists() else None
+
+
+@pytest.mark.parametrize("signame", ["INT", "TERM", "HUP"])
+@pytest.mark.parametrize("walk", ["leftover", "timeout", "interrupted"])
+def test_a_handler_that_raises_again_cannot_cut_procs_runs_stopping_short(
+        tmp_path, monkeypatch, signame, walk):
+    # Round 14. Every stopping procs.run does - of an exited job's leftover,
+    # of a timed-out job, of a job whose caller was interrupted - holds the
+    # stop signals until it is done. Here a caller's own handler raises every
+    # time (as Python's default SIGINT handler does), and the stop signals are
+    # raised on the main thread inside the stopping's grace period: two into
+    # the leftover's (the second used to land in the restarted cleanup, which
+    # nothing covered), one into a timeout's (no except covered it at all),
+    # and one into the cleanup after a first stop that came from the job.
+    # Before: the SIGKILL was never sent, and the job ran on.
+    sig = getattr(signal, "SIG" + signame)
+    marks = tmp_path / "marks"
+    marks.mkdir()
+    if walk == "leftover":
+        argv, timeout = [_script(tmp_path / "job.sh", EXITING_STUBBORN_JOB), str(marks)], 30
+    else:
+        first = signame if walk == "interrupted" else "-"
+        argv, timeout = [_script(tmp_path / "job.sh", STUBBORN_JOB), str(marks), first], (
+            0.5 if walk == "timeout" else 30)
+    fired = _raise_in_grace(monkeypatch, sig, 2 if walk == "leftover" else 1)
+    handler = _Raising(marks / "pid")
+    bystander = subprocess.Popen(["sleep", "60"], start_new_session=True)
+    previous = signal.signal(sig, handler)
+    try:
+        with pytest.raises(_Stop):
+            procs.run(argv, timeout=timeout, scope="group", grace_s=0.5)
+        assert fired, "no stop signal came during the stopping"
+        assert not _alive([_pid(marks)]), "the stopping was cut short and the job left running"
+        # The caller still saw the stop - after the job was gone.
+        assert handler.calls and handler.calls[-1] == (sig, False)
+        assert procs._LIVE == {}
+        assert signal.getsignal(sig) is handler, "the caller's handler was not put back"
+        assert bystander.poll() is None, "a process outside the job was signalled"
+    finally:
+        signal.signal(sig, previous)
+        _kill_group(_pid(marks))
+        bystander.kill()
+        bystander.wait()
+
+
+@pytest.mark.parametrize("signame", ["INT", "TERM", "HUP"])
+def test_a_stop_signal_that_answers_each_sigterm_cannot_cut_the_leftover_cleanup_short(
+        tmp_path, signame):
+    # Round 14, with real signals from outside: the leftover answers each of
+    # the cleanup's SIGTERMs with the stop signal, and the caller's handler
+    # raises every time. Before: the second one aborted the restarted cleanup.
+    job, marks = _exiting_job(tmp_path)
+    sig = getattr(signal, "SIG" + signame)
+    handler = _Raising(marks / "leftover-pid")
+    bystander = subprocess.Popen(["sleep", "60"], start_new_session=True)
+    previous = signal.signal(sig, handler)
+    try:
+        with pytest.raises(_Stop):
+            procs.run([job, str(marks), f"{signame},{signame}"], timeout=30, scope="group",
+                      grace_s=1.0)
+        assert handler.calls == [(sig, False)], "the stop was lost or came too early"
+        assert not _alive([_leftover_pid(marks)]), "the leftover was left running"
+        assert procs._LIVE == {}
+        assert bystander.poll() is None, "a process outside the job was signalled"
+    finally:
+        signal.signal(sig, previous)
+        _kill_group(_leftover_pid(marks))
+        bystander.kill()
+        bystander.wait()
+
+
+@pytest.mark.parametrize("signame", ["INT", "TERM", "HUP"])
+def test_a_stop_signal_after_the_stopping_is_done_still_reaches_the_caller(
+        tmp_path, monkeypatch, signame):
+    # Holding must not swallow anything: a stop during the leftover's
+    # stopping is handed on once it is done, and one after it goes straight
+    # to the caller's handler - also while the job is still registered.
+    sig = getattr(signal, "SIG" + signame)
+    marks = tmp_path / "marks"
+    marks.mkdir()
+    job = _script(tmp_path / "job.sh", EXITING_STUBBORN_JOB)
+    fired = _raise_in_grace(monkeypatch, sig, 1)
+    handler = _Raising(marks / "pid")
+    stop = procs._stop
+    late = []
+
+    def stop_then_signal(proc, **kwargs):
+        try:
+            stop(proc, **kwargs)
+        except _Stop:
+            late.append(("held stop seen", _alive([_pid(marks)]), proc in procs._LIVE))
+            try:
+                signal.raise_signal(sig)  # the stopping is done; nothing holds this one
+            except _Stop:
+                late.append("new stop seen")
+            raise
+
+    monkeypatch.setattr(procs, "_stop", stop_then_signal)
+    previous = signal.signal(sig, handler)
+    try:
+        with pytest.raises(_Stop):
+            procs.run([job, str(marks)], timeout=30, scope="group", grace_s=0.5)
+        assert fired, "no stop signal came during the stopping"
+        assert late == [("held stop seen", [], True), "new stop seen"], late
+        assert handler.calls == [(sig, False), (sig, False)]
+        assert not _alive([_pid(marks)])
+        with pytest.raises(_Stop):
+            signal.raise_signal(sig)  # and after run() the handler is the caller's again
+    finally:
+        signal.signal(sig, previous)
+        _kill_group(_pid(marks))
+
+
+TIMED_OUT_WORKER_DRIVER = """
+import sys
+worker, server = sys.argv[1:3]
+if server == "delegate":
+    from auto_router import delegate
+    delegate.launcher_argv = lambda task, cwd, tier="cheap": [worker]
+    sys.exit(delegate.main())
+from auto_router import launcher
+sys.exit(launcher.main(["--route", "worker", "--quiet", "--", "task"]))
+"""
+
+
+@pytest.mark.parametrize("server", ["delegate", "launcher"])
+def test_a_ctrl_c_while_a_timed_out_worker_is_stopped_does_not_leave_it_running(
+        hermetic, tmp_path, server):
+    # Round 14. The real server or route-run in a child process with its own
+    # handlers, whose first Ctrl-C raises. The worker ignores SIGTERM, times
+    # out and answers the timeout's SIGTERM with a Ctrl-C to its caller.
+    # Before: the KeyboardInterrupt left the timeout's stopping (which no
+    # except covered) before its SIGKILL, and the worker ran on.
+    marks = tmp_path / "marks"
+    marks.mkdir()
+    worker = _script(tmp_path / "w.sh",
+                     f"trap 'mkdir -p {marks}/term; kill -INT $PPID' TERM\n"
+                     f"echo $$ > {marks}/.p && mv {marks}/.p {marks}/pid\n"
+                     "while :; do sleep 0.05; done\n")
+    driver = tmp_path / "driver.py"
+    driver.write_text(TIMED_OUT_WORKER_DRIVER)
+    cfg = _write_config(tmp_path, worker)
+    assert cfg.read_text().count("timeout_s: 60") == 1
+    cfg.write_text(cfg.read_text().replace("timeout_s: 60", "timeout_s: 1"))
+    env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(tmp_path),
+           "PYTHONPATH": str(ROOT), "AUTO_ROUTER_DELEGATE_ROOT": str(hermetic),
+           "AUTO_ROUTER_BENCH_OFFLINE": "1", "AUTO_ROUTER_CONFIG": str(cfg)}
+    bystander = subprocess.Popen(["sleep", "60"], start_new_session=True)
+    child = subprocess.Popen([sys.executable, str(driver), worker, server], cwd=hermetic, env=env,
+                             text=True, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL)
+    try:
+        child.stdin.write(json.dumps({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "delegate", "arguments": {"task": "t", "timeout_s": 1}}}) + "\n")
+        child.stdin.close()
+        code = child.wait(timeout=60)
+        time.sleep(0.2)
+        assert _pid(marks) is not None, "the worker never started"
+        assert (marks / "term").exists(), "the worker never timed out"
+        assert not _alive([_pid(marks)]), "the timed-out worker was left running"
+        assert code == -signal.SIGINT, "the Ctrl-C was not seen"
+        assert bystander.poll() is None, "a process outside the job was signalled"
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait()
+        _kill_group(_pid(marks))
+        bystander.kill()
+        bystander.wait()
+
+
+def test_stopping_in_a_worker_thread_leaves_the_stop_handlers_alone(tmp_path):
+    # Python runs handlers on the main thread only; a pool thread (the
+    # delegate server's workers) neither holds nor replaces them.
+    marks = tmp_path / "marks"
+    marks.mkdir()
+    job = _script(tmp_path / "job.sh", EXITING_STUBBORN_JOB)
+
+    def handler(signum, frame):
+        pass
+
+    previous = signal.signal(signal.SIGTERM, handler)
+    seen = []
+    try:
+        worker = threading.Thread(target=lambda: seen.append(
+            procs.run([job, str(marks)], timeout=30, scope="group", grace_s=0.5).returncode))
+        worker.start()
+        while worker.is_alive():
+            assert signal.getsignal(signal.SIGTERM) is handler
+            time.sleep(0.01)
+        assert seen == [0]
+        assert not _alive([_pid(marks)])
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+        _kill_group(_pid(marks))
 
 
 SLOW_TO_STOP_AGENT = """

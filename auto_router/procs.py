@@ -16,8 +16,9 @@ session, plus any descendant still linked by parent id, gets ``SIGTERM``, then
 ``SIGKILL`` after a short grace period, and the call returns only once none of
 them is left alive. A stop signal that arrives while a job is being started
 waits until the job is registered, so it ends that job too; one that arrives
-while the leftover of an already-exited job is being stopped ends that
-leftover too, because the job stays registered until it is gone.
+while the job or its leftover is being stopped waits until that is done, and
+is then handed to the caller's handler, so a handler that raises cannot cut
+the stopping short before its ``SIGKILL``.
 
 The limit is the kernel's: a descendant that calls ``setsid()`` *and* whose
 parent has already exited is no longer linked to the job in any way a process
@@ -366,6 +367,7 @@ class _HeldSignals:
     handler of a stop signal is replaced by this object, which notes the
     signal while held and hands it to the replaced handler once released.
     Blocking the signals instead would not do: the child inherits the mask.
+    The same holding covers :func:`_stop`, for a handler that raises there.
     """
 
     def __init__(self) -> None:
@@ -393,6 +395,24 @@ class _HeldSignals:
             signal.signal(sig, handler)
         for signum in self.pending:
             signal.raise_signal(signum)
+
+
+def _stop(proc: subprocess.Popen, *, scope: str, grace_s: float) -> None:
+    """:func:`terminate` with the stop signals held until it is done.
+
+    A handler that raises inside the grace period would abandon the job
+    before its ``SIGKILL``: a second Ctrl-C under Python's default handler,
+    or even a first one during a timeout's stopping, which no ``except`` of
+    :func:`run` covers. Held, such a signal waits and reaches the handler
+    once the job is gone, so the caller still sees it; one that comes after
+    that reaches the handler at once.
+    """
+    held = _HeldSignals()
+    try:
+        held.hold()
+        terminate(proc, scope=scope, grace_s=grace_s)
+    finally:
+        held.release()
 
 
 def run(argv: list[str], *, timeout: float | None, scope: str = "session",
@@ -432,17 +452,16 @@ def run(argv: list[str], *, timeout: float | None, scope: str = "session",
         # The direct child finished, but it may have left a background process
         # behind in its group; that one is as much a stray writer as a hung
         # child. The job stays registered and inside this try while that is
-        # stopped, so a stop signal meanwhile still ends it (terminate_all or
-        # the except-block below) instead of cutting the cleanup short.
+        # stopped, and a stop signal meanwhile waits until it is (_stop).
         if members(proc.pid, scope=scope, children=False):
-            terminate(proc, scope=scope, grace_s=grace_s)
+            _stop(proc, scope=scope, grace_s=grace_s)
     except subprocess.TimeoutExpired:
-        terminate(proc, scope=scope, grace_s=grace_s)
+        _stop(proc, scope=scope, grace_s=grace_s)
         raise subprocess.TimeoutExpired(argv, timeout) from None
     except BaseException:
         # Ctrl-C, SIGTERM turned into SystemExit, a crash in the caller: the
         # job must not outlive the process that was supervising it.
-        terminate(proc, scope=scope, grace_s=grace_s)
+        _stop(proc, scope=scope, grace_s=grace_s)
         raise
     finally:
         with _LIVE_LOCK:

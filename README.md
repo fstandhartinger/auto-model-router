@@ -782,9 +782,11 @@ with a shell:
   stop. A job stays recorded until the background processes it left behind
   after exiting are stopped too, so a stop signal that arrives while they are
   being stopped still ends them, with `SIGKILL` for one that outlasts the
-  `SIGTERM`. This holds for the stop handlers of `route-run` and the delegate
-  server; code that calls the library with a handler of its own that raises
-  twice in a row during that cleanup can still cut it short.
+  `SIGTERM`. While a job or what it left behind is being stopped (after its
+  exit, a timeout or an interrupt), a stop signal waits until that is done and
+  only then reaches its handler, so a handler that raises, even every time
+  like Python's default `Ctrl-C` handler, cannot cut the stopping short; the
+  stop is still delivered, as soon as the stopping is over.
 - **Parallel work never shares a tree.** With more than one worker, each works in
   its own disposable copy of `cwd` (without `.git`, virtualenvs,
   `node_modules` and caches; at most 200 MB / 50,000 files, see
