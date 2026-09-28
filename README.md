@@ -437,6 +437,12 @@ Laya 9.3 %). On this repository's own 70 held-out tasks it got 94.9 % (Jev 79.7 
 local Laya took 11.1 s. These are development measurements from the model card, not
 production traffic results.
 
+**Weiche download caveat:** if you pre-download the model with `huggingface_hub` on an
+environment that ships `hf-xet`, set `HF_HUB_DISABLE_XET=1` for that download. A stock
+`hf-xet` transport can abort `snapshot_download` with a `Reqwest builder error`, and this
+router then silently degrades to its Jev fallback instead of failing (independently
+observed in the round-13 review of PR #3, board #2173).
+
 **A local open Jev-class model** (`local-jev`) is any decision model served
 behind an OpenAI-compatible endpoint by `llama-server` or LM Studio. The
 backend asks one question per call for a single option letter and turns the
