@@ -11,11 +11,18 @@
   "files_sha256": {
     "tasks-public.jsonl": "fbf0876159c51100dcb53cc3859ccb2783ebbf4e7b483782bc928097555aa33f",
     "paired-results.csv": "60df50f69eca16ae97a09a4b83fc7d5143b1421f0ba9010a3d42aad36ef4a398",
-    "analysis.json": "d4425013520af45324f7c463eb38a8ce9fd18b7b411423e34f400613d091b090",
+    "analysis.json": "926623f0ed35b8931fd045fd03e2c7b5268f8911a1eefed78ffc79b06d76c138",
     "router.yaml": "bf48f18a6fc4fda8a3698db280a729a9fc4083864b92edbafac41cefd5098557",
     "model-pricing.json": "9310fa8b5f8598b6d61219d1e4480a4aa827836a9a9a1a18b0acee3cdfca4295",
     "catalog-snapshot.json": "f1b15ab064e7fcfb256f3a9078ebe3fb46c663fd822439e73f9caa87c459ec38",
-    "protocol.md": "b6529e3a580815f0ef6e8d4572611d5ad216dc487f5f52635659ee4b74aad5a4"
+    "protocol.md": "b6529e3a580815f0ef6e8d4572611d5ad216dc487f5f52635659ee4b74aad5a4",
+    "README.md": "bf87fbe77341276013975ffdb71bf3e1c3a84160cb2d7da47cb8fe9636e7d9ac",
+    "check_observed.py": "24b5cca455fdb4f3d3f995ca66d88a5f34876b098d83c87e846ce15a15ae0a88"
   },
-  "publication_note": "Contains public-safe task prompts and aggregate/pair outcomes; excludes grader keys, model response text and historical budget ledgers."
+  "publication_note": "Contains public-safe task prompts and aggregate/pair outcomes; excludes grader keys, model response text and historical budget ledgers.",
+  "reporting_correction": {
+    "date": "2026-09-29",
+    "previous_analysis_sha256": "d4425013520af45324f7c463eb38a8ce9fd18b7b411423e34f400613d091b090",
+    "note": "Point estimates now use the observed 40 task pairs. Earlier summaries used bootstrap-distribution means; those are retained in separate fields. Raw outcomes, preregistration and confidence intervals are unchanged."
+  }
 }

@@ -59,10 +59,10 @@ the router **30/40 (75.0 %)**. The category-stratified paired-bootstrap differen
 percentage points** for the router (95 % CI **−7.5 to +12.5 pp**), an inconclusive quality
 comparison at this sample size.
 
-Mean accounted model cost was **$0.006415 per task** for Opus and **$0.000337** for the router;
-the router/control cost ratio was **5.27 %** (95 % CI **4.49–6.13 %**). The mean cost difference
-was **−$0.006078 per task** (95 % CI **−$0.006998 to −$0.005199**). Mean end-to-end latency was
-**4.890 s** for Opus and **12.549 s** for the router, a **7.658 s increase** (95 % CI
+Mean accounted model cost was **$0.006412 per task** for Opus and **$0.000337** for the router;
+the router/control cost ratio was **5.25 %** (95 % CI **4.49–6.13 %**). The mean cost difference
+was **−$0.006075 per task** (95 % CI **−$0.006998 to −$0.005199**). Mean end-to-end latency was
+**4.888 s** for Opus and **12.553 s** for the router, a **7.664 s increase** (95 % CI
 **3.910–12.281 s**). The router chose GLM-5.3 Flash for 30 tasks and GPT-6 Luna for 10. It chose
 no other candidate in this run. Accounting uses the higher of OpenRouter-reported cost and the
 configured list-price cost. Inference spend for the 80 calls was **$0.269939**.

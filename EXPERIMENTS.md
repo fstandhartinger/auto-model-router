@@ -1046,12 +1046,12 @@ category and difficulty affect its choice. Answer checking, retries and escalati
 | Outcome | Fixed Opus 5.5 | Router first choice | Router minus control, 95% CI |
 |---|---:|---:|---:|
 | Passed tasks | 29/40 (72.5%; Wilson 57.2–83.9%) | 30/40 (75.0%; Wilson 59.8–85.8%) | +2.5 pp (−7.5 to +12.5 pp) |
-| Accounted cost per task | $0.006415 (95% CI $0.005521–$0.007352) | $0.000337 (95% CI $0.000289–$0.000383) | −$0.006078 (−$0.006998 to −$0.005199) |
-| End-to-end latency per task | 4.890 s (95% CI 4.482–5.313 s) | 12.549 s (95% CI 8.687–17.243 s) | +7.658 s (+3.910 to +12.281 s) |
+| Accounted cost per task | $0.006412 (95% CI $0.005521–$0.007352) | $0.000337 (95% CI $0.000289–$0.000383) | −$0.006075 (−$0.006998 to −$0.005199) |
+| End-to-end latency per task | 4.888 s (95% CI 4.482–5.313 s) | 12.553 s (95% CI 8.687–17.243 s) | +7.664 s (+3.910 to +12.281 s) |
 
 All intervals are 95% category-stratified paired-bootstrap intervals from 10,000 resamples,
 resampling tasks with replacement within each category and keeping each pair together. The router's
-mean accounted cost was 5.27% of control (95% CI 4.49–6.13%). Per-arm pass-rate intervals use
+mean accounted cost was 5.25% of control (95% CI 4.49–6.13%). Per-arm pass-rate intervals use
 Wilson's method. Three pairs passed only in the router arm and two only in the control arm (exact
 two-sided McNemar p = 1.0). The quality interval spans both a 7.5-point drop and a 12.5-point gain;
 this run leaves the quality comparison inconclusive. The category estimates also differ: coding

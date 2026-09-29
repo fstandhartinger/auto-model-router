@@ -25,83 +25,93 @@
   "metrics": {
     "pass_rate": {
       "control": {
-        "mean": 0.724337,
+        "mean": 0.725,
         "bootstrap_95_ci": [
           0.65,
           0.8
-        ]
+        ],
+        "bootstrap_distribution_mean": 0.724337
       },
       "router": {
-        "mean": 0.74928,
+        "mean": 0.75,
         "bootstrap_95_ci": [
           0.625,
           0.85
-        ]
+        ],
+        "bootstrap_distribution_mean": 0.74928
       },
       "delta_router_minus_control": {
-        "mean": 0.024943,
+        "mean": 0.025,
         "bootstrap_95_ci": [
           -0.075,
           0.125
-        ]
+        ],
+        "bootstrap_distribution_mean": 0.024943
       },
-      "estimand": "task mean; category-stratified paired bootstrap"
+      "estimand": "observed task mean; category-stratified paired bootstrap interval"
     },
     "budget_cost_usd": {
       "control": {
-        "mean": 0.006415,
+        "mean": 0.0064118,
         "bootstrap_95_ci": [
           0.005521,
           0.007352
-        ]
+        ],
+        "bootstrap_distribution_mean": 0.006415
       },
       "router": {
-        "mean": 0.000337,
+        "mean": 0.000336666625,
         "bootstrap_95_ci": [
           0.000289,
           0.000383
-        ]
+        ],
+        "bootstrap_distribution_mean": 0.000337
       },
       "delta_router_minus_control": {
-        "mean": -0.006078,
+        "mean": -0.006075133375,
         "bootstrap_95_ci": [
           -0.006998,
           -0.005199
-        ]
+        ],
+        "bootstrap_distribution_mean": -0.006078
       },
-      "estimand": "task mean; category-stratified paired bootstrap"
+      "estimand": "observed task mean; category-stratified paired bootstrap interval"
     },
     "e2e_latency_ms": {
       "control": {
-        "mean": 4890.390641,
+        "mean": 4888.343975,
         "bootstrap_95_ci": [
           4482.499981,
           5313.306181
-        ]
+        ],
+        "bootstrap_distribution_mean": 4890.390641
       },
       "router": {
-        "mean": 12548.737883,
+        "mean": 12552.838975,
         "bootstrap_95_ci": [
           8687.446876,
           17242.949426
-        ]
+        ],
+        "bootstrap_distribution_mean": 12548.737883
       },
       "delta_router_minus_control": {
-        "mean": 7658.347242,
+        "mean": 7664.495000000001,
         "bootstrap_95_ci": [
           3909.677986,
           12281.187334
-        ]
+        ],
+        "bootstrap_distribution_mean": 7658.347242
       },
-      "estimand": "task mean; category-stratified paired bootstrap"
+      "estimand": "observed task mean; category-stratified paired bootstrap interval"
     },
     "cost_ratio_router_over_control": {
-      "mean": 0.052698,
+      "mean": 0.05250734973,
       "bootstrap_95_ci": [
         0.044918,
         0.061346
       ],
-      "estimand": "ratio of paired-bootstrap task-mean accounted costs"
+      "estimand": "ratio of observed task-mean accounted costs; paired-bootstrap interval",
+      "bootstrap_distribution_mean": 0.052698
     }
   },
   "categories": {
@@ -290,5 +300,10 @@
     "The route-head's raw success-probability output is not consumed by the current F_expected policy; this measures its category/difficulty effect on route choice.",
     "Weiche route-head initialization is excluded from per-task latency; classifier warm-start is recorded separately. Router per-task latency includes warm classifier routing plus the provider response.",
     "Router verification/escalation is disabled to measure one first-choice completion per arm; results do not measure answer-check or retry behavior."
-  ]
+  ],
+  "reporting_correction": {
+    "date": "2026-09-29",
+    "previous_analysis_sha256": "d4425013520af45324f7c463eb38a8ce9fd18b7b411423e34f400613d091b090",
+    "note": "Point estimates now use the observed 40 task pairs. Earlier summaries used bootstrap-distribution means; those are retained in separate fields. Raw outcomes, preregistration and confidence intervals are unchanged."
+  }
 }
