@@ -1,0 +1,309 @@
+{
+  "study": "paired-router-ab-20260929",
+  "arms": {
+    "control": "fixed Claude Opus 5.5 via OpenRouter",
+    "router": "F_expected first choice, Weiche-395M fp16 route-head, five API-routable catalog candidates"
+  },
+  "task_count": 40,
+  "tasks_by_category": {
+    "coding": 10,
+    "design": 10,
+    "knowledge": 10,
+    "math": 10
+  },
+  "grader": {
+    "blind": true,
+    "method": "anonymous submission IDs; deterministic graders; no arm/model fields passed to grader",
+    "coding": "executed in Bubblewrap",
+    "design": "structural proxy only"
+  },
+  "bootstrap": {
+    "replicates": 10000,
+    "seed": 20260929,
+    "sampling": "tasks resampled with replacement within each category; A/B outcomes paired"
+  },
+  "metrics": {
+    "pass_rate": {
+      "control": {
+        "mean": 0.725,
+        "bootstrap_95_ci": [
+          0.65,
+          0.8
+        ],
+        "bootstrap_distribution_mean": 0.724337
+      },
+      "router": {
+        "mean": 0.75,
+        "bootstrap_95_ci": [
+          0.625,
+          0.85
+        ],
+        "bootstrap_distribution_mean": 0.74928
+      },
+      "delta_router_minus_control": {
+        "mean": 0.025,
+        "bootstrap_95_ci": [
+          -0.075,
+          0.125
+        ],
+        "bootstrap_distribution_mean": 0.024943
+      },
+      "estimand": "observed task mean; category-stratified paired bootstrap interval"
+    },
+    "budget_cost_usd": {
+      "control": {
+        "mean": 0.0064118,
+        "bootstrap_95_ci": [
+          0.005521,
+          0.007352
+        ],
+        "bootstrap_distribution_mean": 0.006415
+      },
+      "router": {
+        "mean": 0.000336666625,
+        "bootstrap_95_ci": [
+          0.000289,
+          0.000383
+        ],
+        "bootstrap_distribution_mean": 0.000337
+      },
+      "delta_router_minus_control": {
+        "mean": -0.006075133375,
+        "bootstrap_95_ci": [
+          -0.006998,
+          -0.005199
+        ],
+        "bootstrap_distribution_mean": -0.006078
+      },
+      "estimand": "observed task mean; category-stratified paired bootstrap interval"
+    },
+    "e2e_latency_ms": {
+      "control": {
+        "mean": 4888.343975,
+        "bootstrap_95_ci": [
+          4482.499981,
+          5313.306181
+        ],
+        "bootstrap_distribution_mean": 4890.390641
+      },
+      "router": {
+        "mean": 12552.838975,
+        "bootstrap_95_ci": [
+          8687.446876,
+          17242.949426
+        ],
+        "bootstrap_distribution_mean": 12548.737883
+      },
+      "delta_router_minus_control": {
+        "mean": 7664.495000000001,
+        "bootstrap_95_ci": [
+          3909.677986,
+          12281.187334
+        ],
+        "bootstrap_distribution_mean": 7658.347242
+      },
+      "estimand": "observed task mean; category-stratified paired bootstrap interval"
+    },
+    "cost_ratio_router_over_control": {
+      "mean": 0.05250734973,
+      "bootstrap_95_ci": [
+        0.044918,
+        0.061346
+      ],
+      "estimand": "ratio of observed task-mean accounted costs; paired-bootstrap interval",
+      "bootstrap_distribution_mean": 0.052698
+    }
+  },
+  "categories": {
+    "coding": {
+      "control": {
+        "passed": 9,
+        "n": 10,
+        "rate": 0.9,
+        "wilson_95_ci": [
+          0.59585,
+          0.982124
+        ]
+      },
+      "router": {
+        "passed": 7,
+        "n": 10,
+        "rate": 0.7,
+        "wilson_95_ci": [
+          0.396778,
+          0.892209
+        ]
+      },
+      "quality_delta_router_minus_control": -0.20000000000000007,
+      "quality_delta_bootstrap_95_ci": [
+        -0.5,
+        0.0
+      ],
+      "budget_cost_delta_router_minus_control_usd_per_task": -0.003355,
+      "budget_cost_delta_bootstrap_95_ci": [
+        -0.005388,
+        -0.001846
+      ],
+      "e2e_latency_delta_router_minus_control_ms_per_task": 7635.111,
+      "e2e_latency_delta_bootstrap_95_ci": [
+        2727.966503,
+        13854.900652
+      ]
+    },
+    "design": {
+      "control": {
+        "passed": 1,
+        "n": 10,
+        "rate": 0.1,
+        "wilson_95_ci": [
+          0.017876,
+          0.40415
+        ]
+      },
+      "router": {
+        "passed": 4,
+        "n": 10,
+        "rate": 0.4,
+        "wilson_95_ci": [
+          0.16818,
+          0.687326
+        ]
+      },
+      "quality_delta_router_minus_control": 0.30000000000000004,
+      "quality_delta_bootstrap_95_ci": [
+        0.0,
+        0.6
+      ],
+      "budget_cost_delta_router_minus_control_usd_per_task": -0.017614,
+      "budget_cost_delta_bootstrap_95_ci": [
+        -0.020789,
+        -0.014634
+      ],
+      "e2e_latency_delta_router_minus_control_ms_per_task": 23275.285,
+      "e2e_latency_delta_bootstrap_95_ci": [
+        9704.912627,
+        40833.8071
+      ]
+    },
+    "knowledge": {
+      "control": {
+        "passed": 10,
+        "n": 10,
+        "rate": 1.0,
+        "wilson_95_ci": [
+          0.722467,
+          1.0
+        ]
+      },
+      "router": {
+        "passed": 10,
+        "n": 10,
+        "rate": 1.0,
+        "wilson_95_ci": [
+          0.722467,
+          1.0
+        ]
+      },
+      "quality_delta_router_minus_control": 0.0,
+      "quality_delta_bootstrap_95_ci": [
+        0.0,
+        0.0
+      ],
+      "budget_cost_delta_router_minus_control_usd_per_task": -0.000651,
+      "budget_cost_delta_bootstrap_95_ci": [
+        -0.000854,
+        -0.000525
+      ],
+      "e2e_latency_delta_router_minus_control_ms_per_task": 67.569,
+      "e2e_latency_delta_bootstrap_95_ci": [
+        -1506.115618,
+        2580.02131
+      ]
+    },
+    "math": {
+      "control": {
+        "passed": 9,
+        "n": 10,
+        "rate": 0.9,
+        "wilson_95_ci": [
+          0.59585,
+          0.982124
+        ]
+      },
+      "router": {
+        "passed": 9,
+        "n": 10,
+        "rate": 0.9,
+        "wilson_95_ci": [
+          0.59585,
+          0.982124
+        ]
+      },
+      "quality_delta_router_minus_control": 0.0,
+      "quality_delta_bootstrap_95_ci": [
+        0.0,
+        0.0
+      ],
+      "budget_cost_delta_router_minus_control_usd_per_task": -0.002681,
+      "budget_cost_delta_bootstrap_95_ci": [
+        -0.003069,
+        -0.002289
+      ],
+      "e2e_latency_delta_router_minus_control_ms_per_task": -319.985,
+      "e2e_latency_delta_bootstrap_95_ci": [
+        -1639.737132,
+        1383.15326
+      ]
+    }
+  },
+  "paired_discordance": {
+    "router_only_passes": 3,
+    "control_only_passes": 2,
+    "exact_mcnemar_two_sided_p": 1.0
+  },
+  "cost_totals": {
+    "control": {
+      "calls": 40,
+      "provider_reported_cost_usd": 0.256472,
+      "list_cost_usd": 0.256472,
+      "budget_accounted_cost_usd": 0.256472,
+      "provider_cost_basis_counts": {
+        "gateway-reported upstream inference cost": 40
+      },
+      "api_errors": 0
+    },
+    "router": {
+      "calls": 40,
+      "provider_reported_cost_usd": 0.013375,
+      "list_cost_usd": 0.013432,
+      "budget_accounted_cost_usd": 0.013467,
+      "provider_cost_basis_counts": {
+        "gateway-reported upstream inference cost": 40
+      },
+      "api_errors": 0
+    }
+  },
+  "route_distribution": {
+    "control": {
+      "opus-5.5-api": 40
+    },
+    "router": {
+      "glm-5.3-flash": 30,
+      "gpt-6-luna": 10
+    }
+  },
+  "limitations": [
+    "The task set is small and synthetic; inference is limited to these task families.",
+    "Knowledge tasks test extraction from supplied text, not broad factual research.",
+    "Design pass/fail is a structural HTML proxy, not visual or aesthetic review.",
+    "Confidence intervals resample tasks within each category; one completion per arm/task does not estimate generation-to-generation sampling variance.",
+    "The route-head's raw success-probability output is not consumed by the current F_expected policy; this measures its category/difficulty effect on route choice.",
+    "Weiche route-head initialization is excluded from per-task latency; classifier warm-start is recorded separately. Router per-task latency includes warm classifier routing plus the provider response.",
+    "Router verification/escalation is disabled to measure one first-choice completion per arm; results do not measure answer-check or retry behavior."
+  ],
+  "reporting_correction": {
+    "date": "2026-09-29",
+    "previous_analysis_sha256": "d4425013520af45324f7c463eb38a8ce9fd18b7b411423e34f400613d091b090",
+    "note": "Point estimates now use the observed 40 task pairs. Earlier summaries used bootstrap-distribution means; those are retained in separate fields. Raw outcomes, preregistration and confidence intervals are unchanged."
+  }
+}

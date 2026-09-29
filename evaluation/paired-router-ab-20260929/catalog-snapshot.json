@@ -1,0 +1,412 @@
+{
+  "policy_identity": {
+    "policy_name": "F_expected",
+    "policy_source": "config",
+    "policy_settings": {},
+    "catalog": [
+      {
+        "name": "glm-5.3-flash",
+        "provider": "openrouter",
+        "upstream_id": "z-ai/glm-5.3-flash",
+        "free": false,
+        "subscription": false,
+        "prices_per_mtok": {
+          "input": 0.15,
+          "output": 0.5,
+          "read": 0.03,
+          "write": 0.15
+        },
+        "capability": {
+          "general": 62.7,
+          "coding": 71.5,
+          "math": 62.7,
+          "knowledge": 62.7,
+          "summarisation": 68.47,
+          "design": 71.5,
+          "long_context": 80.0,
+          "tool_use": 62.7,
+          "agentic": 60.67
+        },
+        "evidence_stale": false
+      },
+      {
+        "name": "gpt-6-astra",
+        "provider": "openrouter",
+        "upstream_id": "openai/gpt-6-astra",
+        "free": false,
+        "subscription": false,
+        "prices_per_mtok": {
+          "input": 10.0,
+          "output": 50.0,
+          "read": 1.0,
+          "write": 12.5
+        },
+        "capability": {
+          "general": 74.4,
+          "coding": 76.7,
+          "math": 74.4,
+          "knowledge": 74.4,
+          "summarisation": 76.16,
+          "design": 76.7,
+          "long_context": 79.67,
+          "tool_use": 74.4,
+          "agentic": 64.45
+        },
+        "evidence_stale": false
+      },
+      {
+        "name": "gpt-6-luna",
+        "provider": "openrouter",
+        "upstream_id": "openai/gpt-6-luna",
+        "free": false,
+        "subscription": false,
+        "prices_per_mtok": {
+          "input": 0.1,
+          "output": 0.5,
+          "read": 0.01,
+          "write": 0.125
+        },
+        "capability": {
+          "general": 44.25,
+          "coding": 44.25,
+          "math": 44.25,
+          "knowledge": 44.25,
+          "summarisation": 55.61,
+          "design": 44.25,
+          "long_context": 78.33,
+          "tool_use": 44.25,
+          "agentic": 44.25
+        },
+        "evidence_stale": false
+      },
+      {
+        "name": "opus-5.5-api",
+        "provider": "openrouter",
+        "upstream_id": "anthropic/claude-opus-5.5",
+        "free": false,
+        "subscription": false,
+        "prices_per_mtok": {
+          "input": 4.0,
+          "output": 20.0,
+          "read": 0.2,
+          "write": 5.0
+        },
+        "capability": {
+          "general": 80.4,
+          "coding": 80.4,
+          "math": 80.4,
+          "knowledge": 80.4,
+          "summarisation": 81.16,
+          "design": 80.4,
+          "long_context": 82.67,
+          "tool_use": 80.4,
+          "agentic": 80.4
+        },
+        "evidence_stale": false
+      },
+      {
+        "name": "sonnet-5-api",
+        "provider": "openrouter",
+        "upstream_id": "anthropic/claude-sonnet-5.5",
+        "free": false,
+        "subscription": false,
+        "prices_per_mtok": {
+          "input": 2.0,
+          "output": 10.0,
+          "read": 0.2,
+          "write": 2.5
+        },
+        "capability": {
+          "general": 47.367,
+          "coding": 29.517,
+          "math": 47.367,
+          "knowledge": 47.367,
+          "summarisation": 57.077,
+          "design": 61.317,
+          "long_context": 76.487,
+          "tool_use": 47.367,
+          "agentic": 47.367
+        },
+        "evidence_stale": false
+      }
+    ],
+    "sha256": "75365dfe66a360589eb316dcfae4f06158cea6ddce04cd94d64eef472d0e5cd4"
+  },
+  "resolved_models": [
+    {
+      "name": "opus-5.5-api",
+      "upstream_id": "anthropic/claude-opus-5.5",
+      "prices_per_mtok": {
+        "input": 4.0,
+        "output": 20.0,
+        "cache_read": 0.2,
+        "cache_write": 5.0
+      },
+      "capability": {
+        "general": 80.4,
+        "coding": 80.4,
+        "math": 80.4,
+        "knowledge": 80.4,
+        "design": 80.4,
+        "summarisation": 81.16
+      },
+      "capability_source": "bench",
+      "evidence_stale": false,
+      "bench_id": "claude-opus-5.5::high",
+      "evidence": {
+        "bench_id": "claude-opus-5.5::high",
+        "origin": "https://benchmarkheaven.com",
+        "path": "/api/models/claude-opus-5.5::high",
+        "source": "cache",
+        "age_seconds": 971.1,
+        "stale": false,
+        "error": null,
+        "release_date": "2026-09-22",
+        "task_tokens": {
+          "output_tokens_per_task": 35584.1,
+          "collected_at": "2026-09-28T11:23:54.338Z",
+          "basis": "measured",
+          "scope": "aa_intelligence_index_benchmark"
+        },
+        "offer": {
+          "platform": "Anthropic",
+          "provider": "Anthropic"
+        },
+        "benchmaxxing": {
+          "origin": "https://benchmarkheaven.com",
+          "path": "/api/benchmaxxing?report=claude-opus-5.5::high",
+          "source": "cache",
+          "age_seconds": 971.1,
+          "stale": false,
+          "error": null
+        },
+        "output_appetite": {
+          "factor": 1.0,
+          "tokens_per_task": 35584.1,
+          "catalog_median": 35584.1,
+          "basis": "measured output tokens per benchmark task / catalog median"
+        }
+      }
+    },
+    {
+      "name": "sonnet-5-api",
+      "upstream_id": "anthropic/claude-sonnet-5.5",
+      "prices_per_mtok": {
+        "input": 2.0,
+        "output": 10.0,
+        "cache_read": 0.2,
+        "cache_write": 2.5
+      },
+      "capability": {
+        "general": 47.366985,
+        "coding": 29.516985,
+        "math": 47.366985,
+        "knowledge": 47.366985,
+        "design": 61.316985,
+        "summarisation": 57.076985
+      },
+      "capability_source": "bench",
+      "evidence_stale": false,
+      "bench_id": "claude-sonnet-5::high",
+      "evidence": {
+        "bench_id": "claude-sonnet-5::high",
+        "origin": "https://benchmarkheaven.com",
+        "path": "/api/models/claude-sonnet-5::high",
+        "source": "cache",
+        "age_seconds": 971.1,
+        "stale": false,
+        "error": null,
+        "release_date": "2026-06-30",
+        "task_tokens": {
+          "output_tokens_per_task": 44341.3,
+          "collected_at": "2026-09-28T11:23:54.338Z",
+          "basis": "measured",
+          "scope": "aa_intelligence_index_benchmark"
+        },
+        "offer": {
+          "platform": "Anthropic",
+          "provider": "Anthropic"
+        },
+        "benchmaxxing": {
+          "origin": "https://benchmarkheaven.com",
+          "path": "/api/benchmaxxing?report=claude-sonnet-5::high",
+          "source": "cache",
+          "age_seconds": 971.1,
+          "stale": false,
+          "error": null
+        },
+        "output_appetite": {
+          "factor": 1.246,
+          "tokens_per_task": 44341.3,
+          "catalog_median": 35584.1,
+          "basis": "measured output tokens per benchmark task / catalog median"
+        }
+      }
+    },
+    {
+      "name": "gpt-6-luna",
+      "upstream_id": "openai/gpt-6-luna",
+      "prices_per_mtok": {
+        "input": 0.1,
+        "output": 0.5,
+        "cache_read": 0.01,
+        "cache_write": 0.125
+      },
+      "capability": {
+        "general": 44.25,
+        "coding": 44.25,
+        "math": 44.25,
+        "knowledge": 44.25,
+        "design": 44.25,
+        "summarisation": 55.61
+      },
+      "capability_source": "bench",
+      "evidence_stale": false,
+      "bench_id": "gpt-6-luna::medium",
+      "evidence": {
+        "bench_id": "gpt-6-luna::medium",
+        "origin": "https://benchmarkheaven.com",
+        "path": "/api/models/gpt-6-luna::medium",
+        "source": "cache",
+        "age_seconds": 971.1,
+        "stale": false,
+        "error": null,
+        "release_date": "2026-09-22",
+        "task_tokens": {
+          "output_tokens_per_task": 11227.3,
+          "collected_at": "2026-09-28T11:23:54.338Z",
+          "basis": "measured",
+          "scope": "aa_intelligence_index_benchmark"
+        },
+        "offer": {
+          "platform": "OpenRouter",
+          "provider": "OpenAI"
+        },
+        "benchmaxxing": {
+          "origin": "https://benchmarkheaven.com",
+          "path": "/api/benchmaxxing?report=gpt-6-luna::medium",
+          "source": "cache",
+          "age_seconds": 971.0,
+          "stale": false,
+          "error": null
+        },
+        "output_appetite": {
+          "factor": 0.316,
+          "tokens_per_task": 11227.3,
+          "catalog_median": 35584.1,
+          "basis": "measured output tokens per benchmark task / catalog median"
+        }
+      }
+    },
+    {
+      "name": "gpt-6-astra",
+      "upstream_id": "openai/gpt-6-astra",
+      "prices_per_mtok": {
+        "input": 10.0,
+        "output": 50.0,
+        "cache_read": 1.0,
+        "cache_write": 12.5
+      },
+      "capability": {
+        "general": 74.4,
+        "coding": 76.7,
+        "math": 74.4,
+        "knowledge": 74.4,
+        "design": 76.7,
+        "summarisation": 76.16
+      },
+      "capability_source": "bench",
+      "evidence_stale": false,
+      "bench_id": "gpt-6-astra::medium",
+      "evidence": {
+        "bench_id": "gpt-6-astra::medium",
+        "origin": "https://benchmarkheaven.com",
+        "path": "/api/models/gpt-6-astra::medium",
+        "source": "cache",
+        "age_seconds": 971.0,
+        "stale": false,
+        "error": null,
+        "release_date": "2026-09-03",
+        "task_tokens": {
+          "output_tokens_per_task": 9589.6,
+          "collected_at": "2026-09-28T11:23:54.338Z",
+          "basis": "measured",
+          "scope": "aa_intelligence_index_benchmark"
+        },
+        "offer": {
+          "platform": "OpenRouter",
+          "provider": "Azure"
+        },
+        "benchmaxxing": {
+          "origin": "https://benchmarkheaven.com",
+          "path": "/api/benchmaxxing?report=gpt-6-astra::medium",
+          "source": "cache",
+          "age_seconds": 971.0,
+          "stale": false,
+          "error": null
+        },
+        "output_appetite": {
+          "factor": 0.269,
+          "tokens_per_task": 9589.6,
+          "catalog_median": 35584.1,
+          "basis": "measured output tokens per benchmark task / catalog median"
+        }
+      }
+    },
+    {
+      "name": "glm-5.3-flash",
+      "upstream_id": "z-ai/glm-5.3-flash",
+      "prices_per_mtok": {
+        "input": 0.15,
+        "output": 0.5,
+        "cache_read": 0.03,
+        "cache_write": 0.15
+      },
+      "capability": {
+        "general": 62.7,
+        "coding": 71.5,
+        "math": 62.7,
+        "knowledge": 62.7,
+        "design": 71.5,
+        "summarisation": 68.47
+      },
+      "capability_source": "bench",
+      "evidence_stale": false,
+      "bench_id": "glm-5.3-flash::default",
+      "evidence": {
+        "bench_id": "glm-5.3-flash::default",
+        "origin": "https://benchmarkheaven.com",
+        "path": "/api/models/glm-5.3-flash::default",
+        "source": "cache",
+        "age_seconds": 970.9,
+        "stale": false,
+        "error": null,
+        "release_date": "2026-08-26",
+        "task_tokens": {
+          "output_tokens_per_task": 68673.2,
+          "collected_at": "2026-09-28T11:23:54.338Z",
+          "basis": "measured",
+          "scope": "aa_intelligence_index_benchmark"
+        },
+        "offer": {
+          "platform": "OpenRouter",
+          "provider": "InferenceNet"
+        },
+        "benchmaxxing": {
+          "origin": "https://benchmarkheaven.com",
+          "path": "/api/benchmaxxing?report=glm-5.3-flash::default",
+          "source": "cache",
+          "age_seconds": 970.9,
+          "stale": false,
+          "error": null
+        },
+        "output_appetite": {
+          "factor": 1.93,
+          "tokens_per_task": 68673.2,
+          "catalog_median": 35584.1,
+          "basis": "measured output tokens per benchmark task / catalog median"
+        }
+      }
+    }
+  ]
+}

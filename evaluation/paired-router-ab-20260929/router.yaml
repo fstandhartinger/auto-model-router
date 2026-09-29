@@ -1,0 +1,54 @@
+# Frozen study configuration; generated from the current API-routable catalog.
+# API secret values are never stored here; only the environment-variable name.
+enabled: [opus-5.5-api, sonnet-5-api, gpt-6-luna, gpt-6-astra, glm-5.3-flash]
+
+providers:
+  openrouter:
+    base_url: https://openrouter.ai/api/v1
+    api_key_env: OPENROUTER_API_KEY
+    cache: generic
+
+policy:
+  name: F_expected
+  classifier:
+    backend: local-route-head
+    model: /home/flori/jobs/router-ab-measurement-20260929/work/model/weiche-395m
+    variant: fp16
+    threads: 2
+  verify:
+    enabled: false
+    judge: none
+
+models:
+  - name: opus-5.5-api
+    provider: openrouter
+    upstream_id: anthropic/claude-opus-5.5
+    bench_id: claude-opus-5.5::high
+    success_key: claude-opus-5.5
+    cache_family: anthropic
+    prices: {input: 4.0, output: 20.0, cache_read: 0.20, cache_write: 5.0}
+  - name: sonnet-5-api
+    provider: openrouter
+    upstream_id: anthropic/claude-sonnet-5.5
+    bench_id: claude-sonnet-5::high
+    success_key: claude-sonnet-5
+    cache_family: anthropic
+    prices: {input: 2.0, output: 10.0, cache_read: 0.20, cache_write: 2.50}
+  - name: gpt-6-luna
+    provider: openrouter
+    upstream_id: openai/gpt-6-luna
+    bench_id: gpt-6-luna::medium
+    cache_family: openai
+    prices: {input: 0.10, output: 0.50, cache_read: 0.01, cache_write: 0.125}
+  - name: gpt-6-astra
+    provider: openrouter
+    upstream_id: openai/gpt-6-astra
+    bench_id: gpt-6-astra::medium
+    cache_family: openai
+    prices: {input: 10.0, output: 50.0, cache_read: 1.0, cache_write: 12.50}
+  - name: glm-5.3-flash
+    provider: openrouter
+    upstream_id: z-ai/glm-5.3-flash
+    bench_id: glm-5.3-flash::default
+    cache_family: generic
+    prices: {input: 0.15, output: 0.50, cache_read: 0.03}
