@@ -10,7 +10,9 @@ opencode, Cursor, OpenClaw, Hermes Agent or GitHub Copilot can hand bounded
 sub-tasks to cheaper routed workers. The
 vendor documentation and its stated limits are linked in [`TERMS.md`](TERMS.md).
 
-Status: experimental, measured. Full method and numbers: [`EXPERIMENTS.md`](EXPERIMENTS.md).
+Status: experimental. A paired first-choice API study on 40 public-safe tasks was measured
+29 Sep 2026; full method, confidence intervals and category results are in
+[`EXPERIMENTS.md`](EXPERIMENTS.md).
 
 ## Vision
 
@@ -48,7 +50,32 @@ capability basis, and competes on those.
 
 ## Results in short
 
-**Measured in Claude Code (26 Sep 2026, paired A/B).** 20 coding tasks (7 easy, 7 medium,
+**Paired first-choice API study (29 Sep 2026).** Forty public-safe tasks (10 each coding,
+math, supplied-text extraction and structural HTML) were run once through fixed Claude Opus 5.5
+and once through the `F_expected` router with the local Weiche-395M route-head classifier. Prompts
+and output caps were paired, task and arm order were randomized, and deterministic grading was
+blind to arm and model; code answers ran in Bubblewrap. The control passed **29/40 (72.5 %)** and
+the router **30/40 (75.0 %)**. The category-stratified paired-bootstrap difference was **+2.5
+percentage points** for the router (95 % CI **−7.5 to +12.5 pp**), an inconclusive quality
+comparison at this sample size.
+
+Mean accounted model cost was **$0.006415 per task** for Opus and **$0.000337** for the router;
+the router/control cost ratio was **5.27 %** (95 % CI **4.49–6.13 %**). The mean cost difference
+was **−$0.006078 per task** (95 % CI **−$0.006998 to −$0.005199**). Mean end-to-end latency was
+**4.890 s** for Opus and **12.549 s** for the router, a **7.658 s increase** (95 % CI
+**3.910–12.281 s**). The router chose GLM-5.3 Flash for 30 tasks and GPT-6 Luna for 10. It chose
+no other candidate in this run. Accounting uses the higher of OpenRouter-reported cost and the
+configured list-price cost. Inference spend for the 80 calls was **$0.269939**.
+
+This is a small synthetic task set, with one completion per task and arm. The interval spans a
+quality drop and a quality gain; it establishes neither a quality advantage nor equivalence.
+The run measures first choices with answer checking and escalation disabled. HTML grading is
+structural, and the supplied-text tasks measure extraction. The route-head's raw success-probability
+output is not consumed by `F_expected`; its category and difficulty classifications affect the
+chosen route. Public prompts, paired outcomes, the protocol summary and hash manifest are in
+[`evaluation/paired-router-ab-20260929/`](evaluation/paired-router-ab-20260929/).
+
+**Earlier Claude Code agent study (26 Sep 2026, paired A/B).** 20 coding tasks (7 easy, 7 medium,
 6 hard; Python/JS modules with hidden tests and single-file web apps), each run in Claude Code
 once with Opus 5.5 for every turn and once through this router (v0.5.1 settings, answer check
 on). At list prices the router arm cost **2.4× less** ($3.21 against $7.73; median task 10×),
@@ -57,9 +84,10 @@ with a **noticeable quality drop**: mean judge score 8.19 against 9.16 out of 10
 the answer check off the router was 13× cheaper but much worse (117/179 tests). The answer
 check rejected 34 of 43 final answers, mostly short summaries of work done in tools that the
 judge cannot see; its escalations were about 80 % of the router arm's spend. Raw data, charts
-and limits: <https://whichmodel.app.mintapis.com/evidence>.
+and limits: <https://whichmodel.app.mintapis.com/evidence>. This agent-level study and the
+29 Sep first-choice API study used different tasks, router settings and graders.
 
-Everything below this paragraph is older and mostly simulated:
+Older sections below this point include mostly simulated results:
 Eight models on 78 graded tasks, a replay of one week of real coding-agent traffic
 (1,638 sessions, 57,696 calls, 8.7B input tokens, 96 % of them cache reads), and a live run
 of the router server.

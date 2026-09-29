@@ -1027,6 +1027,51 @@ say Kimi K3; the artifacts do not settle which, and the summary records both.
 Small tasks were worse because orchestration overhead dominated. Larger or
 parallel work remains an unmeasured hypothesis, not a savings claim.
 
+## 19. Paired first-choice API A/B (29 September 2026)
+
+This is a separate API-call study from the Claude Code agent study above. It compares one fixed
+Claude Opus 5.5 completion with one completion from the router's `F_expected` first choice on each
+of 40 new, public-safe tasks. The same system and user text, endpoint and output-token cap were
+used for both arms. Task order and arm order were randomized before collection. Opaque submission
+IDs hid arm, provider and model from deterministic grading; the assignment was joined only after
+the grades were frozen. The set contains ten tasks each for coding, arithmetic, extraction from
+fictional source notices and structural HTML. Code answers ran in Bubblewrap with network disabled.
+
+The router ran at source commit `510f131f31f576e976c172b4c6453bfd00c62909`, using the pinned
+Weiche-395M fp16 route-head (`4db4ae60cedfed7f04794ea41a820fbcf67b033d`) on CPU. Its configured
+API candidate set had five models; it chose GLM-5.3 Flash for 30 tasks and GPT-6 Luna for ten.
+The route-head's raw success-probability values are not consumed by `F_expected`; the classifier's
+category and difficulty affect its choice. Answer checking, retries and escalation were disabled.
+
+| Outcome | Fixed Opus 5.5 | Router first choice | Router minus control, 95% CI |
+|---|---:|---:|---:|
+| Passed tasks | 29/40 (72.5%; Wilson 57.2–83.9%) | 30/40 (75.0%; Wilson 59.8–85.8%) | +2.5 pp (−7.5 to +12.5 pp) |
+| Accounted cost per task | $0.006415 (95% CI $0.005521–$0.007352) | $0.000337 (95% CI $0.000289–$0.000383) | −$0.006078 (−$0.006998 to −$0.005199) |
+| End-to-end latency per task | 4.890 s (95% CI 4.482–5.313 s) | 12.549 s (95% CI 8.687–17.243 s) | +7.658 s (+3.910 to +12.281 s) |
+
+All intervals are 95% category-stratified paired-bootstrap intervals from 10,000 resamples,
+resampling tasks with replacement within each category and keeping each pair together. The router's
+mean accounted cost was 5.27% of control (95% CI 4.49–6.13%). Per-arm pass-rate intervals use
+Wilson's method. Three pairs passed only in the router arm and two only in the control arm (exact
+two-sided McNemar p = 1.0). The quality interval spans both a 7.5-point drop and a 12.5-point gain;
+this run leaves the quality comparison inconclusive. The category estimates also differ: coding
+was 7/10 versus 9/10 in favour of control (router delta −20 pp, 95% CI −50 to 0 pp), while design
+was 4/10 versus 1/10 in favour of the router (+30 pp, 95% CI 0 to +60 pp). Math and extraction
+were tied at 9/10 and 10/10 respectively.
+
+Accounted cost is the higher of the OpenRouter-reported upstream charge and configured list-price
+cost for each call. The 80 provider calls cost $0.269939 in total. Per-task router latency includes
+warm CPU classification, selection and the provider response; the one-time Weiche initialization
+(4.595 s) is recorded separately. One GLM-5.3 Flash response took 96.7 s, so latency is especially
+sensitive to the small task sample and its long tail.
+
+These results describe this synthetic task set and its deterministic rubrics. They do not estimate
+generation-to-generation variation, visual design quality, broad research ability or long-running
+coding-agent work. The knowledge tasks test extraction from supplied text. The design grader checks
+HTML structure, not appearance. The run used API routes only; it says nothing about subscription
+or local routes. The router's measured setting also omitted answer checks and retries. Method and
+machine-readable aggregate results are in [`evaluation/paired-router-ab-20260929/`](evaluation/paired-router-ab-20260929/).
+
 ## Limits
 
 - Cells hold 4–6 tasks; task difficulty for real traffic is a proxy (calls per turn).
