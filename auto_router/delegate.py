@@ -818,6 +818,8 @@ def run_many(tasks: list[str], *, context: str | None = None, cwd: str | None = 
         # A stop signal meanwhile waits until this is done: a handler that
         # raises would leave it before terminate_all's SIGKILL and before the
         # copies go. If that handler then raises, its exception goes on instead.
+        # That covers a crash's cleanup too: the server's first SIGTERM/SIGHUP
+        # there raises SystemExit only once the copies are gone.
         with procs.stops_held():
             stopped = True
             if pool is not None:

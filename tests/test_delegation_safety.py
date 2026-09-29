@@ -1749,6 +1749,165 @@ def test_run_manys_cleanup_in_a_worker_thread_leaves_the_stop_handlers_alone(
         _end_answering_run(marks, scratch_tmp)
 
 
+class _Crash(Exception):
+    pass
+
+
+def _crash_once_both_run(marks: Path):
+    def crashed(futures):
+        while len(_worker_pids(marks)) < 2:
+            time.sleep(0.02)
+        raise _Crash("not a stop")
+        yield  # pragma: no cover - a generator, like as_completed
+    return crashed
+
+
+def _owner_fd_open(fd: int) -> bool:
+    try:
+        return delegate.OWNER_RECORD in os.readlink(f"/proc/self/fd/{fd}")
+    except OSError:
+        return False
+
+
+@pytest.mark.parametrize("signame", ["TERM", "HUP"])
+@pytest.mark.parametrize("source", ["workers", "grace-poll"])
+def test_the_servers_first_stop_during_a_crashs_cleanup_waits_until_the_copies_are_gone(
+        hermetic, tmp_path, monkeypatch, signame, source):
+    # Round 16. run_many's cleanup entered by a crash, not a stop; the
+    # server's first SIGTERM/SIGHUP lands in its walk - from the workers,
+    # which answer each SIGTERM with it, or raised on the main thread from
+    # the grace poll. _exit_on_signal raises SystemExit on a first signal, so
+    # unheld (3c9cc7c) it left the cleanup before the copies went. Held since
+    # 510f131: it runs once the workers are gone and the copies removed.
+    sig = getattr(signal, "SIG" + signame)
+    scratch_tmp, marks, runner = _answering_run(
+        hermetic, tmp_path, monkeypatch, signame if source == "workers" else "-")
+    monkeypatch.setattr(delegate, "as_completed", _crash_once_both_run(marks))
+    if source == "grace-poll":
+        main, fired = threading.main_thread(), []
+
+        def sleep(seconds):
+            if threading.current_thread() is main and not fired:
+                fired.append(sig)
+                signal.raise_signal(sig)
+            time.sleep(seconds)
+
+        monkeypatch.setattr(procs, "time", types.SimpleNamespace(monotonic=time.monotonic,
+                                                                 sleep=sleep))
+    tag, fds, seen = delegate._tag, [], []
+    monkeypatch.setattr(delegate, "_tag", lambda scratch: fds.append(tag(scratch)) or fds[-1])
+
+    def server(signum, frame):
+        seen.append((signum, bool(_alive(_worker_pids(marks))), bool(list(scratch_tmp.iterdir()))))
+        delegate._exit_on_signal(signum, frame)
+
+    delegate._STOPPING.clear()
+    previous = signal.signal(sig, server)
+    try:
+        with pytest.raises(SystemExit) as info:
+            delegate.run_many(["quiet", "quiet"], cwd=str(hermetic), parallel=2, runner=runner)
+        assert info.value.code == 128 + sig and isinstance(info.value.__context__, _Crash)
+        assert len(_worker_pids(marks)) == 2, "the workers never started"
+        assert not _alive(_worker_pids(marks)), "workers left running"
+        assert not list(scratch_tmp.iterdir()), "the worker copies were left behind"
+        assert seen[0] == (sig, False, False), seen
+        assert delegate._STOPPING.is_set() and signal.getsignal(sig) is server
+        assert not _owner_fd_open(fds[0]), "the owner record's fd was not closed"
+    finally:
+        signal.signal(sig, previous)
+        delegate._STOPPING.clear()
+        _end_answering_run(marks, scratch_tmp)
+
+
+@pytest.mark.parametrize("signame", ["TERM", "HUP"])
+def test_copies_a_crashs_cleanup_cannot_free_keep_their_record_for_the_next_server(
+        hermetic, tmp_path, monkeypatch, signame):
+    # The same crash and first stop, with workers that do not end within
+    # STOP_WAIT_S: the copies stay by design, with their owner record, and the
+    # next server reclaims them once their server is gone and nothing uses them.
+    sig = getattr(signal, "SIG" + signame)
+    (hermetic / "a.txt").write_text("a\n")
+    monkeypatch.setattr(delegate.tempfile, "tempdir", str(tmp_path))
+    monkeypatch.setattr(delegate, "STOP_WAIT_S", 0.3)
+    release, stuck, main, fired = (threading.Event(), threading.Event(),
+                                   threading.main_thread(), [])
+
+    def runner(task, context, cwd, tier, timeout_s):
+        stuck.set()
+        release.wait(30)
+        return {"ok": True}
+
+    def crashed(futures):
+        stuck.wait(30)
+        raise _Crash("not a stop")
+        yield  # pragma: no cover - a generator, like as_completed
+
+    real_wait = delegate.wait
+
+    def wait(futures, timeout=None):
+        if threading.current_thread() is main and not fired:
+            fired.append(sig)
+            signal.raise_signal(sig)
+        return real_wait(futures, timeout=timeout)
+
+    monkeypatch.setattr(delegate, "as_completed", crashed)
+    monkeypatch.setattr(delegate, "wait", wait)
+    delegate._STOPPING.clear()
+    previous = signal.signal(sig, delegate._exit_on_signal)
+    try:
+        with pytest.raises(SystemExit) as info:
+            delegate.run_many(["stuck", "stuck"], cwd=str(hermetic), parallel=2, runner=runner)
+        assert info.value.code == 128 + sig and isinstance(info.value.__context__, _Crash)
+        [scratch] = tmp_path.glob("auto-router-delegate-*")
+        assert (scratch / "worker-1" / "a.txt").exists()
+        record = json.loads((scratch / delegate.OWNER_RECORD).read_text())
+        assert record["pid"] == os.getpid() and record["path"] == str(scratch)
+        assert delegate.sweep_copies(str(tmp_path)) == [
+            f"kept {scratch}: its server (pid {os.getpid()}) is still running"]
+        record["pid"], record["start"] = _dead_owner()  # as seen by the next server
+        (scratch / delegate.OWNER_RECORD).write_text(json.dumps(record))
+        release.set()
+        assert delegate.sweep_copies(str(tmp_path))[0].startswith("removed")
+        assert not scratch.exists()
+    finally:
+        release.set()
+        signal.signal(sig, previous)
+        delegate._STOPPING.clear()
+        for leftover in tmp_path.glob("auto-router-delegate-*"):
+            shutil.rmtree(leftover)
+
+
+@pytest.mark.parametrize("signame", ["TERM", "HUP"])
+def test_the_servers_first_stop_during_parallel_work_ends_workers_that_ignore_sigterm(
+        hermetic, tmp_path, monkeypatch, signame):
+    # The first SIGTERM/SIGHUP enters the cleanup instead: _exit_on_signal
+    # kills the workers itself, the cleanup finds them done and removes the
+    # copies, and a repeat changes nothing.
+    sig = getattr(signal, "SIG" + signame)
+    scratch_tmp, marks, runner = _answering_run(hermetic, tmp_path, monkeypatch, "-")
+
+    def interrupted(futures):
+        while len(_worker_pids(marks)) < 2:
+            time.sleep(0.02)
+        signal.raise_signal(sig)
+        yield  # pragma: no cover - a generator, like as_completed
+
+    monkeypatch.setattr(delegate, "as_completed", interrupted)
+    delegate._STOPPING.clear()
+    previous = signal.signal(sig, delegate._exit_on_signal)
+    try:
+        with pytest.raises(SystemExit) as info:
+            delegate.run_many(["quiet", "quiet"], cwd=str(hermetic), parallel=2, runner=runner)
+        assert info.value.code == 128 + sig
+        assert len(_worker_pids(marks)) == 2 and not _alive(_worker_pids(marks))
+        assert not list(scratch_tmp.iterdir())
+        assert delegate._exit_on_signal(sig, None) is None
+    finally:
+        signal.signal(sig, previous)
+        delegate._STOPPING.clear()
+        _end_answering_run(marks, scratch_tmp)
+
+
 # --------------------------------------------------------------------------
 # Symlinks in per-worker copies (known limit of b7bda45, closed here)
 # --------------------------------------------------------------------------
