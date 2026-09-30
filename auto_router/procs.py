@@ -391,12 +391,23 @@ class _HeldSignals:
                 self.previous[sig] = signal.signal(sig, self)
 
     def release(self) -> None:
-        """Put the handlers back, then deliver what came meanwhile, in order."""
+        """Put the handlers back, then deliver what came meanwhile, in order.
+
+        Every pending signal reaches its handler even if an earlier handler
+        raises; then the first stop a handler raised (``KeyboardInterrupt``,
+        ``SystemExit``) goes on, or else the first other exception.
+        """
         self.holding = False
         for sig, handler in self.previous.items():
             signal.signal(sig, handler)
+        raised: list[BaseException] = []
         for signum in self.pending:
-            signal.raise_signal(signum)
+            try:
+                signal.raise_signal(signum)
+            except BaseException as exc:  # noqa: BLE001 - delivered on, below
+                raised.append(exc)
+        if raised:
+            raise next((exc for exc in raised if not isinstance(exc, Exception)), raised[0])
 
 
 def _stop(proc: subprocess.Popen, *, scope: str, grace_s: float) -> None:

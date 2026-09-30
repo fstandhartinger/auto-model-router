@@ -814,18 +814,33 @@ with a shell:
   exit, a timeout or an interrupt), a stop signal waits until that is done and
   only then reaches its handler, so a handler that raises, even every time
   like Python's default `Ctrl-C` handler, cannot cut the stopping short; the
-  stop is still delivered, as soon as the stopping is over.
+  stop is still delivered, as soon as the stopping is over. Every signal that
+  waited reaches its handler, in order, even if an earlier one's handler
+  raises; the first stop raised (`KeyboardInterrupt`, `SystemExit`) then goes
+  on, or else the first other exception.
 - **Parallel work never shares a tree.** With more than one worker, each works in
   its own disposable copy of `cwd` (without `.git`, virtualenvs,
   `node_modules` and caches; at most 200 MB / 50,000 files, see
   `AUTO_ROUTER_DELEGATE_COPY_LIMIT_MB`). The result carries each copy's path and a
   diff against the starting state; nothing is applied to `cwd` and nothing a
   worker wrote is executed by the server. You review the diffs and apply what you
-  accept. A single worker runs in `cwd` itself, and tool calls are served one at
+  accept. When the workers are done, the copies they left unchanged are
+  deleted, unless a process one of them started still runs with
+  `AUTO_ROUTER_DELEGATE_COPY` naming them (even one that detached) or holds
+  anything inside them, or one of your processes that cannot be inspected
+  started after the server did (another user's cannot write into your private
+  copies unless it is root, so it is not counted here): then none is deleted,
+  the result says so under `copies_kept`, and the copies keep their owner
+  record, so a later server start deletes them, the named workspaces included,
+  once nothing uses them (below).
+  A stop signal while briefs are being handed to the workers waits until every
+  one is recorded, so the stopping below sees each brief that started. A single
+  worker runs in `cwd` itself, and tool calls are served one at
   a time. If the server is stopped (`SIGTERM`/`SIGHUP`) or interrupted while
   workers run, queued briefs are not started and the running workers are
   stopped. The copies are deleted only after that, because no reply will name
-  them. A worker that cannot be stopped within 30 s keeps its copies on disk
+  them, and only if nothing a worker started may still write into them (as
+  above). A worker that cannot be stopped within 30 s keeps its copies on disk
   (`$TMPDIR/auto-router-delegate-*`), since they are not deleted under a writer.
   A second `SIGTERM`/`SIGHUP` while the server is stopping is ignored, so it
   cannot cut that cleanup short; `SIGKILL` still ends the server at once and
@@ -846,7 +861,9 @@ with a shell:
   still write to it.** Each run's scratch directory holds an
   owner record (`.auto-router-owner.json`: the server's pid and start time,
   the boot id and the pid namespace), which the server keeps locked while it
-  runs and deletes when a result hands the copies over. When the server starts,
+  runs and deletes once it has written the reply that hands the copies over (a
+  reply that cannot be written leaves the record, so the copies are reclaimed
+  like any other). When the server starts,
   it deletes an `$TMPDIR/auto-router-delegate-*` directory only if all of
   these hold: it is a directory (not a link) owned by you; its record names
   that very path and comes from this boot and this pid namespace; no process

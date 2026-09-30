@@ -1641,9 +1641,14 @@ def test_a_handler_that_raises_again_cannot_cut_run_manys_cleanup_short(
         assert len(_worker_pids(marks)) == 2, "the workers never started"
         assert not _alive(_worker_pids(marks)), "the cleanup was cut short, workers left running"
         assert not list(scratch_tmp.iterdir()), "the worker copies were left behind"
-        # The first stop, then the one held during the cleanup - after it.
+        # The first stop, then the ones held during the cleanup - after it.
+        # Each worker answers the SIGTERM with a stop, so up to two are held
+        # (one if they came before the handler ran); every one is delivered.
+        # (Round 17, F3: before, only the first held stop was.)
+        held = handler.calls[1:]
         assert handler.calls[0] == (sig, True)
-        assert handler.calls[1:] == [(sig, False)], handler.calls
+        assert held and set(held) == {(sig, False)}, handler.calls
+        assert len(held) <= (2 if source == "workers" else 1), handler.calls
         assert signal.getsignal(sig) is handler, "the caller's handler was not put back"
         assert bystander.poll() is None, "a process outside the job was signalled"
     finally:
@@ -1701,7 +1706,10 @@ def test_a_stop_signal_after_run_manys_cleanup_still_reaches_the_caller(
         with pytest.raises(_Stop):
             delegate.run_many(["lead", "quiet"], cwd=str(hermetic), parallel=2, runner=runner)
         assert late == [("held stop seen", [], False), "new stop seen"], late
-        assert handler.calls == [(sig, True), (sig, False), (sig, False)]
+        # The first stop, the one or two held during the cleanup (one per
+        # worker's answer, all delivered - round 17, F3), then the new one.
+        assert handler.calls[0] == (sig, True) and 3 <= len(handler.calls) <= 4, handler.calls
+        assert set(handler.calls[1:]) == {(sig, False)}, handler.calls
         with pytest.raises(_Stop):
             signal.raise_signal(sig)  # and after run_many the handler is the caller's again
     finally:
@@ -2505,10 +2513,18 @@ def test_copies_kept_for_an_unstoppable_worker_stay_while_their_server_runs(
 
 
 def _marked(scratch: Path) -> subprocess.Popen:
-    """A process that holds nothing inside ``scratch`` but carries its COPY_ENV."""
-    return subprocess.Popen(["sleep", "30"], cwd="/", stdin=subprocess.DEVNULL,
+    """A process that holds nothing inside ``scratch`` but carries its COPY_ENV.
+
+    Returned once its ``/proc/<pid>/environ`` shows the entry: right after the
+    exec the kernel may not show the new environment yet (round 17, F4)."""
+    proc = subprocess.Popen(["sleep", "30"], cwd="/", stdin=subprocess.DEVNULL,
                             env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"),
                                  delegate.COPY_ENV: str(scratch)})
+    deadline = time.monotonic() + 10
+    while not procs._carries(f"/proc/{proc.pid}", delegate._marker(scratch)):
+        assert time.monotonic() < deadline, "the marked process never showed its entry"
+        time.sleep(0.005)
+    return proc
 
 
 def _gone(proc: subprocess.Popen) -> bool:
@@ -2902,3 +2918,293 @@ def test_a_locked_owner_record_keeps_the_copy_even_if_no_process_is_seen(tmp_pat
         locker.kill()
         locker.wait()
     assert delegate.sweep_copies(str(tmp_path))[0].startswith("removed")
+
+
+# Round 17: findings F1, F5, F2 and F3 of the independent review of b7bda45..c58c0b4.
+
+_LATE_WRITER = ("import os, sys, time\n"
+                "print('ready', flush=True)\n"
+                "os.close(1)\n"
+                "while not os.path.exists(sys.argv[2]):\n"
+                "    time.sleep(0.02)\n"
+                "os.makedirs(sys.argv[1], exist_ok=True)\n"
+                "open(os.path.join(sys.argv[1], 'late.txt'), 'w').write('late')\n")
+
+
+def test_a_detached_process_a_worker_left_keeps_the_copies_and_their_record(
+        hermetic, tmp_path, monkeypatch):
+    # F1. Every worker returned normally, but each left a process that
+    # detached (a session of its own, holding nothing in its copy) and still
+    # writes into the copy by path later. Before: the normal finish deleted
+    # the copies and the record, the late writes recreated them without one,
+    # and every later sweep kept them forever ("no owner record").
+    scratch_tmp = tmp_path / "scratch-tmp"
+    scratch_tmp.mkdir()
+    monkeypatch.setattr(delegate.tempfile, "tempdir", str(scratch_tmp))
+    go = tmp_path / "go"
+    writers = []
+
+    def runner(task, context, cwd, tier, timeout_s):
+        if task == "edit":
+            Path(cwd, "edited.txt").write_text("edited\n")
+        env = {**os.environ, delegate.COPY_ENV: str(Path(cwd).parent)}
+        writer = subprocess.Popen([sys.executable, "-c", _LATE_WRITER, cwd, str(go)], env=env,
+                                  cwd="/", start_new_session=True, stdout=subprocess.PIPE,
+                                  text=True)
+        writer.stdout.readline()  # started, with the variable in its environment
+        writers.append(writer)
+        return {"ok": True}
+
+    try:
+        result = delegate.run_many(["edit", "quiet"], cwd=str(hermetic), parallel=2,
+                                   runner=runner)
+        [scratch] = scratch_tmp.iterdir()
+        edited, quiet = result["results"]
+        assert edited["workspace"] == str(scratch / "worker-1") and quiet["workspace"] is None
+        assert "in use by pid" in result["copies_kept"] and str(scratch) in result["copies_kept"]
+        for name in ("base", "worker-1", "worker-2", delegate.OWNER_RECORD):
+            assert (scratch / name).exists(), name
+        go.touch()
+        for writer in writers:
+            writer.wait(timeout=30)
+        assert (scratch / "worker-2" / "late.txt").exists()
+        assert delegate.sweep_copies(str(scratch_tmp)) == [
+            f"kept {scratch}: its server (pid {os.getpid()}) is still running"]
+        # As the next server sees it once this one has ended: reclaimed.
+        record = json.loads((scratch / delegate.OWNER_RECORD).read_text())
+        record["pid"] = _dead_owner()[0]
+        (scratch / delegate.OWNER_RECORD).write_text(json.dumps(record))
+        assert delegate.sweep_copies(str(scratch_tmp)) == [
+            f"removed {scratch}: its server and every worker had ended"]
+        assert not list(scratch_tmp.iterdir())
+    finally:
+        go.touch()
+        for writer in writers:
+            writer.kill()
+            writer.wait()
+
+
+def test_a_normal_finish_with_no_process_left_still_cleans_up_and_hands_over(
+        hermetic, tmp_path, monkeypatch):
+    # F1's check keeps nothing when nothing is left running.
+    monkeypatch.setattr(delegate.tempfile, "tempdir", str(tmp_path))
+
+    def runner(task, context, cwd, tier, timeout_s):
+        if task == "edit":
+            Path(cwd, "edited.txt").write_text("edited\n")
+        subprocess.run(["true"], cwd=cwd, env={**os.environ,
+                                                delegate.COPY_ENV: str(Path(cwd).parent)})
+        return {"ok": True}
+
+    result = delegate.run_many(["edit", "quiet"], cwd=str(hermetic), runner=runner)
+    assert "copies_kept" not in result
+    [scratch] = tmp_path.glob("auto-router-delegate-*")
+    assert sorted(p.name for p in scratch.iterdir()) == ["worker-1"]
+    result = delegate.run_many(["quiet", "quiet"], cwd=str(hermetic), runner=runner)
+    assert "copies_kept" not in result and len(list(tmp_path.glob("auto-router-delegate-*"))) == 1
+
+
+def test_a_stop_between_submitting_a_brief_and_recording_it_still_waits_for_it(
+        hermetic, tmp_path, monkeypatch):
+    # F5. The stop lands after pool.submit() returned - the brief is already
+    # running - but before its future is stored in `pending`. Before: the
+    # cleanup waited for no future, deleted the copy under the running brief,
+    # and the brief's later write recreated it without an owner record.
+    from concurrent.futures import Future
+    monkeypatch.setattr(delegate.tempfile, "tempdir", str(tmp_path))
+    started, release, done = threading.Event(), threading.Event(), threading.Event()
+
+    def runner(task, context, cwd, tier, timeout_s):
+        started.set()
+        release.wait(30)
+        os.makedirs(cwd, exist_ok=True)
+        Path(cwd, "late.txt").write_text("late")
+        done.set()
+        return {"ok": True}
+
+    main, fired = threading.main_thread(), []
+    real_hash = Future.__hash__
+
+    def hash_(self):
+        if threading.current_thread() is main and not fired:
+            fired.append(1)
+            assert started.wait(10)
+            threading.Timer(0.3, release.set).start()
+            signal.raise_signal(signal.SIGINT)  # the stop, in the gap
+        return real_hash(self)
+
+    monkeypatch.setattr(Future, "__hash__", hash_)
+    previous = signal.signal(signal.SIGINT, signal.default_int_handler)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            delegate.run_many(["runs", "queued"], cwd=str(hermetic), parallel=2, runner=runner)
+        assert fired, "the stop never landed in the gap"
+        assert done.is_set(), "the cleanup did not wait for the brief that was already running"
+        assert not list(tmp_path.glob("auto-router-delegate-*"))
+    finally:
+        release.set()
+        signal.signal(signal.SIGINT, previous)
+    assert done.wait(10)
+    assert not list(tmp_path.glob("auto-router-delegate-*"))
+
+
+def _serve_many(hermetic, tmp_path, monkeypatch, stdout):
+    monkeypatch.setattr(delegate.tempfile, "tempdir", str(tmp_path))
+    real = delegate.run_many
+
+    def runner(task, context, cwd, tier, timeout_s):
+        Path(cwd, f"{task}.txt").write_text(task)
+        return {"ok": True}
+
+    monkeypatch.setattr(delegate, "run_many", lambda tasks, **k: real(tasks, **k, runner=runner))
+    request = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
+        "name": "delegate_many", "arguments": {"tasks": ["one", "two"]}}}
+    return delegate._serve(io.StringIO(json.dumps(request) + "\n"), stdout)
+
+
+def test_copies_a_reply_that_never_arrived_keep_their_record_for_the_next_server(
+        hermetic, tmp_path, monkeypatch):
+    # F2. Before: the record went as soon as run_many decided to hand the
+    # copies over; the client then never got the reply naming them, and no
+    # later server would reclaim them.
+    class Gone(io.StringIO):
+        def write(self, text):
+            raise BrokenPipeError(32, "Broken pipe")
+
+    out = Gone()
+    with pytest.raises(BrokenPipeError):
+        _serve_many(hermetic, tmp_path, monkeypatch, out)
+    assert out.getvalue() == ""
+    [scratch] = tmp_path.glob("auto-router-delegate-*")
+    assert sorted(p.name for p in scratch.glob("worker-*")) == ["worker-1", "worker-2"]
+    record = json.loads((scratch / delegate.OWNER_RECORD).read_text())
+    assert record["pid"] == os.getpid() and record["path"] == str(scratch)
+    record["pid"] = _dead_owner()[0]  # the server that could not reply has ended
+    (scratch / delegate.OWNER_RECORD).write_text(json.dumps(record))
+    assert delegate.sweep_copies(str(tmp_path)) == [
+        f"removed {scratch}: its server and every worker had ended"]
+
+
+def test_the_record_goes_only_once_the_reply_naming_the_copies_is_written(
+        hermetic, tmp_path, monkeypatch):
+    seen = []
+
+    class Client(io.StringIO):
+        def write(self, text):
+            workspaces = [r["workspace"] for r in
+                          json.loads(text)["result"]["structuredContent"]["results"]]
+            seen.append([(Path(w).parent / delegate.OWNER_RECORD).exists() for w in workspaces])
+            return super().write(text)
+
+    out = Client()
+    assert _serve_many(hermetic, tmp_path, monkeypatch, out) == 0
+    assert seen == [[True, True]]
+    [scratch] = tmp_path.glob("auto-router-delegate-*")
+    assert not (scratch / delegate.OWNER_RECORD).exists()
+    assert delegate._HANDED == []
+    assert "no owner record" in delegate.sweep_copies(str(tmp_path))[0]
+    assert (scratch / "worker-1" / "one.txt").exists()
+
+
+def test_a_held_handler_that_raises_does_not_drop_the_signals_held_after_it():
+    # F3. Before: the first pending handler's exception left the delivery
+    # loop, and the SIGTERM held after it never reached its handler.
+    delivered = []
+
+    def on_int(signum, frame):
+        delivered.append("INT")
+        raise RuntimeError("the first handler raised")
+
+    def on_term(signum, frame):
+        delivered.append("TERM")
+        raise SystemExit(143)
+
+    previous = {sig: signal.signal(sig, handler)
+                for sig, handler in ((signal.SIGINT, on_int), (signal.SIGTERM, on_term))}
+    try:
+        with pytest.raises(SystemExit) as info:  # the stop goes on, not the plain error
+            with procs.stops_held():
+                signal.raise_signal(signal.SIGINT)
+                signal.raise_signal(signal.SIGTERM)
+                assert delivered == []
+        assert delivered == ["INT", "TERM"] and info.value.code == 143
+        signal.signal(signal.SIGTERM, lambda s, f: delivered.append("TERM"))
+        with pytest.raises(RuntimeError, match="first handler"):
+            with procs.stops_held():
+                signal.raise_signal(signal.SIGINT)
+                signal.raise_signal(signal.SIGTERM)
+        assert delivered == ["INT", "TERM", "INT", "TERM"]
+        assert signal.getsignal(signal.SIGINT) is on_int
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+
+
+def test_an_interrupt_keeps_copies_a_detached_process_a_worker_left_may_write_into(
+        hermetic, tmp_path, monkeypatch):
+    # F1's check on the interrupt path: the workers are stopped (here they
+    # had returned), but a process one started detached and lives on.
+    scratch_tmp = tmp_path / "scratch-tmp"
+    scratch_tmp.mkdir()
+    monkeypatch.setattr(delegate.tempfile, "tempdir", str(scratch_tmp))
+    go = tmp_path / "go"
+    writers = []
+
+    def runner(task, context, cwd, tier, timeout_s):
+        env = {**os.environ, delegate.COPY_ENV: str(Path(cwd).parent)}
+        writer = subprocess.Popen([sys.executable, "-c", _LATE_WRITER, cwd, str(go)], env=env,
+                                  cwd="/", start_new_session=True, stdout=subprocess.PIPE,
+                                  text=True)
+        writer.stdout.readline()
+        writers.append(writer)
+        return {"ok": True}
+
+    def interrupted(futures):
+        wait(list(futures))
+        raise KeyboardInterrupt
+        yield  # pragma: no cover - a generator, like as_completed
+
+    from concurrent.futures import wait
+    monkeypatch.setattr(delegate, "as_completed", interrupted)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            delegate.run_many(["one", "two"], cwd=str(hermetic), parallel=2, runner=runner)
+        [scratch] = scratch_tmp.iterdir()
+        assert (scratch / delegate.OWNER_RECORD).exists() and (scratch / "worker-2").is_dir()
+        go.touch()
+        for writer in writers:
+            writer.wait(timeout=30)
+        record = json.loads((scratch / delegate.OWNER_RECORD).read_text())
+        record["pid"] = _dead_owner()[0]
+        (scratch / delegate.OWNER_RECORD).write_text(json.dumps(record))
+        assert delegate.sweep_copies(str(scratch_tmp))[0].startswith("removed")
+    finally:
+        go.touch()
+        for writer in writers:
+            writer.kill()
+            writer.wait()
+
+
+def test_the_servers_own_check_ignores_other_users_processes_it_cannot_inspect(
+        hermetic, tmp_path, monkeypatch):
+    # A root cron job started while the workers ran cannot be inspected, and
+    # cannot write into this user's private copies either: it keeps nothing.
+    # One of this user's that cannot be inspected (non-dumpable) still does.
+    monkeypatch.setattr(delegate.tempfile, "tempdir", str(tmp_path))
+    monkeypatch.setattr(procs, "holders", lambda inodes, since, **_: (set(), {4242}))
+    monkeypatch.setattr(delegate, "_ours", lambda pid: False)
+    result = delegate.run_many(["one", "two"], cwd=str(hermetic), runner=lambda *a: {"ok": True})
+    assert "copies_kept" not in result and not list(tmp_path.glob("auto-router-delegate-*"))
+    monkeypatch.setattr(delegate, "_ours", lambda pid: pid == 4242)
+    result = delegate.run_many(["one", "two"], cwd=str(hermetic), runner=lambda *a: {"ok": True})
+    assert "cannot be inspected started after its server: pid 4242" in result["copies_kept"]
+    [scratch] = tmp_path.glob("auto-router-delegate-*")
+    assert (scratch / delegate.OWNER_RECORD).exists()
+    # The sweep still counts every process it cannot inspect, as before.
+    monkeypatch.setattr(delegate, "_ours", lambda pid: False)
+    assert "cannot be inspected" in delegate._in_use(scratch, since=0)
+
+
+def test_ours_reads_the_real_uid():
+    assert delegate._ours(os.getpid())
+    assert delegate._ours(2 ** 22 + 12345)  # no such process: cannot tell, so counted

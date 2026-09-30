@@ -33,7 +33,8 @@ third-party model with a shell:
   in ``not_diffed``. A single worker runs in
   ``cwd`` itself. Tool calls are served one at a time.
 - **Copies left behind** by a server that was killed, or kept because a
-  worker could not be stopped, carry an owner record. A later server, when it
+  worker could not be stopped or something a worker started may still write
+  into them when it is done, carry an owner record. A later server, when it
   starts, stops the workers such a server left running (nobody can collect
   their results any more), then deletes the copies once no process holds
   anything inside them or still carries the copy's ``COPY_ENV`` variable
@@ -659,8 +660,15 @@ def _part_of(scratch: Path) -> bool:
     return os.environ.get(COPY_ENV) == str(scratch) or procs.lineage_carries(_marker(scratch))
 
 
-def _in_use(scratch: Path, *, since: int) -> str:
-    """Why a process may still write into ``scratch`` ("" if none can)."""
+def _in_use(scratch: Path, *, since: int, others: bool = True) -> str:
+    """Why a process may still write into ``scratch`` ("" if none can).
+
+    ``others=False`` leaves out processes that cannot be inspected and run as
+    another user: ``scratch`` is this user's and private (``mkdtemp``), so none
+    of them can write into it unless it is root. For a server's own check once
+    its workers are done, where any such process started meanwhile (a cron
+    job, a system service) would otherwise keep every copy.
+    """
     inodes = set()
     try:
         for top, dirs, files in os.walk(scratch, onerror=_raise):
@@ -672,12 +680,25 @@ def _in_use(scratch: Path, *, since: int) -> str:
     seen = procs.holders(inodes, since=since, environ=_marker(scratch))
     if seen is None:
         return "cannot tell which processes use it (/proc unreadable)"
+    unreadable = seen[1] if others else {pid for pid in seen[1] if _ours(pid)}
     if seen[0]:
         return "in use by pid " + ", ".join(map(str, sorted(seen[0])))
-    if seen[1]:
+    if unreadable:
         return ("processes that cannot be inspected started after its server: pid "
-                + ", ".join(map(str, sorted(seen[1]))))
+                + ", ".join(map(str, sorted(unreadable))))
     return ""
+
+
+def _ours(pid: int) -> bool:
+    """Whether ``pid`` runs as this user (real uid); True when that cannot be read."""
+    try:
+        with open(f"/proc/{pid}/status") as fh:
+            for line in fh:
+                if line.startswith("Uid:"):
+                    return int(line.split()[1]) == os.getuid()
+    except (OSError, ValueError, IndexError):
+        pass
+    return True
 
 
 def _raise(exc: OSError) -> None:
@@ -740,8 +761,16 @@ def _stop_workers(futures: dict) -> bool:
 
 def run_many(tasks: list[str], *, context: str | None = None, cwd: str | None = None,
              tier: str = "cheap", parallel: int = 4, timeout_s: int = 900,
-             runner: Callable[..., dict[str, Any]] = run_delegate) -> dict[str, Any]:
-    """Run several workers; with more than one, each works in its own copy of ``cwd``."""
+             runner: Callable[..., dict[str, Any]] = run_delegate,
+             hand_over: list[Path] | None = None) -> dict[str, Any]:
+    """Run several workers; with more than one, each works in its own copy of ``cwd``.
+
+    When the result hands copies over, their owner record is removed at once;
+    with ``hand_over``, their scratch directory is appended to it instead, for
+    the caller to remove the record once the result has reached whoever uses
+    the copies (the server does so after writing its reply). Until then a
+    later server still reclaims them if this one ends first.
+    """
     if (not isinstance(tasks, list) or not tasks or len(tasks) > MAX_TASKS
             or any(not isinstance(task, str) or not task.strip() for task in tasks)):
         return {"ok": False, "error": f"tasks must be a list of 1 to {MAX_TASKS} non-empty strings"}
@@ -765,6 +794,9 @@ def run_many(tasks: list[str], *, context: str | None = None, cwd: str | None = 
     pool: ThreadPoolExecutor | None = None
     pending: dict = {}
     owner: int | None = None
+    kept = ""
+    # Whatever a worker starts, starts after this server did (the owner record's start).
+    since = procs.start_time(os.getpid()) or 0
     try:
         if isolated:
             scratch = Path(tempfile.mkdtemp(prefix=COPY_PREFIX))
@@ -778,9 +810,14 @@ def run_many(tasks: list[str], *, context: str | None = None, cwd: str | None = 
                 _remove_copies(scratch)
                 return {"ok": False, "error": f"could not copy {source} for the workers: {exc}"}
         pool = ThreadPoolExecutor(max_workers=workers)
-        for i, task in enumerate(tasks):
-            pending[pool.submit(_unless_stopping, runner, task, context, workdirs[i], tier,
-                                timeout_s)] = i
+        # A stop signal waits until every submitted brief is in `pending`:
+        # one between submit() and the store would leave a running brief the
+        # cleanup below neither waits for nor keeps its copy for.
+        with procs.stops_held():
+            for i, task in enumerate(tasks):
+                future = pool.submit(_unless_stopping, runner, task, context, workdirs[i], tier,
+                                     timeout_s)
+                pending[future] = i
         for future in as_completed(pending):
             i = pending[future]
             try:
@@ -790,6 +827,12 @@ def run_many(tasks: list[str], *, context: str | None = None, cwd: str | None = 
         pool.shutdown()
         finished = [r or {"ok": False, "error": "worker produced no result"} for r in results]
         if isolated and scratch is not None:
+            # Every worker has returned, but what one started may live on (a
+            # process that detached with setsid() still carries COPY_ENV) and
+            # write into any of these copies by path. While one may, nothing
+            # is deleted and the owner record stays, so a later server
+            # reclaims the copies once nothing uses them (sweep_copies).
+            busy = _in_use(scratch, since=since, others=False)
             for i, item in enumerate(finished):
                 workdir = Path(workdirs[i] or "")
                 try:
@@ -797,24 +840,31 @@ def run_many(tasks: list[str], *, context: str | None = None, cwd: str | None = 
                 except OSError as exc:
                     changes = {"error": f"could not diff the worker copy: {exc}"}
                 changed = any(changes.get(k) for k in ("added", "modified", "deleted"))
-                if not changed and not changes.get("error"):
+                if not changed and not changes.get("error") and not busy:
                     shutil.rmtree(workdir, ignore_errors=True)
                 finished[i] = {**item, "workspace": str(workdir) if changed else None,
                                "changes": changes}
-            shutil.rmtree(scratch / "base", ignore_errors=True)
-            if not any(r.get("workspace") for r in finished):
-                _remove_copies(scratch)
+            if busy:
+                kept = f"{scratch} ({busy})"
             else:
-                # Handed over: the result names these copies, so they are the
-                # planner's now and no later server may reclaim them.
-                (scratch / OWNER_RECORD).unlink(missing_ok=True)
+                shutil.rmtree(scratch / "base", ignore_errors=True)
+                if not any(r.get("workspace") for r in finished):
+                    _remove_copies(scratch)
+                elif hand_over is not None:
+                    hand_over.append(scratch)
+                else:
+                    # Handed over: the result names these copies, so they are
+                    # the planner's now and no later server may reclaim them.
+                    (scratch / OWNER_RECORD).unlink(missing_ok=True)
     except BaseException:
         # Interrupted: the server's stop signal (raised here as SystemExit),
         # Ctrl-C or a crash. No result will ever name these copies, so they go
         # too - but only once no worker can still be writing into them. Queued
         # briefs are not started; the exception goes on unchanged. Copies
-        # kept for a worker that could not be stopped keep their owner record,
-        # so a later server reclaims them once nothing uses them (sweep_copies).
+        # kept for a worker that could not be stopped, or that something a
+        # worker started may still write into (_in_use, as after a normal
+        # finish), keep their owner record, so a later server reclaims them
+        # once nothing uses them (sweep_copies).
         # A stop signal meanwhile waits until this is done: a handler that
         # raises would leave it before terminate_all's SIGKILL and before the
         # copies go. If that handler then raises, its exception goes on instead.
@@ -825,7 +875,8 @@ def run_many(tasks: list[str], *, context: str | None = None, cwd: str | None = 
             if pool is not None:
                 pool.shutdown(wait=False, cancel_futures=True)
                 stopped = _stop_workers(pending)
-            if scratch is not None and stopped:
+            if scratch is not None and stopped and not _in_use(scratch, since=since,
+                                                                 others=False):
                 _remove_copies(scratch)
         raise
     finally:
@@ -849,6 +900,11 @@ def run_many(tasks: list[str], *, context: str | None = None, cwd: str | None = 
     if isolated:
         out["note"] = ("Each worker ran in its own copy of cwd; nothing was applied to cwd. Review "
                        "each result's changes and apply what you accept.")
+    if kept:
+        out["copies_kept"] = (
+            f"{kept}: a process a worker started may still write into these copies, so none "
+            f"was deleted; a later server start deletes them once nothing uses them, including "
+            f"the workspaces named above, so take what you need from those first")
     return out
 
 
@@ -857,6 +913,11 @@ def run_many(tasks: list[str], *, context: str | None = None, cwd: str | None = 
 # ---------------------------------------------------------------------------
 def _text_result(data: dict[str, Any]) -> tuple[str, bool, dict[str, Any]]:
     return json.dumps(data, ensure_ascii=False, indent=2), not bool(data.get("ok")), data
+
+
+#: Scratch directories whose copies the reply being prepared hands over; their
+#: owner records go only once :func:`_serve` has written that reply.
+_HANDED: list[Path] = []
 
 
 def _call(name: str, arguments: Any) -> tuple[str, bool, dict[str, Any]]:
@@ -874,8 +935,9 @@ def _call(name: str, arguments: Any) -> tuple[str, bool, dict[str, Any]]:
         if args["parallel"] == 1:
             return _text_result(run_delegate(args["task"], **common))
         return _text_result(run_many([args["task"]] * args["parallel"],
-                                     parallel=args["parallel"], **common))
-    return _text_result(run_many(args["tasks"], parallel=args["parallel"], **common))
+                                     parallel=args["parallel"], hand_over=_HANDED, **common))
+    return _text_result(run_many(args["tasks"], parallel=args["parallel"], hand_over=_HANDED,
+                                 **common))
 
 
 def handle(message: Any, run_tool: Callable[[str, Any], tuple[str, bool, dict]]) -> dict | None:
@@ -962,6 +1024,7 @@ def _serve(stdin, stdout) -> int:
         line = line.strip()
         if not line:
             continue
+        _HANDED.clear()
         try:
             message = json.loads(line)
         except json.JSONDecodeError:
@@ -972,6 +1035,12 @@ def _serve(stdin, stdout) -> int:
         if reply is not None:
             stdout.write(json.dumps(reply) + "\n")
             stdout.flush()
+            # Only now does the client have the paths of the copies the reply
+            # hands over. Had the write failed, their owner records would
+            # stay, and a later server would reclaim the copies.
+            for scratch in _HANDED:
+                (scratch / OWNER_RECORD).unlink(missing_ok=True)
+    _HANDED.clear()
     return 0
 
 
