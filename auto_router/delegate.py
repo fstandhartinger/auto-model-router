@@ -663,11 +663,12 @@ def _part_of(scratch: Path) -> bool:
 def _in_use(scratch: Path, *, since: int, others: bool = True) -> str:
     """Why a process may still write into ``scratch`` ("" if none can).
 
-    ``others=False`` leaves out processes that cannot be inspected and run as
-    another user: ``scratch`` is this user's and private (``mkdtemp``), so none
-    of them can write into it unless it is root. For a server's own check once
-    its workers are done, where any such process started meanwhile (a cron
-    job, a system service) would otherwise keep every copy.
+    ``others=False`` leaves out processes that cannot be inspected but whose
+    status proves they cannot write into ``scratch`` (:func:`_ours` is False):
+    it is this user's and private (``mkdtemp``). For a server's own check once
+    its workers are done, where any such process started meanwhile (another
+    user's cron job) would otherwise keep every copy. One positively seen
+    using it counts whoever it runs as.
     """
     inodes = set()
     try:
@@ -689,16 +690,34 @@ def _in_use(scratch: Path, *, since: int, others: bool = True) -> str:
     return ""
 
 
+#: Capabilities that let a process write into a directory its uids alone
+#: could not: CAP_CHOWN (0) and CAP_FOWNER (3) make it its own, CAP_DAC_OVERRIDE
+#: (1) skips the permission check, CAP_SETUID (7) takes this user's uid.
+_WRITE_CAPS = 1 << 0 | 1 << 1 | 1 << 3 | 1 << 7
+
+
 def _ours(pid: int) -> bool:
-    """Whether ``pid`` runs as this user (real uid); True when that cannot be read."""
+    """Whether ``pid`` may write into this user's private copies: True unless
+    its status shows it cannot (and when that cannot be read or understood).
+
+    Access to a file is checked against the filesystem uid, not the real one,
+    and a process may switch that to any of its other uids; root, or a process
+    with one of :data:`_WRITE_CAPS` (effective, or permitted and so enabled at
+    will), passes the check anyway (``credentials(7)``, ``path_resolution(7)``).
+    So only a process none of whose uids is this user's or root's, and which
+    holds none of those capabilities, cannot.
+    """
+    fields = {}
     try:
         with open(f"/proc/{pid}/status") as fh:
             for line in fh:
-                if line.startswith("Uid:"):
-                    return int(line.split()[1]) == os.getuid()
-    except (OSError, ValueError, IndexError):
-        pass
-    return True
+                key, _, value = line.partition(":")
+                fields[key] = value.split()
+        uids = [int(v) for v in fields["Uid"]]
+        caps = int(fields["CapEff"][0], 16) | int(fields["CapPrm"][0], 16)
+    except (OSError, ValueError, KeyError, IndexError):
+        return True
+    return len(uids) != 4 or os.getuid() in uids or 0 in uids or bool(caps & _WRITE_CAPS)
 
 
 def _raise(exc: OSError) -> None:

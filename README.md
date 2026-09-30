@@ -827,9 +827,11 @@ with a shell:
   accept. When the workers are done, the copies they left unchanged are
   deleted, unless a process one of them started still runs with
   `AUTO_ROUTER_DELEGATE_COPY` naming them (even one that detached) or holds
-  anything inside them, or one of your processes that cannot be inspected
-  started after the server did (another user's cannot write into your private
-  copies unless it is root, so it is not counted here): then none is deleted,
+  anything inside them, or a process that cannot be inspected and may write
+  into them started after the server did (one of yours, root's, or one whose
+  filesystem or other user id is yours or that holds a capability overriding
+  file permissions; another user's whose status shows none of this is not
+  counted here): then none is deleted,
   the result says so under `copies_kept`, and the copies keep their owner
   record, so a later server start deletes them, the named workspaces included,
   once nothing uses them (below).

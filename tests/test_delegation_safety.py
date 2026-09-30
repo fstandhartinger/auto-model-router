@@ -1599,6 +1599,45 @@ class _RaisingForAll:
         raise _Stop
 
 
+def _count_held_deliveries(monkeypatch, sig, handler: _RaisingForAll) -> list:
+    """Per release after the first stop that hands ``sig`` back to
+    ``handler``: how many entries were queued for it, and how many calls it
+    then got. Counted from the queue itself: the kernel may merge two
+    signals before they are queued."""
+    counts = []
+    release = procs._HeldSignals.release
+
+    def counting(self):
+        if self.previous.get(sig) is not handler or not handler.calls:
+            return release(self)
+        queued, before = self.pending.count(sig), len(handler.calls)
+        try:
+            release(self)
+        finally:
+            counts.append((queued, len(handler.calls) - before))
+
+    monkeypatch.setattr(procs._HeldSignals, "release", counting)
+    return counts
+
+
+def _one_more_stop_while_held(monkeypatch, sig, handler: _RaisingForAll) -> None:
+    """Raise ``sig`` once more at the end of each held block after the first
+    stop (run_many's cleanup): a second entry in that queue, whatever the
+    kernel merged."""
+    held = procs.stops_held
+
+    @contextlib.contextmanager
+    def held_plus_one():
+        with held():
+            try:
+                yield
+            finally:
+                if handler.calls:
+                    signal.raise_signal(sig)
+
+    monkeypatch.setattr(procs, "stops_held", held_plus_one)
+
+
 @pytest.mark.parametrize("signame", ["INT", "TERM", "HUP"])
 @pytest.mark.parametrize("source", ["workers", "grace-poll"])
 def test_a_handler_that_raises_again_cannot_cut_run_manys_cleanup_short(
@@ -1633,6 +1672,8 @@ def test_a_handler_that_raises_again_cannot_cut_run_manys_cleanup_short(
                                                                  sleep=sleep))
         monkeypatch.setattr(delegate, "as_completed", interrupted)
     handler = _RaisingForAll(marks)
+    counts = _count_held_deliveries(monkeypatch, sig, handler)
+    _one_more_stop_while_held(monkeypatch, sig, handler)
     bystander = subprocess.Popen(["sleep", "60"], start_new_session=True)
     previous = signal.signal(sig, handler)
     try:
@@ -1643,12 +1684,15 @@ def test_a_handler_that_raises_again_cannot_cut_run_manys_cleanup_short(
         assert not list(scratch_tmp.iterdir()), "the worker copies were left behind"
         # The first stop, then the ones held during the cleanup - after it.
         # Each worker answers the SIGTERM with a stop, so up to two are held
-        # (one if they came before the handler ran); every one is delivered.
-        # (Round 17, F3: before, only the first held stop was.)
+        # (one if they came before the handler ran), plus the one raised at
+        # the cleanup's end; every one is delivered. (Round 17, F3: before,
+        # only the first held stop was. Round 18: counted per queued entry.)
         held = handler.calls[1:]
         assert handler.calls[0] == (sig, True)
         assert held and set(held) == {(sig, False)}, handler.calls
-        assert len(held) <= (2 if source == "workers" else 1), handler.calls
+        assert len(held) <= (3 if source == "workers" else 2), handler.calls
+        assert sum(queued for queued, _ in counts) >= 2, counts
+        assert all(calls >= queued for queued, calls in counts), counts
         assert signal.getsignal(sig) is handler, "the caller's handler was not put back"
         assert bystander.poll() is None, "a process outside the job was signalled"
     finally:
@@ -1686,11 +1730,17 @@ def test_a_stop_signal_after_run_manys_cleanup_still_reaches_the_caller(
     held = procs.stops_held
     late = []
 
+    counts = _count_held_deliveries(monkeypatch, sig, handler)
+
     @contextlib.contextmanager
     def held_then_signal():
         try:
             with held():
-                yield
+                try:
+                    yield
+                finally:
+                    if handler.calls:  # one more stop during the cleanup
+                        signal.raise_signal(sig)
         except _Stop:
             late.append(("held stop seen", _alive(_worker_pids(marks)),
                          bool(list(scratch_tmp.iterdir()))))
@@ -1707,9 +1757,12 @@ def test_a_stop_signal_after_run_manys_cleanup_still_reaches_the_caller(
             delegate.run_many(["lead", "quiet"], cwd=str(hermetic), parallel=2, runner=runner)
         assert late == [("held stop seen", [], False), "new stop seen"], late
         # The first stop, the one or two held during the cleanup (one per
-        # worker's answer, all delivered - round 17, F3), then the new one.
-        assert handler.calls[0] == (sig, True) and 3 <= len(handler.calls) <= 4, handler.calls
+        # worker's answer) and the one raised at its end, all delivered -
+        # round 17, F3; round 18: one call per queued entry - then the new one.
+        assert handler.calls[0] == (sig, True) and 4 <= len(handler.calls) <= 5, handler.calls
         assert set(handler.calls[1:]) == {(sig, False)}, handler.calls
+        assert sum(queued for queued, _ in counts) >= 2, counts
+        assert all(calls >= queued for queued, calls in counts), counts
         with pytest.raises(_Stop):
             signal.raise_signal(sig)  # and after run_many the handler is the caller's again
     finally:
@@ -3140,6 +3193,40 @@ def test_a_held_handler_that_raises_does_not_drop_the_signals_held_after_it():
             signal.signal(sig, handler)
 
 
+@pytest.mark.parametrize("first", [GeneratorExit, type("OtherBase", (BaseException,), {})])
+def test_a_stop_goes_on_over_another_base_exception_raised_before_it(first):
+    # Round 18, B2. Only KeyboardInterrupt and SystemExit are stops. Before:
+    # any exception that is not an Exception (GeneratorExit, a BaseException
+    # of the caller's) raised by an earlier handler went on instead.
+    delivered = []
+
+    def on_int(signum, frame):
+        delivered.append("INT")
+        raise first("not a stop")
+
+    def on_term(signum, frame):
+        delivered.append("TERM")
+        raise SystemExit(143)
+
+    previous = {sig: signal.signal(sig, handler)
+                for sig, handler in ((signal.SIGINT, on_int), (signal.SIGTERM, on_term))}
+    try:
+        with pytest.raises(SystemExit) as info:
+            with procs.stops_held():
+                signal.raise_signal(signal.SIGINT)
+                signal.raise_signal(signal.SIGTERM)
+        assert delivered == ["INT", "TERM"] and info.value.code == 143
+        signal.signal(signal.SIGTERM, lambda s, f: delivered.append("TERM"))
+        with pytest.raises(first):  # no stop raised: the first exception goes on
+            with procs.stops_held():
+                signal.raise_signal(signal.SIGINT)
+                signal.raise_signal(signal.SIGTERM)
+        assert delivered == ["INT", "TERM", "INT", "TERM"]
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+
+
 def test_an_interrupt_keeps_copies_a_detached_process_a_worker_left_may_write_into(
         hermetic, tmp_path, monkeypatch):
     # F1's check on the interrupt path: the workers are stopped (here they
@@ -3187,9 +3274,11 @@ def test_an_interrupt_keeps_copies_a_detached_process_a_worker_left_may_write_in
 
 def test_the_servers_own_check_ignores_other_users_processes_it_cannot_inspect(
         hermetic, tmp_path, monkeypatch):
-    # A root cron job started while the workers ran cannot be inspected, and
-    # cannot write into this user's private copies either: it keeps nothing.
-    # One of this user's that cannot be inspected (non-dumpable) still does.
+    # Another user's cron job started while the workers ran cannot be
+    # inspected; when its status shows it cannot write into this user's
+    # private copies (_ours: no uid of this user or root, no capability that
+    # overrides file permissions - see the fixtures below), it keeps nothing.
+    # One that may write (this user's, non-dumpable; root) still does.
     monkeypatch.setattr(delegate.tempfile, "tempdir", str(tmp_path))
     monkeypatch.setattr(procs, "holders", lambda inodes, since, **_: (set(), {4242}))
     monkeypatch.setattr(delegate, "_ours", lambda pid: False)
@@ -3205,6 +3294,132 @@ def test_the_servers_own_check_ignores_other_users_processes_it_cannot_inspect(
     assert "cannot be inspected" in delegate._in_use(scratch, since=0)
 
 
-def test_ours_reads_the_real_uid():
+def _status(uids: str, cap_eff: int = 0, cap_prm: int | None = None) -> str:
+    return (f"Name:\tcron\nUmask:\t0022\nState:\tS (sleeping)\nUid:\t{uids}\n"
+            "Gid:\t100\t100\t100\t100\nCapInh:\t0000000000000000\n"
+            f"CapPrm:\t{cap_prm if cap_prm is not None else cap_eff:016x}\n"
+            f"CapEff:\t{cap_eff:016x}\nCapBnd:\t000001ffffffffff\n")
+
+
+@pytest.mark.parametrize("status, may_write", [
+    # Another user's, and nothing that overrides file permissions: the one
+    # process the server's own check may leave out.
+    (_status("{o}\t{o}\t{o}\t{o}"), False),
+    (_status("{o}\t{o}\t{o}\t{o}", cap_eff=1 << 10), False),  # CAP_NET_BIND_SERVICE only
+    # File access is checked against the filesystem uid (credentials(7)), and
+    # a process may set that to any of its other uids.
+    (_status("{o}\t{me}\t{me}\t{me}"), True),
+    (_status("{o}\t{o}\t{o}\t{me}"), True),
+    (_status("{o}\t{o}\t{me}\t{o}"), True),
+    (_status("{o}\t{me}\t{o}\t{o}"), True),
+    (_status("{me}\t{o}\t{o}\t{o}"), True),
+    # Root, even with no capability left, and capabilities that pass or get
+    # around the permission check (path_resolution(7)), effective or permitted.
+    (_status("0\t0\t0\t0", cap_eff=0x1ffffffffff), True),
+    (_status("0\t0\t0\t0"), True),
+    (_status("0\t{o}\t{o}\t{o}"), True),
+    (_status("{o}\t{o}\t{o}\t{o}", cap_eff=1 << 1), True),  # CAP_DAC_OVERRIDE
+    (_status("{o}\t{o}\t{o}\t{o}", cap_eff=0, cap_prm=1 << 1), True),
+    (_status("{o}\t{o}\t{o}\t{o}", cap_eff=1 << 0), True),  # CAP_CHOWN
+    (_status("{o}\t{o}\t{o}\t{o}", cap_eff=1 << 3), True),  # CAP_FOWNER
+    (_status("{o}\t{o}\t{o}\t{o}", cap_eff=1 << 7), True),  # CAP_SETUID
+    # Unreadable or not understood: cannot tell, so counted.
+    (PermissionError(13, "Permission denied"), True),
+    (FileNotFoundError(2, "No such file or directory"), True),
+    ("", True),
+    ("Uid:\t{o}\t{o}\t{o}\t{o}\n", True),  # no capability lines
+    (_status("{o}\t{o}\t{o}"), True),
+    (_status("{o}\tx\t{o}\t{o}"), True),
+    (_status("{o}\t{o}\t{o}\t{o}").replace("CapEff:\t0000000000000000", "CapEff:\tzz"),
+     True),
+], ids=["other-user", "other-user-net-bind-cap", "other-real-uid-own-fsuid", "own-fsuid",
+        "own-saved-uid", "own-effective-uid", "own-real-uid", "root", "root-no-caps",
+        "root-real-uid", "dac-override", "dac-override-permitted", "chown", "fowner", "setuid",
+        "unreadable", "gone", "empty", "no-cap-lines", "three-uids", "bad-uid", "bad-cap"])
+def test_ours_reads_whether_a_process_may_write_into_this_users_copies(
+        monkeypatch, status, may_write):
+    # Round 18, B1. Before: only the real uid was read, so a process that
+    # cannot be inspected, whose real uid differs but whose filesystem uid is
+    # this user's, or which is root, was left out, and a copy it still wrote
+    # into was deleted.
+    me = os.getuid()
+    other = 424242 if me != 424242 else 424243
+    real_open = open
+
+    def fake_open(path, *args, **kwargs):
+        if str(path) != "/proc/4242/status":
+            return real_open(path, *args, **kwargs)
+        if isinstance(status, OSError):
+            raise status
+        return io.StringIO(status.format(me=me, o=other))
+
+    monkeypatch.setattr(delegate, "open", fake_open, raising=False)
+    assert delegate._ours(4242) is may_write
+
+
+def test_ours_reads_real_processes_status():
     assert delegate._ours(os.getpid())
     assert delegate._ours(2 ** 22 + 12345)  # no such process: cannot tell, so counted
+
+
+@pytest.mark.parametrize("uids, caps", [("{o}\t{me}\t{me}\t{me}", 0), ("0\t0\t0\t0", 0),
+                                        ("{o}\t{o}\t{o}\t{o}", 1 << 1)],
+                         ids=["other-real-uid-own-fsuid", "root", "dac-override"])
+def test_a_detached_writer_that_cannot_be_inspected_but_may_write_keeps_the_copies(
+        hermetic, tmp_path, monkeypatch, uids, caps):
+    # Round 18, B1, the whole run: each worker leaves a detached process that
+    # writes into its copy later. It cannot be inspected (its /proc entries
+    # refuse), and its status shows another real uid but one that may write:
+    # this user's filesystem uid, root, or CAP_DAC_OVERRIDE. Before: the
+    # first was left out, the copies and their record deleted, and the late
+    # writes recreated a scratch no sweep ever reclaims.
+    scratch_tmp = tmp_path / "scratch-tmp"
+    scratch_tmp.mkdir()
+    monkeypatch.setattr(delegate.tempfile, "tempdir", str(scratch_tmp))
+    go = tmp_path / "go"
+    writers = []
+    me = os.getuid()
+    other = 424242 if me != 424242 else 424243
+    real_open, real_references = open, procs._references
+
+    def runner(task, context, cwd, tier, timeout_s):
+        env = {**os.environ, delegate.COPY_ENV: str(Path(cwd).parent)}
+        writer = subprocess.Popen([sys.executable, "-c", _LATE_WRITER, cwd, str(go)], env=env,
+                                  cwd="/", start_new_session=True, stdout=subprocess.PIPE,
+                                  text=True)
+        writer.stdout.readline()
+        writers.append(writer)
+        return {"ok": True}
+
+    def writer_base(path):
+        return str(path) in {f"/proc/{w.pid}" for w in writers}
+
+    def references(base, majors):
+        if writer_base(base):
+            raise PermissionError(13, "Permission denied")
+        return real_references(base, majors)
+
+    def fake_open(path, *args, **kwargs):
+        if str(path).endswith("/status") and writer_base(str(path)[:-len("/status")]):
+            return io.StringIO(_status(uids.format(me=me, o=other), cap_eff=caps))
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(procs, "_references", references)
+    monkeypatch.setattr(delegate, "open", fake_open, raising=False)
+    try:
+        result = delegate.run_many(["one", "two"], cwd=str(hermetic), parallel=2, runner=runner)
+        assert all(w.poll() is None for w in writers)
+        [scratch] = scratch_tmp.iterdir()
+        assert "cannot be inspected" in result["copies_kept"], result
+        for name in ("base", "worker-1", "worker-2", delegate.OWNER_RECORD):
+            assert (scratch / name).exists(), name
+        go.touch()
+        for writer in writers:
+            assert writer.wait(timeout=30) == 0
+        assert (scratch / "worker-1" / "late.txt").exists()
+        assert (scratch / delegate.OWNER_RECORD).exists()
+    finally:
+        go.touch()
+        for writer in writers:
+            writer.kill()
+            writer.wait()

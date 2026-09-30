@@ -407,7 +407,8 @@ class _HeldSignals:
             except BaseException as exc:  # noqa: BLE001 - delivered on, below
                 raised.append(exc)
         if raised:
-            raise next((exc for exc in raised if not isinstance(exc, Exception)), raised[0])
+            raise next((exc for exc in raised if isinstance(exc, (KeyboardInterrupt, SystemExit))),
+                       raised[0])
 
 
 def _stop(proc: subprocess.Popen, *, scope: str, grace_s: float) -> None:
