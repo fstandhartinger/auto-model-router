@@ -7,10 +7,15 @@ log and then imitates just enough of the real tool:
 
 - ``git`` "fetches" by copying ``scripts/``, ``skills/`` and ``integrations/``
   from this checkout; it never contacts a remote.
-- ``python3 -m venv`` makes a directory whose ``pip`` only records the call
-  (and drops a stub ``auto-router-delegate``) and whose ``python`` is this
-  interpreter, so the real Python installer runs.
+  Its ``status --porcelain`` reports any other top-level entry of the
+  checkout as untracked, as real git would.
+- ``python3 -m venv`` makes a directory whose ``pip`` records the call, leaves
+  ``build/`` and ``*.egg-info/`` in the directory it installs from, as an
+  in-place setuptools build does, and drops a stub ``auto-router-delegate``;
+  its ``python`` is this interpreter, so the real Python installer runs.
 - ``claude`` and ``codex`` keep their MCP entries as files under ``tmp_path``.
+  ``claude`` parses ``--env`` as Claude Code 2.1.284 does: the flag takes every
+  following argument up to the next option, so it must come after the name.
 - ``cursor``, ``opencode``, ``openclaw``, ``hermes`` and ``copilot`` exist only
   to prove the installer never calls them.
 
@@ -42,7 +47,8 @@ if [ "$1" = "-c" ]; then shift 2; fi
 case "$1" in
   init) mkdir -p "$3/.git" ;;
   remote) ;;
-  status) [ -z "${FAKE_GIT_DIRTY:-}" ] || echo " M scripts/local-edit" ;;
+  status) [ -z "${FAKE_GIT_DIRTY:-}" ] || echo " M scripts/local-edit"
+          ls -A "$repo" | grep -vxE '\.git|scripts|skills|integrations' | sed 's|^|?? |' ;;
   fetch) cp -R "$FAKE_SOURCE/scripts" "$FAKE_SOURCE/skills" "$FAKE_SOURCE/integrations" "$repo/"
          chmod -R u+w "$repo"
          echo "$6" > "$repo/.git/FETCH_HEAD" ;;
@@ -64,6 +70,8 @@ chmod +x "$3/bin/pip" "$3/bin/python"
 FAKE_PIP = r"""#!/bin/sh
 echo "pip $*" >> "$FAKE_LOG"
 [ "$1" = "install" ] || exit 1
+for src; do :; done
+mkdir -p "$src/build/lib" "$src/auto_model_router.egg-info"
 printf '#!/bin/sh\necho "auto-router-delegate $*" >> "$FAKE_LOG"\n' > "$(dirname "$0")/auto-router-delegate"
 chmod +x "$(dirname "$0")/auto-router-delegate"
 """
@@ -81,9 +89,18 @@ case "$action" in
   remove) [ -f "$store/$1" ] && rm "$store/$1" ;;
   add) line="$*"; name=
        while [ $# -gt 0 ]; do
-         case "$1" in --scope|--env) shift 2 ;; --) break ;; *) name=$1; shift ;; esac
+         case "$1" in
+           --scope) shift 2 ;;
+           --env) shift
+                  if [ "$tool" = claude ]; then
+                    while [ $# -gt 0 ]; do case "$1" in -*) break ;; *) shift ;; esac; done
+                  else shift; fi ;;
+           --) break ;;
+           *) name=$1; shift ;;
+         esac
        done
-       [ -n "$name" ] && [ ! -f "$store/$name" ] && echo "$line" > "$store/$name" ;;
+       [ -n "$name" ] || { echo "error: missing required argument" >&2; exit 1; }
+       [ ! -f "$store/$name" ] && echo "$line" > "$store/$name" ;;
   *) exit 2 ;;
 esac
 """
@@ -112,7 +129,9 @@ def fake(tmp_path):
         (bin_dir / name).chmod(0o755)
     env = {"HOME": str(home), "PATH": f"{bin_dir}:/usr/bin:/bin", "LANG": "C.UTF-8",
            "FAKE_LOG": str(log), "FAKE_BIN": str(bin_dir), "FAKE_STATE": str(state),
-           "FAKE_SOURCE": str(ROOT), "FAKE_REAL_PYTHON": sys.executable}
+           "FAKE_SOURCE": str(ROOT), "FAKE_REAL_PYTHON": sys.executable,
+           "TMPDIR": str(tmp_path / "tmp")}
+    (tmp_path / "tmp").mkdir()
 
     class Fake:
         pass
@@ -135,7 +154,11 @@ def fake(tmp_path):
         return sorted(str(p.relative_to(home)) for p in home.rglob("*")
                       if (p.is_file() or p.is_symlink()) and ".auto-router/src/" not in str(p))
 
-    f.run, f.calls, f.home_files = run, calls, home_files
+    def built():
+        """Every directory pip installed from."""
+        return [c.split(" ")[-1] for c in calls() if c.startswith("pip install")]
+
+    f.run, f.calls, f.home_files, f.built = run, calls, home_files, built
     return f
 
 
@@ -154,7 +177,7 @@ def test_shell_installer_for_claude_runs_its_whole_path_against_fakes(fake):
         f"git -C {repo} -c advice.detachedHead=false checkout -q --detach FETCH_HEAD",
         f"git -C {repo} rev-parse HEAD",
         f"python3 -m venv {fake.base / 'venv'}",
-        f"pip install -q {repo}",
+        f"pip install -q {fake.built()[0]}",
         f"claude mcp get {NAME}",
         f"claude mcp add --scope user {NAME} -- {fake.link}",
     ]
@@ -200,6 +223,41 @@ def test_a_second_shell_install_fails_closed_and_force_replaces(fake):
         f"claude mcp get {NAME}", f"claude mcp remove {NAME} --scope user",
         f"claude mcp add --scope user {NAME} -- {fake.link}"]
     assert "skill already current" in forced.stdout
+
+
+def test_the_package_is_built_outside_the_checkout_so_it_stays_clean(fake):
+    assert fake.run("claude", SHA).returncode == 0
+    repo = fake.base / "src"
+    [built] = fake.built()
+    assert not Path(built).is_relative_to(repo) and Path(built).is_relative_to(fake.tmp / "tmp")
+    assert not Path(built).exists() and list((fake.tmp / "tmp").iterdir()) == [], \
+        "the temporary copy is removed"
+    assert sorted(p.name for p in repo.iterdir()) == [".git", "integrations", "scripts", "skills"]
+    status = subprocess.run(["git", "-C", str(repo), "status", "--porcelain"], env=fake.env,
+                            capture_output=True, text=True)
+    assert status.returncode == 0 and status.stdout == ""
+
+
+def test_a_second_install_into_the_same_home_is_not_refused(fake):
+    project = fake.tmp / "project"
+    project.mkdir()
+    assert fake.run("cursor", SHA, "--project", str(project)).returncode == 0
+    again = fake.run("cursor", SHA, "--project", str(project))
+    assert again.returncode == 0, again.stderr
+    assert "has local changes" not in again.stderr
+    other = fake.run("codex", SHA)
+    assert other.returncode == 0, other.stderr
+    assert len(fake.built()) == 3
+
+
+def test_shell_installer_for_claude_puts_the_config_after_the_name(fake):
+    cfg = fake.tmp / "launcher.yaml"
+    cfg.write_text("models: []\n")
+    proc = fake.run("claude", SHA, "--config", str(cfg))
+    assert proc.returncode == 0, proc.stderr
+    add = f"--scope user {NAME} --env AUTO_ROUTER_CONFIG={cfg} -- {fake.link}"
+    assert fake.calls()[-1] == f"claude mcp add {add}"
+    assert (fake.state / "claude" / NAME).read_text().strip() == add
 
 
 def test_shell_installer_for_codex_records_an_existing_config(fake):

@@ -1016,7 +1016,10 @@ OpenClaw, Hermes or Copilot.
 
 The shell script installs into its own virtualenv under
 `~/.auto-router`; Python dependencies come from PyPI at the versions
-`pyproject.toml` allows.
+`pyproject.toml` allows. The package is built from a temporary copy of the
+pinned checkout, which is removed afterwards, so `~/.auto-router/src` stays
+clean and running the installer again (or for another agent) is not refused
+as "local changes".
 
 What has been tested: `tests/test_install_delegation_e2e.py` runs both entry
 points end to end, through their own argument parsing, in a disposable HOME
@@ -1028,8 +1031,14 @@ the order of steps, what is written where, and that a dirty checkout, a
 fetched commit that differs from the pin, a foreign `auto-router-delegate`
 link, a missing `--config` file, JSONC settings and an existing MCP entry all
 stop the install without changing what was there. It does **not** show that the
-installer works with the real git, pip, PyPI, Claude Code or Codex CLIs; no
-real installation has been run. The installer checks every refusal (a
+installer works with the real git, pip, PyPI, Claude Code or Codex CLIs. One
+real run at commit `914e7a2` (real git, pip and PyPI, Claude Code 2.1.284 and
+Codex, in a throwaway HOME) found two faults, fixed since and covered by the
+fakes above: `claude mcp add` was given `--env` before the server name, which
+Claude Code's variadic `--env` reads as a value, so installing for Claude Code
+with `--config` failed; and the in-place build left `build/` and
+`*.egg-info/` in the checkout, so every later run was refused. The fixed
+installer has not been run end to end against the real tools. The installer checks every refusal (a
 differing skill, settings file, MCP entry or Cursor rule) before it writes
 anything, so a refused install leaves no skill or entry behind. A step that
 fails while it is writing (for example `claude mcp add` exiting with an error

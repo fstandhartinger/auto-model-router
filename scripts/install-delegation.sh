@@ -7,7 +7,8 @@
 # reviewed: the script never installs whatever a branch points at today. It
 # checks the commit out detached into $AUTO_ROUTER_HOME (default
 # ~/.auto-router), refuses an existing checkout with local changes, installs
-# it into its own virtualenv, and links ~/.local/bin/auto-router-delegate only
+# it into its own virtualenv from a temporary copy (so the checkout stays clean
+# and a re-run is allowed), and links ~/.local/bin/auto-router-delegate only
 # if that name is free or already this link. Everything else - the MCP entry
 # and the skill - is done by install-delegation.py, which never overwrites a
 # differing entry without --force. No credential is read or written.
@@ -48,7 +49,14 @@ if [ "$(git -C "$repo" rev-parse HEAD)" != "$ref" ]; then
 fi
 
 [ -x "$base/venv/bin/python" ] || python3 -m venv "$base/venv"
-"$base/venv/bin/pip" install -q "$repo"
+# Build from a throwaway copy: an in-place build leaves build/ and *.egg-info/
+# in the checkout, and the local-changes check above would then refuse re-runs.
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+trap 'exit 1' HUP INT TERM
+cp -R "$repo" "$tmp/src"
+rm -rf "$tmp/src/.git"
+"$base/venv/bin/pip" install -q "$tmp/src"
 
 link="$HOME/.local/bin/auto-router-delegate"
 target="$base/venv/bin/auto-router-delegate"

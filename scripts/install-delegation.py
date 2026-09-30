@@ -291,8 +291,12 @@ def _cli_entry(cli: str, config: str | None, server: str, *, exists: bool,
         remove = [cli, "mcp", "remove", NAME] + (["--scope", "user"] if cli == "claude" else [])
         run(remove, check=True)
     env = ["--env", f"AUTO_ROUTER_CONFIG={config}"] if config else []
-    scope = ["--scope", "user"] if cli == "claude" else []
-    run([cli, "mcp", "add", *scope, *env, NAME, "--", server], check=True)
+    if cli == "claude":
+        # Claude Code's -e/--env takes several values: before the name it swallows it.
+        add = [cli, "mcp", "add", "--scope", "user", NAME, *env, "--", server]
+    else:
+        add = [cli, "mcp", "add", *env, NAME, "--", server]
+    run(add, check=True)
     return f"{cli}: MCP entry {'replaced' if exists else 'added'}"
 
 

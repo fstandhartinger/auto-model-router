@@ -130,6 +130,22 @@ def test_claude_install_without_config_writes_no_config_path(home):
     assert (home / ".claude/skills/plan-with-cheap-workers/SKILL.md").exists()
 
 
+def test_claude_install_with_config_puts_env_after_the_name(home, tmp_path):
+    cfg = tmp_path / "router.yaml"
+    cfg.write_text("models: []\n")
+    run = Recorder()
+    install_delegation.install("claude", config=str(cfg), server="/opt/delegate", run=run)
+    # Claude Code's --env is variadic: placed before the name it would take the name as a value.
+    assert run.calls[-1] == ["claude", "mcp", "add", "--scope", "user", "auto-router-delegate",
+                             "--env", f"AUTO_ROUTER_CONFIG={cfg.resolve()}",
+                             "--", "/opt/delegate"]
+    run = Recorder(existing=True)
+    install_delegation.install("claude", config=str(cfg), server="/opt/delegate", force=True,
+                               run=run)
+    assert run.calls[1] == ["claude", "mcp", "remove", "auto-router-delegate", "--scope", "user"]
+    assert run.calls[-1][5:7] == ["auto-router-delegate", "--env"]
+
+
 def test_claude_install_respects_the_users_config(home, tmp_path, monkeypatch):
     cfg = tmp_path / "router.yaml"
     cfg.write_text("models: []\n")
