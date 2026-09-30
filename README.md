@@ -1019,14 +1019,18 @@ The shell script installs into its own virtualenv under
 `pyproject.toml` allows. The package is built from a temporary copy of the
 pinned checkout, which is removed afterwards, so `~/.auto-router/src` stays
 clean and running the installer again (or for another agent) is not refused
-as "local changes".
+as "local changes". Git ignores `build/` and `*.egg-info/`, so the copy's
+`build/` and `*.egg-info/` are deleted before the build: stale build output
+left in the checkout cannot end up in the installed package.
 
 What has been tested: `tests/test_install_delegation_e2e.py` runs both entry
 points end to end, through their own argument parsing, in a disposable HOME
 with fake `git`, `python3 -m venv`, `pip`, `claude`, `codex`, `cursor`,
-`opencode`, `openclaw`, `hermes` and `copilot` commands that only record their
-calls; `tests/test_install_delegation_targets.py` covers the OpenClaw, Hermes
-and Copilot files in a temporary HOME. That proves the control flow:
+`opencode`, `openclaw`, `hermes` and `copilot` commands that record their
+calls (the fake `git` also keeps an index of the files it checked out, so its
+status reports an edited tracked file and skips what `.gitignore` ignores);
+`tests/test_install_delegation_targets.py` covers the OpenClaw, Hermes and
+Copilot files in a temporary HOME. That proves the control flow:
 the order of steps, what is written where, and that a dirty checkout, a
 fetched commit that differs from the pin, a foreign `auto-router-delegate`
 link, a missing `--config` file, JSONC settings and an existing MCP entry all

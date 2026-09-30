@@ -51,11 +51,13 @@ fi
 [ -x "$base/venv/bin/python" ] || python3 -m venv "$base/venv"
 # Build from a throwaway copy: an in-place build leaves build/ and *.egg-info/
 # in the checkout, and the local-changes check above would then refuse re-runs.
+# Git ignores build/ and *.egg-info/, so stale ones can sit in a clean checkout;
+# they are dropped from the copy, or setuptools would ship their old modules.
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 trap 'exit 1' HUP INT TERM
 cp -R "$repo" "$tmp/src"
-rm -rf "$tmp/src/.git"
+rm -rf "$tmp/src/.git" "$tmp/src/build" "$tmp/src/"*.egg-info
 "$base/venv/bin/pip" install -q "$tmp/src"
 
 link="$HOME/.local/bin/auto-router-delegate"

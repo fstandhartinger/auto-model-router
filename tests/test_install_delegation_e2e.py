@@ -5,14 +5,22 @@ real processes through their own argument parsing and control flow. Every
 external command they call is a local fake that appends its arguments to a
 log and then imitates just enough of the real tool:
 
-- ``git`` "fetches" by copying ``scripts/``, ``skills/`` and ``integrations/``
-  from this checkout; it never contacts a remote.
-  Its ``status --porcelain`` reports any other top-level entry of the
-  checkout as untracked, as real git would.
-- ``python3 -m venv`` makes a directory whose ``pip`` records the call, leaves
-  ``build/`` and ``*.egg-info/`` in the directory it installs from, as an
-  in-place setuptools build does, and drops a stub ``auto-router-delegate``;
-  its ``python`` is this interpreter, so the real Python installer runs.
+- ``git`` "fetches" by copying ``scripts/``, ``skills/``, ``integrations/``
+  and ``.gitignore`` from this checkout; it never contacts a remote, and the
+  commit, ``FETCH_HEAD`` and ``HEAD`` are only files under ``.git``.
+  ``checkout`` records a hash of every file it leaves as the index, and
+  ``status --porcelain`` compares against it, as real git does for these
+  cases: a changed tracked file is `` M``, a missing one `` D``, and a new file
+  is ``??`` (a directory holding no tracked file as ``?? dir/``) unless the
+  checkout's ``.gitignore`` ignores it. Only the pattern forms that file uses
+  are understood (``name``, ``*.ext``, ``dir/``, ``a/b/``); there are no
+  negations, nested ignore files, staging or real objects.
+- ``python3 -m venv`` makes a directory whose ``pip`` records the call, copies
+  any existing ``build/lib`` of the source into the venv's ``site-packages``,
+  as setuptools keeps stale files there in the wheel, leaves ``build/`` and
+  ``*.egg-info/`` in the directory it installs from, as an in-place
+  setuptools build does, and drops a stub ``auto-router-delegate``; its
+  ``python`` is this interpreter, so the real Python installer runs.
 - ``claude`` and ``codex`` keep their MCP entries as files under ``tmp_path``.
   ``claude`` parses ``--env`` as Claude Code 2.1.284 does: the flag takes every
   following argument up to the next option, so it must come after the name.
@@ -48,14 +56,68 @@ case "$1" in
   init) mkdir -p "$3/.git" ;;
   remote) ;;
   status) [ -z "${FAKE_GIT_DIRTY:-}" ] || echo " M scripts/local-edit"
-          ls -A "$repo" | grep -vxE '\.git|scripts|skills|integrations' | sed 's|^|?? |' ;;
-  fetch) cp -R "$FAKE_SOURCE/scripts" "$FAKE_SOURCE/skills" "$FAKE_SOURCE/integrations" "$repo/"
+          exec "$FAKE_REAL_PYTHON" "$FAKE_BIN/git-index.py" status "$repo" ;;
+  fetch) cp -R "$FAKE_SOURCE/scripts" "$FAKE_SOURCE/skills" "$FAKE_SOURCE/integrations" \
+               "$FAKE_SOURCE/.gitignore" "$repo/"
          chmod -R u+w "$repo"
          echo "$6" > "$repo/.git/FETCH_HEAD" ;;
-  checkout) cp "$repo/.git/FETCH_HEAD" "$repo/.git/HEAD" ;;
+  checkout) cp "$repo/.git/FETCH_HEAD" "$repo/.git/HEAD"
+            exec "$FAKE_REAL_PYTHON" "$FAKE_BIN/git-index.py" record "$repo" ;;
   rev-parse) if [ -n "${FAKE_GIT_HEAD:-}" ]; then echo "$FAKE_GIT_HEAD"; else cat "$repo/.git/HEAD"; fi ;;
   *) exit 1 ;;
 esac
+"""
+
+# git-index.py record|status REPO: the fake git's index and its status --porcelain.
+FAKE_GIT_INDEX = r"""
+import fnmatch, hashlib, json, os, sys
+
+mode, repo = sys.argv[1:]
+index_file = os.path.join(repo, ".git", "fake-index.json")
+
+
+def files():
+    for top, dirs, names in os.walk(repo):
+        dirs[:] = sorted(d for d in dirs if not (top == repo and d == ".git"))
+        for name in sorted(names):
+            path = os.path.join(top, name)
+            yield os.path.relpath(path, repo), hashlib.sha256(open(path, "rb").read()).hexdigest()
+
+
+def ignored(rel, patterns):
+    parts = rel.split("/")
+    for pat in patterns:
+        dir_only, pat = pat.endswith("/"), pat.rstrip("/")
+        for i in range(len(parts) - dir_only):
+            name = "/".join(parts[:i + 1]) if "/" in pat else parts[i]
+            if fnmatch.fnmatchcase(name, pat.lstrip("/")):
+                return True
+    return False
+
+
+if mode == "record":
+    json.dump(dict(files()), open(index_file, "w"))
+    sys.exit()
+index = json.load(open(index_file)) if os.path.exists(index_file) else {}
+try:
+    patterns = [l.strip() for l in open(os.path.join(repo, ".gitignore"))
+                if l.strip() and not l.startswith("#")]
+except FileNotFoundError:
+    patterns = []
+tracked_dirs = {"/".join(p.split("/")[:i]) for p in index for i in range(1, p.count("/") + 1)}
+current = dict(files())
+out = [f" M {p}" for p in sorted(index) if p in current and current[p] != index[p]]
+out += [f" D {p}" for p in sorted(index) if p not in current]
+untracked = set()
+for p in current:
+    if p in index or ignored(p, patterns):
+        continue
+    parts = p.split("/")
+    top = next(("/".join(parts[:i]) for i in range(1, len(parts))
+                if "/".join(parts[:i]) not in tracked_dirs), None)
+    untracked.add(top + "/" if top else p)
+out += [f"?? {p}" for p in sorted(untracked)]
+print("\n".join(out), end="\n" if out else "")
 """
 
 FAKE_PYTHON3 = r"""#!/bin/sh
@@ -71,6 +133,8 @@ FAKE_PIP = r"""#!/bin/sh
 echo "pip $*" >> "$FAKE_LOG"
 [ "$1" = "install" ] || exit 1
 for src; do :; done
+site="$(dirname "$0")/../lib/site-packages"
+if [ -d "$src/build/lib" ]; then mkdir -p "$site"; cp -R "$src/build/lib/." "$site/"; fi
 mkdir -p "$src/build/lib" "$src/auto_model_router.egg-info"
 printf '#!/bin/sh\necho "auto-router-delegate $*" >> "$FAKE_LOG"\n' > "$(dirname "$0")/auto-router-delegate"
 chmod +x "$(dirname "$0")/auto-router-delegate"
@@ -120,7 +184,8 @@ def fake(tmp_path):
     bin_dir.mkdir()
     state = tmp_path / "fake-state"
     log = tmp_path / "calls.log"
-    for name, body in {"git": FAKE_GIT, "python3": FAKE_PYTHON3, "venv-pip": FAKE_PIP,
+    for name, body in {"git": FAKE_GIT, "git-index.py": FAKE_GIT_INDEX,
+                       "python3": FAKE_PYTHON3, "venv-pip": FAKE_PIP,
                        "claude": FAKE_AGENT_CLI, "codex": FAKE_AGENT_CLI,
                        "cursor": NEVER_CALLED, "opencode": NEVER_CALLED,
                        "openclaw": NEVER_CALLED, "hermes": NEVER_CALLED,
@@ -158,7 +223,13 @@ def fake(tmp_path):
         """Every directory pip installed from."""
         return [c.split(" ")[-1] for c in calls() if c.startswith("pip install")]
 
-    f.run, f.calls, f.home_files, f.built = run, calls, home_files, built
+    def status():
+        proc = subprocess.run(["git", "-C", str(f.base / "src"), "status", "--porcelain"],
+                              env=env, capture_output=True, text=True)
+        assert proc.returncode == 0, proc.stderr
+        return proc.stdout
+
+    f.run, f.calls, f.home_files, f.built, f.status = run, calls, home_files, built, status
     return f
 
 
@@ -232,10 +303,59 @@ def test_the_package_is_built_outside_the_checkout_so_it_stays_clean(fake):
     assert not Path(built).is_relative_to(repo) and Path(built).is_relative_to(fake.tmp / "tmp")
     assert not Path(built).exists() and list((fake.tmp / "tmp").iterdir()) == [], \
         "the temporary copy is removed"
-    assert sorted(p.name for p in repo.iterdir()) == [".git", "integrations", "scripts", "skills"]
-    status = subprocess.run(["git", "-C", str(repo), "status", "--porcelain"], env=fake.env,
-                            capture_output=True, text=True)
-    assert status.returncode == 0 and status.stdout == ""
+    assert sorted(p.name for p in repo.iterdir()) == [
+        ".git", ".gitignore", "integrations", "scripts", "skills"]
+    assert fake.status() == ""
+
+
+def test_the_git_fake_reports_edits_and_honours_the_ignore_file(fake):
+    assert fake.run("claude", SHA).returncode == 0
+    repo = fake.base / "src"
+    (repo / "build/lib/auto_router").mkdir(parents=True)
+    (repo / "build/lib/auto_router/stale.py").write_text("STALE = 1\n")
+    (repo / "auto_model_router.egg-info").mkdir()
+    (repo / "scripts/__pycache__").mkdir()
+    (repo / "scripts/__pycache__/x.pyc").write_bytes(b"")
+    assert fake.status() == "", "ignored build output is not listed, as with real git"
+    (repo / "notes.txt").write_text("mine\n")
+    (repo / "extra/deep").mkdir(parents=True)
+    (repo / "extra/deep/a.txt").write_text("a\n")
+    (repo / "skills/new.md").write_text("new\n")
+    (repo / "integrations/cursor-plan-with-cheap-workers.mdc").unlink()
+    with open(repo / "scripts/install-delegation.py", "a") as f:
+        f.write("# local edit\n")
+    assert fake.status().splitlines() == [
+        " M scripts/install-delegation.py",
+        " D integrations/cursor-plan-with-cheap-workers.mdc",
+        "?? extra/", "?? notes.txt", "?? skills/new.md"]
+
+
+def test_a_tracked_edit_in_the_checkout_makes_the_next_install_fail_closed(fake):
+    assert fake.run("claude", SHA).returncode == 0
+    with open(fake.base / "src/scripts/install-delegation.py", "a") as f:
+        f.write("\n# accidental checkout edit\n")
+    first = len(fake.calls())
+    again = fake.run("claude", SHA, "--force")
+    assert again.returncode == 1 and "has local changes" in again.stderr
+    assert fake.calls()[first:] == [f"git -C {fake.base / 'src'} status --porcelain"]
+
+
+def test_stale_ignored_build_output_in_the_checkout_is_not_installed(fake):
+    assert fake.run("claude", SHA).returncode == 0
+    repo = fake.base / "src"
+    stale = repo / "build/lib/auto_router/stale_module.py"
+    stale.parent.mkdir(parents=True)
+    stale.write_text("STALE = 1\n")
+    (repo / "auto_model_router.egg-info").mkdir()
+    (repo / "auto_model_router.egg-info/SOURCES.txt").write_text("auto_router/stale_module.py\n")
+    assert fake.status() == "", "git ignores it, so the local-changes check passes"
+    again = fake.run("claude", SHA, "--force")
+    assert again.returncode == 0, again.stderr
+    assert len(fake.built()) == 2
+    site = fake.base / "venv/lib/site-packages"
+    assert not (site / "auto_router/stale_module.py").exists(), "the copy's build/ was dropped"
+    assert stale.read_text() == "STALE = 1\n", "the checkout itself is left alone"
+    assert (repo / "auto_model_router.egg-info/SOURCES.txt").exists()
 
 
 def test_a_second_install_into_the_same_home_is_not_refused(fake):
