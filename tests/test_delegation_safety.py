@@ -3272,26 +3272,135 @@ def test_an_interrupt_keeps_copies_a_detached_process_a_worker_left_may_write_in
             writer.wait()
 
 
-def test_the_servers_own_check_ignores_other_users_processes_it_cannot_inspect(
+def test_the_servers_own_check_counts_other_users_processes_it_cannot_inspect(
         hermetic, tmp_path, monkeypatch):
-    # Another user's cron job started while the workers ran cannot be
-    # inspected; when its status shows it cannot write into this user's
-    # private copies (_ours: no uid of this user or root, no capability that
-    # overrides file permissions - see the fixtures below), it keeps nothing.
-    # One that may write (this user's, non-dumpable; root) still does.
+    # Round 19, N1. Another user's cron job started while the workers ran
+    # cannot be inspected. Before: when its status showed it cannot open this
+    # user's private copies by path (_ours False), the server's own check left
+    # it out and deleted the copies. A descriptor it already holds is not in
+    # that status, so it keeps them now, like one that may open them by path;
+    # the reason tells the two apart.
     monkeypatch.setattr(delegate.tempfile, "tempdir", str(tmp_path))
-    monkeypatch.setattr(procs, "holders", lambda inodes, since, **_: (set(), {4242}))
-    monkeypatch.setattr(delegate, "_ours", lambda pid: False)
+    monkeypatch.setattr(procs, "holders", lambda inodes, since, **_: (set(), {4242, 4343}))
+    monkeypatch.setattr(delegate, "_ours", lambda pid: pid == 4343)
     result = delegate.run_many(["one", "two"], cwd=str(hermetic), runner=lambda *a: {"ok": True})
-    assert "copies_kept" not in result and not list(tmp_path.glob("auto-router-delegate-*"))
-    monkeypatch.setattr(delegate, "_ours", lambda pid: pid == 4242)
-    result = delegate.run_many(["one", "two"], cwd=str(hermetic), runner=lambda *a: {"ok": True})
-    assert "cannot be inspected started after its server: pid 4242" in result["copies_kept"]
+    assert ("cannot be inspected started after its server: pid 4242, 4343; pid 4242 cannot "
+            "open it by path but may hold a descriptor into it): ") in result["copies_kept"]
     [scratch] = tmp_path.glob("auto-router-delegate-*")
     assert (scratch / delegate.OWNER_RECORD).exists()
-    # The sweep still counts every process it cannot inspect, as before.
+    for name in ("base", "worker-1", "worker-2"):
+        assert (scratch / name).is_dir(), name
+    monkeypatch.setattr(delegate, "_ours", lambda pid: True)
+    assert delegate._in_use(scratch, since=0) == (
+        "processes that cannot be inspected started after its server: pid 4242, 4343")
     monkeypatch.setattr(delegate, "_ours", lambda pid: False)
-    assert "cannot be inspected" in delegate._in_use(scratch, since=0)
+    assert delegate._in_use(scratch, since=0).endswith(
+        "; pid 4242, 4343 cannot open it by path but may hold a descriptor into it")
+
+
+_FD_WRITER = ("import os, sys, time\n"
+              "fd = int(sys.argv[1])\n"
+              "print('ready', flush=True)\n"
+              "os.close(1)\n"
+              "while not os.path.exists(sys.argv[2]):\n"
+              "    time.sleep(0.02)\n"
+              "os.write(fd, b'late')\n"
+              "sys.exit(0 if os.fstat(fd).st_nlink == 1 else 3)\n")
+
+
+@pytest.mark.parametrize("mode", ["finished", "interrupted"])
+def test_another_users_process_holding_an_inherited_descriptor_keeps_the_copies(
+        hermetic, tmp_path, monkeypatch, mode):
+    # Round 19, N1, the whole run on both finish paths: each worker opens an
+    # unchanged file in its copy for writing and leaves a detached process
+    # that inherits only that descriptor (no COPY_ENV, working directory
+    # elsewhere) and writes through it later. It cannot be inspected, and its
+    # status shows another user without any capability, so it cannot open the
+    # copies by path (_ours False). Before: the copies and their record were
+    # deleted, and the late writes went to unlinked files.
+    (hermetic / "held.txt").write_text("")
+    scratch_tmp = tmp_path / "scratch-tmp"
+    scratch_tmp.mkdir()
+    monkeypatch.setattr(delegate.tempfile, "tempdir", str(scratch_tmp))
+    go = tmp_path / "go"
+    writers = []
+    me = os.getuid()
+    other = 424242 if me != 424242 else 424243
+    real_open, real_references = open, procs._references
+    env = {k: v for k, v in os.environ.items() if k != delegate.COPY_ENV}
+
+    def runner(task, context, cwd, tier, timeout_s):
+        fd = os.open(Path(cwd) / "held.txt", os.O_WRONLY)
+        try:
+            writer = subprocess.Popen([sys.executable, "-c", _FD_WRITER, str(fd), str(go)],
+                                      pass_fds=(fd,), env=env, cwd="/", start_new_session=True,
+                                      stdout=subprocess.PIPE, text=True)
+        finally:
+            os.close(fd)
+        writer.stdout.readline()
+        writers.append(writer)
+        return {"ok": True}
+
+    def writer_base(path):
+        return str(path) in {f"/proc/{w.pid}" for w in writers}
+
+    def references(base, majors):
+        if writer_base(base):
+            raise PermissionError(13, "Permission denied")
+        return real_references(base, majors)
+
+    def fake_open(path, *args, **kwargs):
+        if str(path).endswith("/status") and writer_base(str(path)[:-len("/status")]):
+            return io.StringIO(_status(f"{other}\t{other}\t{other}\t{other}"))
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(procs, "_references", references)
+    monkeypatch.setattr(delegate, "open", fake_open, raising=False)
+    if mode == "interrupted":
+        def interrupted(futures):
+            for future in list(futures):
+                future.result()
+            raise KeyboardInterrupt
+            yield  # pragma: no cover - a generator, like as_completed
+
+        monkeypatch.setattr(delegate, "as_completed", interrupted)
+    try:
+        if mode == "interrupted":
+            with pytest.raises(KeyboardInterrupt):
+                delegate.run_many(["one", "two"], cwd=str(hermetic), parallel=2, runner=runner)
+        else:
+            result = delegate.run_many(["one", "two"], cwd=str(hermetic), parallel=2,
+                                       runner=runner)
+            assert "may hold a descriptor into it" in result["copies_kept"], result
+            assert all(r["workspace"] is None for r in result["results"])
+        assert len(writers) == 2 and all(w.poll() is None for w in writers)
+        assert not any(delegate._ours(w.pid) for w in writers)
+        [scratch] = scratch_tmp.iterdir()
+        for name in ("base", "worker-1", "worker-2", delegate.OWNER_RECORD):
+            assert (scratch / name).exists(), name
+        go.touch()
+        for writer in writers:
+            assert writer.wait(timeout=30) == 0  # wrote into a file still linked
+        for i in (1, 2):
+            assert (scratch / f"worker-{i}" / "held.txt").read_text() == "late"
+        assert (scratch / delegate.OWNER_RECORD).exists()
+    finally:
+        go.touch()
+        for writer in writers:
+            writer.kill()
+            writer.wait()
+
+
+def test_no_status_is_taken_for_proof_that_a_process_cannot_write():
+    # Round 19, N1: what the docs promise. A status that shows no path access
+    # proves nothing about descriptors already held.
+    readme = (ROOT / "README.md").read_text()
+    for claim in ("another user's whose status shows none of this is not\n  counted here",
+                  "``others=False``", "status proves they cannot write"):
+        assert claim not in readme and claim not in delegate._in_use.__doc__, claim
+    assert "that says nothing about a descriptor it already holds" in readme
+    assert "whatever its status shows" in delegate._in_use.__doc__
+    assert "no proof it cannot\n    write into them" in delegate._ours.__doc__
 
 
 def _status(uids: str, cap_eff: int = 0, cap_prm: int | None = None) -> str:

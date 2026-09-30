@@ -660,15 +660,21 @@ def _part_of(scratch: Path) -> bool:
     return os.environ.get(COPY_ENV) == str(scratch) or procs.lineage_carries(_marker(scratch))
 
 
-def _in_use(scratch: Path, *, since: int, others: bool = True) -> str:
+def _in_use(scratch: Path, *, since: int) -> str:
     """Why a process may still write into ``scratch`` ("" if none can).
 
-    ``others=False`` leaves out processes that cannot be inspected but whose
-    status proves they cannot write into ``scratch`` (:func:`_ours` is False):
-    it is this user's and private (``mkdtemp``). For a server's own check once
-    its workers are done, where any such process started meanwhile (another
-    user's cron job) would otherwise keep every copy. One positively seen
-    using it counts whoever it runs as.
+    Counted: every process seen holding something inside it or carrying its
+    ``COPY_ENV`` entry, whoever it runs as, and every process started at or
+    after ``since`` that cannot be inspected, whatever its status shows. Its
+    status tells only whether it may open ``scratch`` by path now
+    (:func:`_ours`), not whether it already holds a descriptor into it: one
+    kept across ``exec`` or a privilege drop, or passed over a unix socket
+    (``SCM_RIGHTS``), writes on after the path is closed to it. So another
+    user's process started meanwhile (a cron job) keeps the copies until it
+    ends; the reason says so. Not counted: processes that can be inspected and
+    hold nothing there, and those already running before ``since``, which no
+    worker started (one could only have been sent a descriptor, or opened the
+    copies by path, and cannot be inspected to tell).
     """
     inodes = set()
     try:
@@ -681,12 +687,17 @@ def _in_use(scratch: Path, *, since: int, others: bool = True) -> str:
     seen = procs.holders(inodes, since=since, environ=_marker(scratch))
     if seen is None:
         return "cannot tell which processes use it (/proc unreadable)"
-    unreadable = seen[1] if others else {pid for pid in seen[1] if _ours(pid)}
+    unreadable = seen[1]
     if seen[0]:
         return "in use by pid " + ", ".join(map(str, sorted(seen[0])))
     if unreadable:
-        return ("processes that cannot be inspected started after its server: pid "
-                + ", ".join(map(str, sorted(unreadable))))
+        why = ("processes that cannot be inspected started after its server: pid "
+               + ", ".join(map(str, sorted(unreadable))))
+        pathless = sorted(pid for pid in unreadable if not _ours(pid))
+        if pathless:
+            why += (f"; pid {', '.join(map(str, pathless))} cannot open it by path but may "
+                    "hold a descriptor into it")
+        return why
     return ""
 
 
@@ -697,15 +708,18 @@ _WRITE_CAPS = 1 << 0 | 1 << 1 | 1 << 3 | 1 << 7
 
 
 def _ours(pid: int) -> bool:
-    """Whether ``pid`` may write into this user's private copies: True unless
-    its status shows it cannot (and when that cannot be read or understood).
+    """Whether ``pid`` may open this user's private copies by path: True
+    unless its status shows it cannot (and when that cannot be read or
+    understood).
 
     Access to a file is checked against the filesystem uid, not the real one,
     and a process may switch that to any of its other uids; root, or a process
     with one of :data:`_WRITE_CAPS` (effective, or permitted and so enabled at
     will), passes the check anyway (``credentials(7)``, ``path_resolution(7)``).
     So only a process none of whose uids is this user's or root's, and which
-    holds none of those capabilities, cannot.
+    holds none of those capabilities, cannot. That is no proof it cannot
+    write into them: a descriptor it already holds is not checked again
+    (:func:`_in_use` counts it all the same).
     """
     fields = {}
     try:
@@ -848,10 +862,11 @@ def run_many(tasks: list[str], *, context: str | None = None, cwd: str | None = 
         if isolated and scratch is not None:
             # Every worker has returned, but what one started may live on (a
             # process that detached with setsid() still carries COPY_ENV) and
-            # write into any of these copies by path. While one may, nothing
+            # write into any of these copies, by path or through a descriptor
+            # it was left or passed (_in_use). While one may, nothing
             # is deleted and the owner record stays, so a later server
             # reclaims the copies once nothing uses them (sweep_copies).
-            busy = _in_use(scratch, since=since, others=False)
+            busy = _in_use(scratch, since=since)
             for i, item in enumerate(finished):
                 workdir = Path(workdirs[i] or "")
                 try:
@@ -894,8 +909,7 @@ def run_many(tasks: list[str], *, context: str | None = None, cwd: str | None = 
             if pool is not None:
                 pool.shutdown(wait=False, cancel_futures=True)
                 stopped = _stop_workers(pending)
-            if scratch is not None and stopped and not _in_use(scratch, since=since,
-                                                                 others=False):
+            if scratch is not None and stopped and not _in_use(scratch, since=since):
                 _remove_copies(scratch)
         raise
     finally:

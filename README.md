@@ -827,12 +827,17 @@ with a shell:
   accept. When the workers are done, the copies they left unchanged are
   deleted, unless a process one of them started still runs with
   `AUTO_ROUTER_DELEGATE_COPY` naming them (even one that detached) or holds
-  anything inside them, or a process that cannot be inspected and may write
-  into them started after the server did (one of yours, root's, or one whose
-  filesystem or other user id is yours or that holds a capability overriding
-  file permissions; another user's whose status shows none of this is not
-  counted here): then none is deleted,
-  the result says so under `copies_kept`, and the copies keep their owner
+  anything inside them, or any process that cannot be inspected started after
+  the server did. Such a process counts even when its status shows it cannot
+  open the copies by path (another user's, no capability overriding file
+  permissions): that says nothing about a descriptor it already holds, left
+  open across `exec` or a privilege drop, or passed over a unix socket, so it
+  may still write into them. Another user's job started meanwhile thus keeps
+  the copies until it ends (the reason says so); keeping too much is the
+  price, deleting what a live writer holds is never. Not counted: processes
+  that can be inspected and hold nothing there, and uninspectable ones already
+  running before the server started, which no worker started. Then none is
+  deleted, the result says so under `copies_kept`, and the copies keep their owner
   record, so a later server start deletes them, the named workspaces included,
   once nothing uses them (below).
   A stop signal while briefs are being handed to the workers waits until every
