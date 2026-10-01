@@ -8,11 +8,13 @@ log and then imitates just enough of the real tool:
 - ``git`` "fetches" by copying ``scripts/``, ``skills/``, ``integrations/``
   and ``.gitignore`` from this checkout; it never contacts a remote, and the
   commit, ``FETCH_HEAD`` and ``HEAD`` are only files under ``.git``.
-  ``checkout`` records a hash of every file it leaves as the index, and
-  ``status --porcelain`` compares against it, as real git does for these
-  cases: a changed tracked file is `` M``, a missing one `` D``, and a new file
-  is ``??`` (a directory holding no tracked file as ``?? dir/``) unless the
-  checkout's ``.gitignore`` ignores it. Only the pattern forms that file uses
+  ``checkout`` records a hash of every file it leaves that the checkout's
+  ``.gitignore`` does not ignore, plus any file already tracked, as the index;
+  ignored ``build/`` and ``*.egg-info/`` output in the checkout stays
+  untracked across repeated checkouts. ``status --porcelain`` compares against
+  the index, as real git does for these cases: a changed tracked file is
+  `` M``, a missing one `` D``, and a new file is ``??`` (a directory holding
+  no tracked file as ``?? dir/``) unless the ``.gitignore`` ignores it. Only the pattern forms that file uses
   are understood (``name``, ``*.ext``, ``dir/``, ``a/b/``); there are no
   negations, nested ignore files, staging or real objects.
 - ``python3 -m venv`` makes a directory whose ``pip`` records the call, copies
@@ -95,15 +97,18 @@ def ignored(rel, patterns):
     return False
 
 
-if mode == "record":
-    json.dump(dict(files()), open(index_file, "w"))
-    sys.exit()
 index = json.load(open(index_file)) if os.path.exists(index_file) else {}
 try:
     patterns = [l.strip() for l in open(os.path.join(repo, ".gitignore"))
                 if l.strip() and not l.startswith("#")]
 except FileNotFoundError:
     patterns = []
+if mode == "record":
+    # Only the fetched inventory is tracked: ignored files already in the
+    # checkout stay out of the index, and a tracked file stays tracked.
+    json.dump({p: h for p, h in files() if p in index or not ignored(p, patterns)},
+              open(index_file, "w"))
+    sys.exit()
 tracked_dirs = {"/".join(p.split("/")[:i]) for p in index for i in range(1, p.count("/") + 1)}
 current = dict(files())
 out = [f" M {p}" for p in sorted(index) if p in current and current[p] != index[p]]
@@ -356,6 +361,25 @@ def test_stale_ignored_build_output_in_the_checkout_is_not_installed(fake):
     assert not (site / "auto_router/stale_module.py").exists(), "the copy's build/ was dropped"
     assert stale.read_text() == "STALE = 1\n", "the checkout itself is left alone"
     assert (repo / "auto_model_router.egg-info/SOURCES.txt").exists()
+
+
+def test_ignored_build_output_stays_untracked_across_a_reinstall(fake):
+    assert fake.run("claude", SHA).returncode == 0
+    repo = fake.base / "src"
+    stale = repo / "build/lib/auto_router/stale_module.py"
+    stale.parent.mkdir(parents=True)
+    stale.write_text("STALE = 1\n")
+    (repo / "auto_model_router.egg-info").mkdir()
+    (repo / "auto_model_router.egg-info/SOURCES.txt").write_text("auto_router/stale_module.py\n")
+    again = fake.run("claude", SHA, "--force")
+    assert again.returncode == 0, again.stderr
+    stale.write_text("STALE = 2\n")
+    (repo / "auto_model_router.egg-info/SOURCES.txt").unlink()
+    assert fake.status() == "", "the checkout did not start tracking ignored files"
+    third = fake.run("claude", SHA, "--force")
+    assert third.returncode == 0, third.stderr
+    assert "has local changes" not in third.stderr
+    assert len(fake.built()) == 3
 
 
 def test_a_second_install_into_the_same_home_is_not_refused(fake):

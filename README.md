@@ -1027,7 +1027,8 @@ What has been tested: `tests/test_install_delegation_e2e.py` runs both entry
 points end to end, through their own argument parsing, in a disposable HOME
 with fake `git`, `python3 -m venv`, `pip`, `claude`, `codex`, `cursor`,
 `opencode`, `openclaw`, `hermes` and `copilot` commands that record their
-calls (the fake `git` also keeps an index of the files it checked out, so its
+calls (the fake `git` also keeps an index of the files it checked out, never
+counting ignored build output as tracked, even across repeated checkouts, so its
 status reports an edited tracked file and skips what `.gitignore` ignores);
 `tests/test_install_delegation_targets.py` covers the OpenClaw, Hermes and
 Copilot files in a temporary HOME. That proves the control flow:
