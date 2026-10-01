@@ -8,10 +8,13 @@ log and then imitates just enough of the real tool:
 - ``git`` "fetches" by copying ``scripts/``, ``skills/``, ``integrations/``
   and ``.gitignore`` from this checkout; it never contacts a remote, and the
   commit, ``FETCH_HEAD`` and ``HEAD`` are only files under ``.git``.
-  It models regular files only: a source holding anything else, such as a
-  symlink, makes the fetch fail before it copies anything, rather than leave
-  that entry out of the commit. The fetch lists the files it copied, separated
-  by NUL so that any file name survives, as the commit's tree, and ``checkout``
+  It models readable regular files only: a source holding anything else, such
+  as a symlink, makes the fetch fail before it copies anything, rather than
+  leave that entry out of the commit. A source file or directory it cannot
+  read also makes the fetch fail and leaves the checkout as it was, where real
+  git would still fetch the committed file. The fetch lists the files it
+  copied, separated by NUL so that any file name survives, as the commit's
+  tree, and ``checkout``
   records a hash of each of them, plus of any file an earlier checkout
   tracked, as the index. A fetched file is tracked even if ``.gitignore``
   matches it, as a file added with ``git add -f`` is; any other file in the
@@ -66,16 +69,28 @@ case "$1" in
   remote) ;;
   status) [ -z "${FAKE_GIT_DIRTY:-}" ] || echo " M scripts/local-edit"
           exec "$FAKE_REAL_PYTHON" "$FAKE_BIN/git-index.py" status "$repo" ;;
-  fetch) other=$(cd "$FAKE_SOURCE" && find scripts skills integrations .gitignore ! -type f ! -type d)
+  fetch) other=$(cd "$FAKE_SOURCE" && find scripts skills integrations .gitignore ! -type f ! -type d) \
+           || { echo "fake git: cannot read the source tree, fetched nothing" >&2; exit 1; }
          if [ -n "$other" ]; then
-           echo "fake git: unsupported source entry, only regular files are modelled: $other" >&2
+           printf '%s\n' "fake git: unsupported source entry, only regular files are modelled: $other" >&2
            exit 1
          fi
-         cp -R "$FAKE_SOURCE/scripts" "$FAKE_SOURCE/skills" "$FAKE_SOURCE/integrations" \
-               "$FAKE_SOURCE/.gitignore" "$repo/"
-         chmod -R u+w "$repo"
-         (cd "$FAKE_SOURCE" && find scripts skills integrations .gitignore -type f -print0 | sort -z) \
-           > "$repo/.git/FETCH_TREE"
+         # Copy into a staging directory first, so a source file that cannot be
+         # read fails the fetch and leaves the checkout and FETCH_* as they were.
+         stage="$repo/.git/fetch-stage"
+         rm -rf "$stage" "$stage.list" "$stage.tree" && mkdir "$stage" || exit 1
+         if cp -R "$FAKE_SOURCE/scripts" "$FAKE_SOURCE/skills" "$FAKE_SOURCE/integrations" \
+                  "$FAKE_SOURCE/.gitignore" "$stage/" &&
+            (cd "$stage" && find scripts skills integrations .gitignore -type f -print0) > "$stage.list" &&
+            sort -z "$stage.list" > "$stage.tree" &&
+            chmod -R u+w "$stage" && cp -R "$stage/." "$repo/" && chmod -R u+w "$repo" &&
+            mv "$stage.tree" "$repo/.git/FETCH_TREE"; then
+           rm -rf "$stage" "$stage.list"
+         else
+           chmod -R u+rwX "$stage"; rm -rf "$stage" "$stage.list" "$stage.tree"
+           echo "fake git: cannot copy the source tree, fetched nothing" >&2
+           exit 1
+         fi
          echo "$6" > "$repo/.git/FETCH_HEAD" ;;
   checkout) cp "$repo/.git/FETCH_HEAD" "$repo/.git/HEAD"
             exec "$FAKE_REAL_PYTHON" "$FAKE_BIN/git-index.py" record "$repo" ;;
@@ -466,20 +481,87 @@ def test_a_fetched_file_with_a_line_break_in_its_name_is_tracked(fake, rel):
 
 @pytest.mark.parametrize("rel,target", [("scripts/link.py", "install-delegation.py"),
                                         ("scripts/link.local.yaml", "install-delegation.py"),
-                                        ("scripts/dangling.py", "missing.py")])
+                                        ("scripts/dangling.py", "missing.py"),
+                                        ("scripts/link\\name.py", "install-delegation.py")])
 def test_a_fetched_symlink_stops_the_fake_fetch_before_it_copies_anything(fake, rel, target):
     upstream = _upstream(fake)
     (upstream / rel).symlink_to(target)
     refused = fake.run("claude", SHA)
     assert refused.returncode == 1
-    assert f"fake git: unsupported source entry, only regular files are modelled: {rel}" \
-        in refused.stderr
+    assert f"fake git: unsupported source entry, only regular files are modelled: {rel}\n" \
+        in refused.stderr, "the name exactly as it is, backslashes and all"
     assert "has local changes" not in refused.stderr
     assert not (fake.base / "src/scripts").exists() and fake.built() == []
     (upstream / rel).unlink()
     again = fake.run("claude", SHA)
     assert again.returncode == 0, again.stderr
     assert fake.status() == ""
+
+
+# Root reads a mode 000 file, so these sources are only unreadable to others.
+needs_non_root = pytest.mark.skipif(os.geteuid() == 0, reason="root can read a mode 000 source")
+
+
+def _fetched_nothing(fake):
+    repo = fake.base / "src"
+    return [p.name for p in repo.iterdir()] == [".git"] and not any((repo / ".git").iterdir())
+
+
+@needs_non_root
+@pytest.mark.parametrize("rel", ["scripts/unreadable.py", "scripts/unreadable.local.yaml"])
+def test_an_unreadable_source_file_fails_the_fake_fetch_without_a_partial_copy(fake, rel):
+    upstream = _upstream(fake)
+    (upstream / rel).write_text("upstream: 1\n")
+    (upstream / rel).chmod(0)
+    refused = fake.run("claude", SHA)
+    (upstream / rel).chmod(0o644)
+    assert refused.returncode == 1
+    assert "fake git: cannot copy the source tree, fetched nothing" in refused.stderr
+    assert "has local changes" not in refused.stderr
+    assert _fetched_nothing(fake) and fake.built() == []
+    again = fake.run("claude", SHA)
+    assert again.returncode == 0, again.stderr
+    repo = fake.base / "src"
+    assert rel in json.loads((repo / ".git/fake-index.json").read_text())
+    _change(repo / rel, " M")
+    assert fake.status() == f" M {rel}\n"
+    third = fake.run("claude", SHA, "--force")
+    assert third.returncode == 1 and "has local changes" in third.stderr
+
+
+@needs_non_root
+def test_an_unreadable_source_file_leaves_an_earlier_checkout_as_it_was(fake):
+    upstream = _upstream(fake)
+    rel = "scripts/unreadable.local.yaml"
+    (upstream / rel).write_text("upstream: 1\n")
+    assert fake.run("claude", SHA).returncode == 0
+    repo = fake.base / "src"
+    before = {p: p.read_bytes() for p in repo.rglob("*") if p.is_file()}
+    (upstream / "scripts/next.py").write_text("NEXT = 1\n")
+    (upstream / rel).write_text("upstream: 2\n")
+    (upstream / rel).chmod(0)
+    refused = fake.run("claude", SHA, "--force")
+    (upstream / rel).chmod(0o644)
+    assert refused.returncode == 1
+    assert "fake git: cannot copy the source tree, fetched nothing" in refused.stderr
+    assert {p: p.read_bytes() for p in repo.rglob("*") if p.is_file()} == before
+    assert len(fake.built()) == 1
+
+
+@needs_non_root
+def test_an_unreadable_source_directory_stops_the_fake_fetch_before_it_copies_anything(fake):
+    private = _upstream(fake) / "scripts/private"
+    private.mkdir()
+    (private / "link.py").symlink_to("../install-delegation.py")
+    private.chmod(0)
+    refused = fake.run("claude", SHA)
+    private.chmod(0o755)
+    assert refused.returncode == 1
+    assert "fake git: cannot read the source tree, fetched nothing" in refused.stderr
+    assert _fetched_nothing(fake) and fake.built() == []
+    hidden = fake.run("claude", SHA)
+    assert hidden.returncode == 1
+    assert "only regular files are modelled: scripts/private/link.py\n" in hidden.stderr
 
 
 def test_a_second_install_into_the_same_home_is_not_refused(fake):
