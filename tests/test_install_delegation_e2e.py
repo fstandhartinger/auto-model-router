@@ -8,7 +8,10 @@ log and then imitates just enough of the real tool:
 - ``git`` "fetches" by copying ``scripts/``, ``skills/``, ``integrations/``
   and ``.gitignore`` from this checkout; it never contacts a remote, and the
   commit, ``FETCH_HEAD`` and ``HEAD`` are only files under ``.git``.
-  The fetch lists the files it copied as the commit's tree, and ``checkout``
+  It models regular files only: a source holding anything else, such as a
+  symlink, makes the fetch fail before it copies anything, rather than leave
+  that entry out of the commit. The fetch lists the files it copied, separated
+  by NUL so that any file name survives, as the commit's tree, and ``checkout``
   records a hash of each of them, plus of any file an earlier checkout
   tracked, as the index. A fetched file is tracked even if ``.gitignore``
   matches it, as a file added with ``git add -f`` is; any other file in the
@@ -18,7 +21,8 @@ log and then imitates just enough of the real tool:
   `` M``, a missing one `` D``, and a new file is ``??`` (a directory holding
   no tracked file as ``?? dir/``) unless the ``.gitignore`` ignores it. Only the pattern forms that file uses
   are understood (``name``, ``*.ext``, ``dir/``, ``a/b/``); there are no
-  negations, nested ignore files, staging or real objects.
+  negations, nested ignore files, staging or real objects, and status prints
+  paths unquoted where real git quotes unusual names.
 - ``python3 -m venv`` makes a directory whose ``pip`` records the call, copies
   any existing ``build/lib`` of the source into the venv's ``site-packages``,
   as setuptools keeps stale files there in the wheel, leaves ``build/`` and
@@ -62,10 +66,15 @@ case "$1" in
   remote) ;;
   status) [ -z "${FAKE_GIT_DIRTY:-}" ] || echo " M scripts/local-edit"
           exec "$FAKE_REAL_PYTHON" "$FAKE_BIN/git-index.py" status "$repo" ;;
-  fetch) cp -R "$FAKE_SOURCE/scripts" "$FAKE_SOURCE/skills" "$FAKE_SOURCE/integrations" \
+  fetch) other=$(cd "$FAKE_SOURCE" && find scripts skills integrations .gitignore ! -type f ! -type d)
+         if [ -n "$other" ]; then
+           echo "fake git: unsupported source entry, only regular files are modelled: $other" >&2
+           exit 1
+         fi
+         cp -R "$FAKE_SOURCE/scripts" "$FAKE_SOURCE/skills" "$FAKE_SOURCE/integrations" \
                "$FAKE_SOURCE/.gitignore" "$repo/"
          chmod -R u+w "$repo"
-         (cd "$FAKE_SOURCE" && find scripts skills integrations .gitignore -type f | sort) \
+         (cd "$FAKE_SOURCE" && find scripts skills integrations .gitignore -type f -print0 | sort -z) \
            > "$repo/.git/FETCH_TREE"
          echo "$6" > "$repo/.git/FETCH_HEAD" ;;
   checkout) cp "$repo/.git/FETCH_HEAD" "$repo/.git/HEAD"
@@ -112,7 +121,9 @@ if mode == "record":
     # The commit tracks every file the fetch copied, whether or not .gitignore
     # matches it, and a tracked file stays tracked; anything else in the
     # checkout, such as ignored build output, stays out of the index.
-    fetched = set(open(os.path.join(repo, ".git", "FETCH_TREE")).read().splitlines())
+    # FETCH_TREE is NUL-separated, so a name holding a newline is one path.
+    with open(os.path.join(repo, ".git", "FETCH_TREE"), "rb") as tree:
+        fetched = {os.fsdecode(p) for p in tree.read().split(b"\0") if p}
     json.dump({p: h for p, h in files() if p in fetched or p in index},
               open(index_file, "w"))
     sys.exit()
@@ -435,6 +446,40 @@ def test_an_ignored_file_a_later_commit_tracks_is_tracked_after_the_reinstall(fa
     assert fake.status() == f" M {rel}\n"
     third = fake.run("claude", SHA, "--force")
     assert third.returncode == 1 and "has local changes" in third.stderr
+
+
+@pytest.mark.parametrize("rel", ["scripts/two\nlines.py", "scripts/two\nlines.local.yaml",
+                                 "scripts/carriage\rreturn.py"])
+def test_a_fetched_file_with_a_line_break_in_its_name_is_tracked(fake, rel):
+    (_upstream(fake) / rel).write_text("UPSTREAM = 1\n")
+    assert fake.run("claude", SHA).returncode == 0
+    repo = fake.base / "src"
+    assert rel in json.loads((repo / ".git/fake-index.json").read_text())
+    assert fake.status() == ""
+    again = fake.run("claude", SHA, "--force")
+    assert again.returncode == 0, again.stderr
+    _change(repo / rel, " M")
+    assert fake.status().startswith(" M scripts/"), "real git reports it, quoted"
+    third = fake.run("claude", SHA, "--force")
+    assert third.returncode == 1 and "has local changes" in third.stderr
+
+
+@pytest.mark.parametrize("rel,target", [("scripts/link.py", "install-delegation.py"),
+                                        ("scripts/link.local.yaml", "install-delegation.py"),
+                                        ("scripts/dangling.py", "missing.py")])
+def test_a_fetched_symlink_stops_the_fake_fetch_before_it_copies_anything(fake, rel, target):
+    upstream = _upstream(fake)
+    (upstream / rel).symlink_to(target)
+    refused = fake.run("claude", SHA)
+    assert refused.returncode == 1
+    assert f"fake git: unsupported source entry, only regular files are modelled: {rel}" \
+        in refused.stderr
+    assert "has local changes" not in refused.stderr
+    assert not (fake.base / "src/scripts").exists() and fake.built() == []
+    (upstream / rel).unlink()
+    again = fake.run("claude", SHA)
+    assert again.returncode == 0, again.stderr
+    assert fake.status() == ""
 
 
 def test_a_second_install_into_the_same_home_is_not_refused(fake):
