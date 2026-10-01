@@ -8,9 +8,11 @@ log and then imitates just enough of the real tool:
 - ``git`` "fetches" by copying ``scripts/``, ``skills/``, ``integrations/``
   and ``.gitignore`` from this checkout; it never contacts a remote, and the
   commit, ``FETCH_HEAD`` and ``HEAD`` are only files under ``.git``.
-  ``checkout`` records a hash of every file it leaves that the checkout's
-  ``.gitignore`` does not ignore, plus any file already tracked, as the index;
-  ignored ``build/`` and ``*.egg-info/`` output in the checkout stays
+  The fetch lists the files it copied as the commit's tree, and ``checkout``
+  records a hash of each of them, plus of any file an earlier checkout
+  tracked, as the index. A fetched file is tracked even if ``.gitignore``
+  matches it, as a file added with ``git add -f`` is; any other file in the
+  checkout, such as ignored ``build/`` and ``*.egg-info/`` output, stays
   untracked across repeated checkouts. ``status --porcelain`` compares against
   the index, as real git does for these cases: a changed tracked file is
   `` M``, a missing one `` D``, and a new file is ``??`` (a directory holding
@@ -36,6 +38,7 @@ work with the real git, pip, Claude Code or Codex CLIs: those are untested.
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -62,6 +65,8 @@ case "$1" in
   fetch) cp -R "$FAKE_SOURCE/scripts" "$FAKE_SOURCE/skills" "$FAKE_SOURCE/integrations" \
                "$FAKE_SOURCE/.gitignore" "$repo/"
          chmod -R u+w "$repo"
+         (cd "$FAKE_SOURCE" && find scripts skills integrations .gitignore -type f | sort) \
+           > "$repo/.git/FETCH_TREE"
          echo "$6" > "$repo/.git/FETCH_HEAD" ;;
   checkout) cp "$repo/.git/FETCH_HEAD" "$repo/.git/HEAD"
             exec "$FAKE_REAL_PYTHON" "$FAKE_BIN/git-index.py" record "$repo" ;;
@@ -104,9 +109,11 @@ try:
 except FileNotFoundError:
     patterns = []
 if mode == "record":
-    # Only the fetched inventory is tracked: ignored files already in the
-    # checkout stay out of the index, and a tracked file stays tracked.
-    json.dump({p: h for p, h in files() if p in index or not ignored(p, patterns)},
+    # The commit tracks every file the fetch copied, whether or not .gitignore
+    # matches it, and a tracked file stays tracked; anything else in the
+    # checkout, such as ignored build output, stays out of the index.
+    fetched = set(open(os.path.join(repo, ".git", "FETCH_TREE")).read().splitlines())
+    json.dump({p: h for p, h in files() if p in fetched or p in index},
               open(index_file, "w"))
     sys.exit()
 tracked_dirs = {"/".join(p.split("/")[:i]) for p in index for i in range(1, p.count("/") + 1)}
@@ -380,6 +387,54 @@ def test_ignored_build_output_stays_untracked_across_a_reinstall(fake):
     assert third.returncode == 0, third.stderr
     assert "has local changes" not in third.stderr
     assert len(fake.built()) == 3
+
+
+def _upstream(fake):
+    """A copy of what the fake fetches, to add commits to."""
+    upstream = fake.tmp / "upstream"
+    for name in ("scripts", "skills", "integrations"):
+        shutil.copytree(ROOT / name, upstream / name)
+    shutil.copy2(ROOT / ".gitignore", upstream / ".gitignore")
+    fake.env["FAKE_SOURCE"] = str(upstream)
+    return upstream
+
+
+def _change(path, change):
+    if change == " M":
+        with open(path, "a") as f:
+            f.write("# local edit\n")
+    else:
+        path.unlink()
+
+
+@pytest.mark.parametrize("change", [" M", " D"])
+def test_a_fetched_file_the_ignore_file_matches_is_still_tracked(fake, change):
+    rel = "scripts/remote_tracked.local.yaml"
+    (_upstream(fake) / rel).write_text("upstream: 1\n")
+    assert fake.run("claude", SHA).returncode == 0
+    assert fake.status() == ""
+    _change(fake.base / "src" / rel, change)
+    assert fake.status() == f"{change} {rel}\n", "real git reports it: the commit tracks it"
+    again = fake.run("claude", SHA, "--force")
+    assert again.returncode == 1 and "has local changes" in again.stderr
+
+
+@pytest.mark.parametrize("rel,rule", [("scripts/remote_tracked.local.yaml", None),
+                                      ("scripts/remote_tracked.py", "scripts/remote_tracked.py")])
+def test_an_ignored_file_a_later_commit_tracks_is_tracked_after_the_reinstall(fake, rel, rule):
+    upstream = _upstream(fake)
+    assert fake.run("claude", SHA).returncode == 0
+    if rule:
+        with open(upstream / ".gitignore", "a") as f:
+            f.write(f"\n{rule}\n")
+    (upstream / rel).write_text("UPSTREAM = 1\n")
+    again = fake.run("claude", SHA, "--force")
+    assert again.returncode == 0, again.stderr
+    assert fake.status() == ""
+    _change(fake.base / "src" / rel, " M")
+    assert fake.status() == f" M {rel}\n"
+    third = fake.run("claude", SHA, "--force")
+    assert third.returncode == 1 and "has local changes" in third.stderr
 
 
 def test_a_second_install_into_the_same_home_is_not_refused(fake):
