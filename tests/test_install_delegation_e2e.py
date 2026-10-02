@@ -135,11 +135,18 @@ case "$1" in
          # rename the new tree over FETCH_TREE. If either step fails, put the
          # previous FETCH_HEAD back; FETCH_TREE is untouched until the last step.
          head="$repo/.git/FETCH_HEAD"
+         was_pending=; [ ! -e "$repo/.git/FETCH_PENDING" ] || was_pending=1
          if ! { { [ ! -e "$head" ] || cp "$head" "$stage.oldhead"; } &&
                 : > "$repo/.git/FETCH_PENDING"; }; then
-           rm -rf "$stage" "$stage.tree" "$stage.oldhead" "$repo/.git/FETCH_PENDING"
-           echo "fake git: publishing FETCH_HEAD and FETCH_TREE failed, the previous pair is kept," \
-                "the checkout is already updated" >&2
+           rm -rf "$stage" "$stage.tree" "$stage.oldhead"
+           if [ -n "$was_pending" ]; then
+             echo "fake git: publishing FETCH_HEAD and FETCH_TREE failed and the previous pair was" \
+                  "already not consistent, checkout will refuse them" >&2
+           else
+             rm -f "$repo/.git/FETCH_PENDING"
+             echo "fake git: publishing FETCH_HEAD and FETCH_TREE failed, the previous pair is kept," \
+                  "the checkout is already updated" >&2
+           fi
            exit 1
          fi
          if echo "$6" > "$head" && mv "$stage.tree" "$repo/.git/FETCH_TREE"; then
@@ -152,7 +159,10 @@ case "$1" in
              rm -f "$head" || restored=
            fi
            rm -rf "$stage" "$stage.tree" "$stage.oldhead"
-           if [ -n "$restored" ]; then
+           if [ -n "$restored" ] && [ -n "$was_pending" ]; then
+             echo "fake git: publishing FETCH_HEAD and FETCH_TREE failed and the previous pair was" \
+                  "already not consistent, checkout will refuse them" >&2
+           elif [ -n "$restored" ]; then
              rm -f "$repo/.git/FETCH_PENDING"
              echo "fake git: publishing FETCH_HEAD and FETCH_TREE failed, the previous pair is kept," \
                   "the checkout is already updated" >&2
@@ -1052,6 +1062,78 @@ def test_a_fetch_that_cannot_promote_its_tree_puts_the_previous_fetch_head_back(
     assert refused.returncode == 1
     assert "publishing FETCH_HEAD and FETCH_TREE failed, the previous pair is kept" in refused.stderr
     assert _git_dir(repo) == before
+
+
+LOCKING_MV = r"""#!/bin/sh
+case "$2" in */FETCH_TREE) chmod 444 "$(dirname "$2")/FETCH_HEAD"; exit 1 ;; esac
+exec /bin/mv "$@"
+"""
+
+FAILING_CP = r"""#!/bin/sh
+case "$2" in *.oldhead) exit 1 ;; esac
+exec /bin/cp "$@"
+"""
+
+
+def _shim(fake, name, body):
+    path = Path(fake.env["FAKE_BIN"]) / name
+    path.write_text(body)
+    path.chmod(0o755)
+
+
+def _checkout_fetch_head(fake, repo):
+    return subprocess.run(["git", "-C", str(repo), "checkout", "-q", "--detach", "FETCH_HEAD"],
+                          env=fake.env, capture_output=True)
+
+
+def _pair_left_unresolved(fake):
+    """Reference B beside tree A and a FETCH_PENDING marker: the pair checkout refuses."""
+    repo = _installed_then_upstream_adds(fake)
+    _shim(fake, "mv", LOCKING_MV)
+    first = fake.run("claude", SHA2, "--force")
+    assert first.returncode == 1
+    assert "could not be put back, checkout will refuse them" in first.stderr
+    assert (repo / ".git/FETCH_PENDING").exists()
+    assert (repo / ".git/FETCH_HEAD").read_text() == SHA2 + "\n"
+    assert b"scripts/added.local.yaml" not in (repo / ".git/FETCH_TREE").read_bytes()
+    assert _checkout_fetch_head(fake, repo).returncode == 1
+    (repo / ".git/FETCH_HEAD").chmod(0o644)
+    _shim(fake, "mv", FAILING_MV)
+    return repo
+
+
+def _still_unresolved_then_recovers(fake, repo, failed):
+    assert failed.returncode == 1
+    assert "already not consistent, checkout will refuse them" in failed.stderr
+    assert "the previous pair is kept" not in failed.stderr
+    assert (repo / ".git/FETCH_PENDING").exists(), "no new pair was published"
+    assert (repo / ".git/FETCH_HEAD").read_text() == SHA2 + "\n"
+    assert b"scripts/added.local.yaml" not in (repo / ".git/FETCH_TREE").read_bytes()
+    direct = _checkout_fetch_head(fake, repo)
+    assert direct.returncode == 1, "checkout must not record tree A under reference B"
+    assert b"are not a pair from one fetch" in direct.stderr
+    assert (repo / ".git/HEAD").read_text() != SHA2 + "\n"
+    for shim in ("mv", "cp"):
+        (Path(fake.env["FAKE_BIN"]) / shim).unlink(missing_ok=True)
+    again = fake.run("claude", SHA2, "--force")
+    assert again.returncode == 0, again.stderr
+    assert not (repo / ".git/FETCH_PENDING").exists()
+    assert "scripts/added.local.yaml" in json.loads((repo / ".git/fake-index.json").read_text())
+    assert (repo / ".git/HEAD").read_text() == SHA2 + "\n"
+    assert _checkout_fetch_head(fake, repo).returncode == 0
+
+
+@needs_non_root
+def test_a_second_failed_tree_promotion_keeps_the_unresolved_pair_refused(fake):
+    repo = _pair_left_unresolved(fake)
+    _still_unresolved_then_recovers(fake, repo, fake.run("claude", SHA2, "--force"))
+
+
+@needs_non_root
+def test_a_failed_fetch_head_backup_keeps_the_unresolved_pair_refused(fake):
+    repo = _pair_left_unresolved(fake)
+    _shim(fake, "cp", FAILING_CP)
+    _still_unresolved_then_recovers(fake, repo, fake.run("claude", SHA2, "--force"))
 
 
 def test_a_checkout_refuses_a_fetch_head_and_tree_that_are_not_one_fetch(fake):
