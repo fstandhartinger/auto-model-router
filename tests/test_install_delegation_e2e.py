@@ -12,7 +12,17 @@ log and then imitates just enough of the real tool:
   as a symlink, makes the fetch fail before it copies anything, rather than
   leave that entry out of the commit. A source file or directory it cannot
   read also makes the fetch fail and leaves the checkout as it was, where real
-  git would still fetch the committed file. The fetch lists the files it
+  git would still fetch the committed file. The fetch copies into a staging
+  directory under ``.git`` and gives the owner read, write and search on the
+  copies there, as a copy of another user's file is ours but keeps its mode
+  bits. Before it writes to the checkout it checks that every staged path fits:
+  a file where the checkout has a directory, a directory where it has a file, a
+  symlink in the way, or an entry this user cannot write makes the fetch fail
+  and leaves the checkout and ``FETCH_*`` as they were, where real git would
+  replace an ignored entry in its way. Once those checks pass, a copy into the
+  checkout that still fails, for a reason they do not cover such as a full
+  disk, can leave it partly updated, and the fetch then says so rather than
+  that it fetched nothing. The fetch lists the files it
   copied, separated by NUL so that any file name survives, as the commit's
   tree, and ``checkout``
   records a hash of each of them, plus of any file an earlier checkout
@@ -77,26 +87,76 @@ case "$1" in
          fi
          # Copy into a staging directory first, so a source file that cannot be
          # read fails the fetch and leaves the checkout and FETCH_* as they were.
+         # A copy of another user's file is ours but keeps its mode bits, so give
+         # the owner read, write and search before listing or publishing it.
          stage="$repo/.git/fetch-stage"
          rm -rf "$stage" "$stage.list" "$stage.tree" && mkdir "$stage" || exit 1
          if cp -R "$FAKE_SOURCE/scripts" "$FAKE_SOURCE/skills" "$FAKE_SOURCE/integrations" \
-                  "$FAKE_SOURCE/.gitignore" "$stage/" &&
+                  "$FAKE_SOURCE/.gitignore" "$stage/" && chmod -R u+rwX "$stage" &&
             (cd "$stage" && find scripts skills integrations .gitignore -type f -print0) > "$stage.list" &&
-            sort -z "$stage.list" > "$stage.tree" &&
-            chmod -R u+w "$stage" && cp -R "$stage/." "$repo/" && chmod -R u+w "$repo" &&
-            mv "$stage.tree" "$repo/.git/FETCH_TREE"; then
-           rm -rf "$stage" "$stage.list"
+            sort -z "$stage.list" > "$stage.tree"; then
+           rm -f "$stage.list"
          else
            chmod -R u+rwX "$stage"; rm -rf "$stage" "$stage.list" "$stage.tree"
            echo "fake git: cannot copy the source tree, fetched nothing" >&2
            exit 1
          fi
-         echo "$6" > "$repo/.git/FETCH_HEAD" ;;
+         # Touch the checkout only once every staged path is known to fit in it.
+         "$FAKE_REAL_PYTHON" "$FAKE_BIN/git-preflight.py" "$stage" "$repo" ||
+           { rm -rf "$stage" "$stage.tree"; exit 1; }
+         if ! { cp -R "$stage/." "$repo/" && mv "$stage.tree" "$repo/.git/FETCH_TREE" &&
+                echo "$6" > "$repo/.git/FETCH_HEAD"; }; then
+           rm -rf "$stage" "$stage.tree"
+           echo "fake git: copying into the checkout failed part way, it may be partly updated" >&2
+           exit 1
+         fi
+         rm -rf "$stage" ;;
   checkout) cp "$repo/.git/FETCH_HEAD" "$repo/.git/HEAD"
             exec "$FAKE_REAL_PYTHON" "$FAKE_BIN/git-index.py" record "$repo" ;;
   rev-parse) if [ -n "${FAKE_GIT_HEAD:-}" ]; then echo "$FAKE_GIT_HEAD"; else cat "$repo/.git/HEAD"; fi ;;
   *) exit 1 ;;
 esac
+"""
+
+# git-preflight.py STAGE REPO: refuse a fetch whose staged paths cp could not put
+# in place in the checkout, before anything there changes.
+FAKE_GIT_PREFLIGHT = r"""
+import os, sys
+
+stage, repo = sys.argv[1:]
+
+
+def fits(rel, is_dir):
+    dest = os.path.join(repo, rel)
+    if os.path.islink(dest):
+        return False
+    if not os.path.lexists(dest):
+        return True
+    if is_dir:
+        return os.path.isdir(dest) and os.access(dest, os.W_OK | os.X_OK)
+    return os.path.isfile(dest) and os.access(dest, os.W_OK)
+
+
+def check(rel, is_dir):
+    if not fits(rel, is_dir):
+        sys.stderr.buffer.write(b"fake git: the checkout cannot take a fetched path, "
+                                b"fetched nothing: " + os.fsencode(rel) + b"\n")
+        sys.exit(1)
+
+
+def unreadable(error):
+    raise error
+
+
+# Top down, so each parent is known to be a searchable directory, or absent,
+# before anything below it is looked up.
+check(".", True)
+for top, dirs, names in os.walk(stage, onerror=unreadable):
+    here = os.path.relpath(top, stage)
+    for name in sorted(dirs):
+        check(os.path.normpath(os.path.join(here, name)), True)
+    for name in sorted(names):
+        check(os.path.normpath(os.path.join(here, name)), False)
 """
 
 # git-index.py record|status REPO: the fake git's index and its status --porcelain.
@@ -223,6 +283,7 @@ def fake(tmp_path):
     state = tmp_path / "fake-state"
     log = tmp_path / "calls.log"
     for name, body in {"git": FAKE_GIT, "git-index.py": FAKE_GIT_INDEX,
+                       "git-preflight.py": FAKE_GIT_PREFLIGHT,
                        "python3": FAKE_PYTHON3, "venv-pip": FAKE_PIP,
                        "claude": FAKE_AGENT_CLI, "codex": FAKE_AGENT_CLI,
                        "cursor": NEVER_CALLED, "opencode": NEVER_CALLED,
@@ -562,6 +623,92 @@ def test_an_unreadable_source_directory_stops_the_fake_fetch_before_it_copies_an
     hidden = fake.run("claude", SHA)
     assert hidden.returncode == 1
     assert "only regular files are modelled: scripts/private/link.py\n" in hidden.stderr
+
+
+def _tree(repo):
+    """Every path in the checkout, ``.git`` included, with the bytes of each file."""
+    return {p: p.read_bytes() if p.is_file() else None for p in repo.rglob("*")}
+
+
+def _fetched_in_full(upstream, repo):
+    return all((repo / p.relative_to(upstream)).read_bytes() == p.read_bytes()
+               for p in upstream.rglob("*") if p.is_file())
+
+
+@pytest.mark.parametrize("local", ["directory", "file", pytest.param("read-only file",
+                                                                     marks=needs_non_root)])
+def test_a_fetched_path_the_checkout_cannot_take_stops_the_fetch_before_it_writes(fake, local):
+    upstream = _upstream(fake)
+    assert fake.run("claude", SHA).returncode == 0
+    repo = fake.base / "src"
+    rel = "scripts/new.local.yaml"
+    if local == "directory":
+        (repo / rel).mkdir()
+        (repo / rel / "cache.bin").write_bytes(b"IGNORED CACHE\n")
+        (upstream / rel).write_text("upstream: 2\n")
+    elif local == "file":
+        (repo / rel).write_text("local: 1\n")
+        (upstream / rel).mkdir()
+        (upstream / rel / "inside.py").write_text("INSIDE = 1\n")
+    else:
+        (repo / rel).write_text("local: 1\n")
+        (repo / rel).chmod(0o444)
+        (upstream / rel).write_text("upstream: 2\n")
+    with open(upstream / "scripts/install-delegation.py", "a") as f:
+        f.write("# newer upstream revision\n")
+    assert fake.status() == "", "the ignored local entry is not a local change"
+    before = _tree(repo)
+    for _ in range(2):
+        refused = fake.run("claude", SHA, "--force")
+        assert refused.returncode == 1
+        assert f"fake git: the checkout cannot take a fetched path, fetched nothing: {rel}\n" \
+            in refused.stderr
+        assert "has local changes" not in refused.stderr
+        assert _tree(repo) == before, "no checkout file, FETCH_* or index entry changed"
+        assert fake.status() == "" and len(fake.built()) == 1
+    if (repo / rel).is_dir():
+        shutil.rmtree(repo / rel)
+    else:
+        (repo / rel).unlink()
+    again = fake.run("claude", SHA, "--force")
+    assert again.returncode == 0, again.stderr
+    assert _fetched_in_full(upstream, repo)
+    assert fake.status() == "" and len(fake.built()) == 2
+
+
+# A copy of another user's file belongs to whoever copies it but keeps its mode
+# bits. This cp gives each staged copy listed in $FAKE_FOREIGN the mode it then
+# has, since a test cannot make a source that another user owns without root.
+FOREIGN_CP = r"""#!/bin/sh
+/bin/cp "$@" || exit
+for dest; do :; done
+case "$dest" in
+  */.git/fetch-stage/) while read -r mode rel; do chmod "$mode" "$dest$rel"; done < "$FAKE_FOREIGN" ;;
+esac
+"""
+
+
+@pytest.mark.parametrize("rel,mode", [("scripts/readable.py", "0044"), ("scripts/private", "0055")])
+def test_a_source_another_user_owns_but_lets_us_read_is_fetched_in_full(fake, rel, mode):
+    upstream = _upstream(fake)
+    (upstream / "scripts/readable.py").write_text("READABLE = 1\n")
+    (upstream / "scripts/private").mkdir()
+    (upstream / "scripts/private/inside.py").write_text("INSIDE = 1\n")
+    cp = Path(fake.env["FAKE_BIN"]) / "cp"
+    cp.write_text(FOREIGN_CP)
+    cp.chmod(0o755)
+    (fake.tmp / "foreign").write_text(f"{mode} {rel}\n")
+    fake.env["FAKE_FOREIGN"] = str(fake.tmp / "foreign")
+    first = fake.run("claude", SHA)
+    assert first.returncode == 0, first.stderr
+    with open(upstream / "scripts/install-delegation.py", "a") as f:
+        f.write("# newer upstream revision\n")
+    again = fake.run("claude", SHA, "--force")
+    assert again.returncode == 0, again.stderr
+    repo = fake.base / "src"
+    assert _fetched_in_full(upstream, repo)
+    assert fake.status() == "" and len(fake.built()) == 2
+    assert not list((repo / ".git").glob("fetch-stage*"))
 
 
 def test_a_second_install_into_the_same_home_is_not_refused(fake):
