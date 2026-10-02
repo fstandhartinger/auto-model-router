@@ -167,10 +167,14 @@ def render_config(*, groups: list[str], keys: dict[str, bool], src: str,
               "    backend: local-jev", f"    base_url: {jev['url']}", f"    model: {jev['model']}"]
         if jev.get("temperature"):
             L.append(f"    temperature: {jev['temperature']}")
+    elif classifier == "s1-llm-auto-router":
+        L += ["    # s1-llm-auto-router: a 183 MB CPU routing model (MIT), ~15-30 ms per turn on",
+              "    # 2-4 cores, downloaded once from Hugging Face. Nothing leaves this machine.",
+              "    backend: s1-llm-auto-router", "    threads: 2"]
     elif classifier == "hosted":
         L += ["    backend: hosted   # TypeSafe Jev with your own TYPESAFE_API_KEY (BYOK)"]
     elif classifier == "laya":
-        L += ["    backend: local    # Laya on the CPU (pip extra [local])",
+        L += ["    backend: local    # Laya on the CPU (pip extra [local]); not recommended: near-chance category",
               "    model: convaiinnovations/laya", "    threads: 4"]
     else:
         L += ["    backend: heuristic   # no classifier model; set up jev-local or TYPESAFE_API_KEY for better routing"]
@@ -400,7 +404,9 @@ def plan(args: argparse.Namespace, *, env: dict[str, str], hw_rec: dict, found: 
             jev = {"url": hit[0], "model": hit[1], "source": "running endpoint"}
     classifier = args.classifier
     if classifier == "auto":
+        from .s1_router import deps_available
         classifier = ("jev-local" if "jev-local" in groups else
+                      "s1-llm-auto-router" if deps_available() else
                       "hosted" if keys.get("TYPESAFE_API_KEY") else "heuristic")
     return {"groups": groups, "harnesses": harnesses, "claude_gateway": gateway, "keys": keys,
             "bonsai": bonsai, "jev": jev, "classifier": classifier}
@@ -562,7 +568,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--yes", "-y", action="store_true", help="no questions; accept downloads you asked for")
     p.add_argument("--models", help=f"comma list of {', '.join(GROUPS)} (or all / none)")
     p.add_argument("--harness", help=f"comma list of {', '.join(harness.HARNESSES)} (or all / none)")
-    p.add_argument("--classifier", default="auto", choices=("auto", "jev-local", "hosted", "heuristic", "laya"))
+    p.add_argument("--classifier", default="auto", choices=("auto", "s1-llm-auto-router", "jev-local", "hosted", "heuristic", "laya"))
     p.add_argument("--with-bonsai", action="store_true", help="download Bonsai 2 if no endpoint runs (asks first)")
     p.add_argument("--with-jev-local", action="store_true",
                    help="download the picked Jev-class model if no endpoint runs (asks first)")

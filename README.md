@@ -443,7 +443,8 @@ Choose the routing classifier under `policy.classifier`:
 ```yaml
 classifier: {backend: local, model: convaiinnovations/laya, threads: 4}
 # classifier: {backend: local-route-head, model: benchmarkheaven/weiche-395m, variant: fp16}
-# classifier: {backend: s1-llm-auto-router, model: /path/to/s1-llm-auto-router, threads: 2}
+# classifier: {backend: s1-llm-auto-router, threads: 2}   # default when [s1-router] is installed
+# classifier: {backend: s1-llm-auto-router-api}            # same model via system1models.ai (S1M_API_KEY)
 # classifier: {backend: local-jev, base_url: http://127.0.0.1:8081/v1, model: jevk5}
 # classifier: {backend: hosted}    # set TYPESAFE_API_KEY
 # classifier: {backend: heuristic} # zero inference cost and latency
@@ -472,15 +473,40 @@ environment that ships `hf-xet`, set `HF_HUB_DISABLE_XET=1` for that download. A
 router then silently degrades to its Jev fallback instead of failing (independently
 observed in the round-13 review of PR #3, board #2173).
 
-**s1-llm-auto-router** (`s1-llm-auto-router`, optional, model publication pending) is a
-fine-tuned multilingual encoder (mmBERT-small, 11 layers, 183 MB ONNX, MIT base) that answers
-exactly this router's seven classifier questions in one CPU pass. It needs the same extra as Weiche
-(`pip install "auto-model-router[route-head]"`); `model` is a local directory or, once published,
-a Hugging Face repo id. On a 2,175-item held-out routing test in 22 languages (incl. SAP ABAP and
-PL/I/COBOL requests) it got the category right 89.8 % of the time (hosted Jev 84.5 %, Weiche fp16
-78.4 %), and the router picked the same model from its labels as from the gold labels 74.2 % of the
-time (Jev 63.0 %, Weiche 62.2 %). It took about 26 ms per decision (p50) on 4 dedicated CPU threads.
-These are development measurements on synthetic requests, not production traffic.
+**s1-llm-auto-router** (`s1-llm-auto-router`) is the default classifier whenever its CPU runtime is
+installed (`pip install "auto-model-router[s1-router]"`). It is a fine-tuned multilingual encoder
+(mmBERT-small, 11 layers, 183 MB ONNX, MIT,
+[system1models/s1-llm-auto-router](https://huggingface.co/system1models/s1-llm-auto-router)) that answers
+exactly this router's seven classifier questions in one CPU pass. It is downloaded once from Hugging Face,
+and nothing leaves the machine afterwards.
+
+On a 2,175-item held-out routing test in 22 languages, including SAP ABAP and PL/I/COBOL requests:
+
+- **Category:** right 89.8 % of the time (hosted Jev 84.5 %, Weiche fp16 78.4 %).
+- **Routing agreement:** the router picked the same model from its labels as from the gold labels
+  74.2 % of the time (Jev 63.0 %, Weiche 62.2 %).
+- **Latency:** about 14–26 ms per decision (p50) on 4 CPU cores.
+
+These are measurements on synthetic requests, not production traffic.
+
+**Defaults:** without a `classifier` block, the router uses s1-llm-auto-router if `onnxruntime`,
+`tokenizers` and `huggingface_hub` are importable. Otherwise it keeps the previous behaviour: hosted
+Jev with `TYPESAFE_API_KEY`, else heuristics.
+
+**Hosted alternative:** the same model is available as an API on
+[system1models.ai](https://system1models.ai), at USD 0.001 per million input tokens. One request answers
+all seven questions:
+
+```yaml
+classifier: {backend: s1-llm-auto-router-api}   # reads S1M_API_KEY (or set api_key_env)
+```
+
+**Laya is not recommended (`backend: local`).** On the same test it answered the category question
+near chance (0.18; it said `long_context` for most requests). The backend still works, but it now emits
+a warning, and the installer no longer suggests it.
+
+**Weiche `variant: int8` is mapped to fp16.** The published int8 export gives near-chance answers
+(category 0.19, stakes 0.04 on 585 requests), so choosing it now logs a warning and loads fp16.
 
 **Route-head loading fix:** the fp16 Weiche files in the Hugging Face cache are symlinks, which
 ONNX Runtime 1.30+ rejects for external data ("External data path escapes model directory"); the

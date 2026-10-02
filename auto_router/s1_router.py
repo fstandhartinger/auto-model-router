@@ -109,3 +109,62 @@ class LocalS1RouterClassifier:
                 input_tokens=out["input_tokens"], output_tokens=0, source_name=SOURCE)
         except Exception:  # a local model failure must never take down the routed LLM call
             return jev.FALLBACK
+
+
+#: Hosted endpoint of the same model (system1models.ai), billed per input token.
+API_URL = os.environ.get("AUTO_ROUTER_S1_URL", "https://api.system1models.ai/v1/systemone")
+API_KEY_ENV = ("S1M_API_KEY", "SYSTEM1_API_KEY")
+#: The model reads at most 512 tokens and 600 context characters; trimming keeps the
+#: request well inside the API's 16 KiB state limit even for 3-byte scripts.
+API_REQUEST_CHARS = 3000
+
+
+def deps_available() -> bool:
+    """True when the optional CPU runtime for the local model is installed ([s1-router] extra)."""
+    import importlib.util
+    return all(importlib.util.find_spec(m) is not None
+               for m in ("onnxruntime", "tokenizers", "huggingface_hub", "numpy"))
+
+
+class HostedS1RouterClassifier:
+    """s1-llm-auto-router through the system1models.ai API (one request answers all seven questions)."""
+
+    def __init__(self, api_key_env: str | None = None, url: str = API_URL, timeout: float = 10.0):
+        self.api_key_env = api_key_env
+        self.url = url
+        self.timeout = timeout
+
+    def _key(self) -> str | None:
+        names = (self.api_key_env,) if self.api_key_env else API_KEY_ENV
+        return next((os.environ[n] for n in names if os.environ.get(n)), None)
+
+    def __call__(self, request: str, context: str = "") -> jev.Classification:
+        import urllib.request
+        started = time.perf_counter()
+        try:
+            key = self._key()
+            if not key:
+                raise RuntimeError("no system1models.ai API key (S1M_API_KEY) is set")
+            state = {"request": jev.scrub(request, API_REQUEST_CHARS),
+                     "context": jev.scrub(context, CONTEXT_CHARS) or "(new conversation)"}
+            body = json.dumps({"model": SOURCE, "state": state, "questions": jev.QUESTIONS}).encode()
+            req = urllib.request.Request(self.url, data=body, headers={
+                "Authorization": f"Bearer {key}", "Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                payload = json.loads(resp.read())
+            a = payload["answers"]
+            usage = payload.get("usage") or {}
+            probs = a["category"].get("probabilities") or {}
+            return jev.Classification(
+                category=a["category"]["choice"], category_probs=probs,
+                category_confidence=float(a["category"].get("confidence") or 0.0),
+                difficulty=jev._score01(a["difficulty"], len(jev.QUESTIONS["difficulty"]["criteria"])),
+                difficulty_confidence=float(a["difficulty"].get("confidence") or 0.0),
+                needs_tools=float(a["needs_tools"]["noul"]), needs_vision=float(a["needs_vision"]["noul"]),
+                needs_long_context=float(a["needs_long_context"]["noul"]), follow_up=float(a["follow_up"]["noul"]),
+                stakes=jev._score01(a["stakes"], len(jev.QUESTIONS["stakes"]["criteria"])),
+                latency_s=time.perf_counter() - started, model=SOURCE,
+                input_tokens=int(usage.get("input_tokens") or 0), output_tokens=0,
+                raw=a, source_name=SOURCE + "-api")
+        except Exception:  # an API outage must never take down the routed LLM call
+            return jev.FALLBACK

@@ -20,11 +20,14 @@ import json
 import os
 import threading
 import time
+import warnings
 
 from . import jev
 
 DEFAULT_MODEL = "benchmarkheaven/weiche-395m"
 VARIANTS = {"fp32": "model.onnx", "fp16": "model_fp16.onnx", "int8": "model_int8.onnx", "int4": "model_int4.onnx"}
+#: Published quantised exports whose outputs are near chance; they are mapped to fp16.
+BROKEN_VARIANTS = {"int8"}
 CATS = ["coding", "agentic", "math", "knowledge", "long_context", "tool_use", "design", "summarisation", "general"]
 NOULS = ["needs_tools", "needs_vision", "needs_long_context", "follow_up"]
 TIERS = ["small", "mid", "strong"]
@@ -82,6 +85,11 @@ class LocalRouteHeadClassifier:
     def __init__(self, model: str = DEFAULT_MODEL, variant: str = "fp16", threads: int = 2):
         if variant not in VARIANTS:
             raise ValueError(f"unknown route-head variant {variant!r}; use one of {sorted(VARIANTS)}")
+        if variant in BROKEN_VARIANTS:
+            warnings.warn(f"route-head variant {variant!r} gives near-chance answers (measured category 0.19, "
+                          "stakes 0.04 on a 585-request test set); using 'fp16' instead",
+                          RuntimeWarning, stacklevel=2)
+            variant = "fp16"
         self.model = model
         self.variant = variant
         self.threads = max(1, int(threads))

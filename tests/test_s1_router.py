@@ -113,3 +113,77 @@ def test_s1_router_parity_with_reference():
             assert got["category"][c] == pytest.approx(p, abs=1e-3)
         for f in s1_router.FLAGS:
             assert got["flags"][f] == pytest.approx(want[f]["noul"], abs=1e-3)
+
+
+def _api_answers():
+    return {
+        "category": {"type": "choice", "choice": "math", "confidence": 0.9,
+                     "probabilities": {c: (0.9 if c == "math" else 0.0125) for c in s1_router.CATS}},
+        "difficulty": {"type": "score", "score": 3.0, "confidence": 0.8,
+                       "probabilities": {"0": 0, "1": 0, "2": 0, "3": 1, "4": 0}},
+        "stakes": {"type": "score", "score": 0.0, "confidence": 0.7,
+                   "probabilities": {"0": 1, "1": 0, "2": 0, "3": 0}},
+        "needs_tools": {"type": "noul", "noul": 0.2}, "needs_vision": {"type": "noul", "noul": 0.01},
+        "needs_long_context": {"type": "noul", "noul": 0.03}, "follow_up": {"type": "noul", "noul": 0.6},
+    }
+
+
+def test_hosted_s1_router_sends_all_questions_in_one_request(monkeypatch):
+    sent = {}
+
+    class Resp:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return json.dumps({"model": "s1-llm-auto-router", "answers": _api_answers(),
+                                           "usage": {"input_tokens": 42, "output_tokens": 0, "decisions": 7}}).encode()
+
+    def fake_urlopen(req, timeout):
+        sent["url"], sent["body"], sent["auth"] = req.full_url, json.loads(req.data), req.headers["Authorization"]
+        return Resp()
+
+    monkeypatch.setenv("S1M_API_KEY", "s1m_test_key")
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    out = s1_router.HostedS1RouterClassifier()("Prove that sqrt(2) is irrational", "")
+    assert sent["url"] == "https://api.system1models.ai/v1/systemone"
+    assert sent["body"]["model"] == "s1-llm-auto-router"
+    assert set(sent["body"]["questions"]) == set(jev.QUESTIONS)
+    assert sent["auth"] == "Bearer s1m_test_key"
+    assert out.category == "math" and out.difficulty == pytest.approx(0.75) and out.stakes == 0.0
+    assert out.follow_up == pytest.approx(0.6) and out.input_tokens == 42 and out.source_name == "s1-llm-auto-router-api"
+
+
+def test_hosted_s1_router_without_key_falls_back(monkeypatch):
+    monkeypatch.delenv("S1M_API_KEY", raising=False)
+    monkeypatch.delenv("SYSTEM1_API_KEY", raising=False)
+    assert s1_router.HostedS1RouterClassifier()("hi") is jev.FALLBACK
+
+
+def test_default_classifier_is_s1_router_when_runtime_installed(monkeypatch):
+    monkeypatch.setattr(s1_router, "deps_available", lambda: True)
+    clf = jev.classifier_from_config({})
+    assert isinstance(clf, s1_router.LocalS1RouterClassifier)
+    assert clf.model == s1_router.DEFAULT_MODEL
+
+
+def test_default_classifier_without_runtime_keeps_previous_behaviour(monkeypatch):
+    monkeypatch.setattr(s1_router, "deps_available", lambda: False)
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    assert jev.classifier_from_config({}) is None
+    monkeypatch.setenv("TYPESAFE_API_KEY", "k")
+    assert jev.classifier_from_config({}) is jev.classify
+
+
+def test_api_backend_from_config():
+    clf = jev.classifier_from_config({"classifier": {"backend": "s1-llm-auto-router-api", "api_key_env": "MY_KEY"}})
+    assert isinstance(clf, s1_router.HostedS1RouterClassifier) and clf.api_key_env == "MY_KEY"
+
+
+def test_route_head_int8_maps_to_fp16_with_warning():
+    with pytest.warns(RuntimeWarning, match="near-chance"):
+        clf = route_head.LocalRouteHeadClassifier("some/dir", "int8")
+    assert clf.variant == "fp16"
+
+
+def test_laya_backend_warns_about_near_chance_category():
+    with pytest.warns(RuntimeWarning, match="near chance"):
+        jev.classifier_from_config({"classifier": {"backend": "local"}})

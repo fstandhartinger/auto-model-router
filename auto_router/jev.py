@@ -35,6 +35,7 @@ import math
 import os
 import re
 import threading
+import warnings
 import time
 import urllib.error
 import urllib.request
@@ -766,7 +767,8 @@ def classifier_from_config(policy: dict | None):
     ``local`` uses Laya on CPU, ``local-jev`` a local open Jev-class model
     behind an OpenAI-compatible endpoint (see ``LocalJevClass``),
     ``local-route-head`` the small ONNX routing model (see ``route_head.py``),
-    ``s1-llm-auto-router`` the fine-tuned CPU routing encoder (see ``s1_router.py``), ``hosted``
+    ``s1-llm-auto-router`` the fine-tuned CPU routing encoder (see ``s1_router.py``; the default
+    when its runtime is installed), ``s1-llm-auto-router-api`` the same model on system1models.ai, ``hosted``
     uses the TypeSafe/Jev API with the user's own key, and ``heuristic``
     disables model inference. Returning ``None`` preserves the router's
     existing cautious heuristic path.
@@ -774,8 +776,16 @@ def classifier_from_config(policy: dict | None):
     cfg = (policy or {}).get("classifier") or {}
     backend = str(cfg.get("backend") or "").lower()
     if not backend:
+        # Default: the local s1-llm-auto-router when its CPU runtime is installed
+        # (pip extra [s1-router]); otherwise hosted Jev with a key, else heuristics.
+        from .s1_router import DEFAULT_MODEL as S1_MODEL, LocalS1RouterClassifier, deps_available
+        if deps_available():
+            return LocalS1RouterClassifier(S1_MODEL, int(cfg.get("threads") or 2))
         return classify if os.environ.get("TYPESAFE_API_KEY") else None
     if backend == "local":
+        warnings.warn("classifier backend 'local' (Laya) answers the router's category question near chance "
+                      "(0.18 accuracy on the s1-llm-auto-router test set, mostly 'long_context'); "
+                      "use backend s1-llm-auto-router instead", RuntimeWarning, stacklevel=2)
         return LocalLayaClassifier(str(cfg.get("model") or "convaiinnovations/laya"),
                                    int(cfg.get("threads") or 4))
     if backend in LOCAL_BACKENDS:
@@ -787,12 +797,17 @@ def classifier_from_config(policy: dict | None):
     if backend in {"s1-llm-auto-router", "s1-router"}:
         from .s1_router import DEFAULT_MODEL as S1_MODEL, LocalS1RouterClassifier
         return LocalS1RouterClassifier(str(cfg.get("model") or S1_MODEL), int(cfg.get("threads") or 2))
+    if backend in {"s1-llm-auto-router-api", "s1-router-api"}:
+        from .s1_router import API_URL, HostedS1RouterClassifier
+        return HostedS1RouterClassifier(cfg.get("api_key_env"), str(cfg.get("url") or API_URL),
+                                        float(cfg.get("timeout_s") or 10.0))
     if backend in {"hosted", "jev"}:
         return classify
     if backend in {"heuristic", "none", "disabled"}:
         return None
     raise ValueError(f"unknown classifier backend {backend!r}; "
-                     "use local, local-jev, local-route-head, s1-llm-auto-router, hosted, or heuristic")
+                     "use s1-llm-auto-router, s1-llm-auto-router-api, local-jev, local-route-head, local, "
+                     "hosted, or heuristic")
 
 
 def judge_from_config(policy: dict | None):
