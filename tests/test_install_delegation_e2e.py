@@ -17,25 +17,31 @@ log and then imitates just enough of the real tool:
   copies there, as a copy of another user's file is ours but keeps its mode
   bits. Before it writes to the checkout it checks that every staged path fits:
   a file where the checkout has a directory, a directory where it has a file, a
-  symlink in the way, or an entry this user cannot write makes the fetch fail
-  and leaves the checkout and ``FETCH_*`` as they were, where real git would
-  replace an ignored entry in its way. Once those checks pass, a copy into the
-  checkout that still fails, for a reason they do not cover such as a full
-  disk, can leave it partly updated, and the fetch then says so rather than
-  that it fetched nothing. The fetch lists the files it
-  copied, separated by NUL so that any file name survives, as the commit's
-  tree, and ``checkout``
-  records a hash of each of them, plus of any file an earlier checkout
-  tracked, as the index. A fetched file is tracked even if ``.gitignore``
-  matches it, as a file added with ``git add -f`` is; any other file in the
-  checkout, such as ignored ``build/`` and ``*.egg-info/`` output, stays
-  untracked across repeated checkouts. ``status --porcelain`` compares against
-  the index, as real git does for these cases: a changed tracked file is
-  `` M``, a missing one `` D``, and a new file is ``??`` (a directory holding
-  no tracked file as ``?? dir/``) unless the ``.gitignore`` ignores it. Only the pattern forms that file uses
-  are understood (``name``, ``*.ext``, ``dir/``, ``a/b/``); there are no
-  negations, nested ignore files, staging or real objects, and status prints
-  paths unquoted where real git quotes unusual names.
+  symlink in the way, an entry this user cannot write, or a directory it cannot
+  list makes the fetch fail and leaves the checkout and ``FETCH_*`` as they
+  were, where real git would replace an ignored entry in its way or write into
+  a directory it can search but not list. Once those checks pass, the fetch
+  copies into the checkout and then checks that every file it fetched is there
+  with the staged bytes. A copy that fails, for a reason the checks do not
+  cover such as a full disk, or that ends without a fetched file, can leave the
+  checkout partly updated: the fetch then says so, rather than that it fetched
+  nothing, and leaves ``FETCH_*`` as they were, but it does not roll the
+  checkout back. The fetch lists the files it copied, separated by NUL so that
+  any file name survives, as the commit's tree, and ``checkout`` records a hash
+  of each of them, looked up by name, plus of any file an earlier checkout
+  tracked, as the index, and then moves ``HEAD``; a listed file that is missing
+  or unreadable fails the checkout and leaves the index and ``HEAD`` as they
+  were, so no fetched file drops out of the index. A fetched file is tracked
+  even if ``.gitignore`` matches it, as a file added with ``git add -f`` is;
+  any other file in the checkout, such as ignored ``build/`` and
+  ``*.egg-info/`` output, stays untracked across repeated checkouts.
+  ``status --porcelain`` compares against the index, as real git does for these
+  cases: a changed tracked file is `` M``, a missing one `` D``, and a new file
+  is ``??`` (a directory holding no tracked file as ``?? dir/``) unless the
+  ``.gitignore`` ignores it. Only the pattern forms that file uses are
+  understood (``name``, ``*.ext``, ``dir/``, ``a/b/``); there are no negations,
+  nested ignore files, staging or real objects, and status prints paths
+  unquoted where real git quotes unusual names.
 - ``python3 -m venv`` makes a directory whose ``pip`` records the call, copies
   any existing ``build/lib`` of the source into the venv's ``site-packages``,
   as setuptools keeps stale files there in the wheel, leaves ``build/`` and
@@ -104,15 +110,18 @@ case "$1" in
          # Touch the checkout only once every staged path is known to fit in it.
          "$FAKE_REAL_PYTHON" "$FAKE_BIN/git-preflight.py" "$stage" "$repo" ||
            { rm -rf "$stage" "$stage.tree"; exit 1; }
-         if ! { cp -R "$stage/." "$repo/" && mv "$stage.tree" "$repo/.git/FETCH_TREE" &&
+         # A copy that ends without every listed file in the checkout is not a fetch.
+         if ! { cp -R "$stage/." "$repo/" &&
+                "$FAKE_REAL_PYTHON" "$FAKE_BIN/git-published.py" "$stage" "$repo" &&
+                mv "$stage.tree" "$repo/.git/FETCH_TREE" &&
                 echo "$6" > "$repo/.git/FETCH_HEAD"; }; then
            rm -rf "$stage" "$stage.tree"
            echo "fake git: copying into the checkout failed part way, it may be partly updated" >&2
            exit 1
          fi
          rm -rf "$stage" ;;
-  checkout) cp "$repo/.git/FETCH_HEAD" "$repo/.git/HEAD"
-            exec "$FAKE_REAL_PYTHON" "$FAKE_BIN/git-index.py" record "$repo" ;;
+  checkout) "$FAKE_REAL_PYTHON" "$FAKE_BIN/git-index.py" record "$repo" &&
+            cp "$repo/.git/FETCH_HEAD" "$repo/.git/HEAD" ;;
   rev-parse) if [ -n "${FAKE_GIT_HEAD:-}" ]; then echo "$FAKE_GIT_HEAD"; else cat "$repo/.git/HEAD"; fi ;;
   *) exit 1 ;;
 esac
@@ -133,7 +142,9 @@ def fits(rel, is_dir):
     if not os.path.lexists(dest):
         return True
     if is_dir:
-        return os.path.isdir(dest) and os.access(dest, os.W_OK | os.X_OK)
+        # Read too: a directory this user cannot list hides what is put in it
+        # from the index walk and from the installer's copy of the checkout.
+        return os.path.isdir(dest) and os.access(dest, os.R_OK | os.W_OK | os.X_OK)
     return os.path.isfile(dest) and os.access(dest, os.W_OK)
 
 
@@ -159,6 +170,33 @@ for top, dirs, names in os.walk(stage, onerror=unreadable):
         check(os.path.normpath(os.path.join(here, name)), False)
 """
 
+# git-published.py STAGE REPO: after the copy into the checkout, check that every
+# file STAGE.tree lists is there as a regular file with its staged bytes, so a
+# copy that left one out is not passed off as a complete fetch.
+FAKE_GIT_PUBLISHED = r"""
+import os, sys
+
+stage, repo = (os.fsencode(a) for a in sys.argv[1:])
+
+
+def published(rel):
+    dest = os.path.join(repo, rel)
+    try:
+        if os.path.islink(dest) or not os.path.isfile(dest):
+            return False
+        with open(os.path.join(stage, rel), "rb") as staged, open(dest, "rb") as copied:
+            return staged.read() == copied.read()
+    except OSError:
+        return False
+
+
+with open(stage + b".tree", "rb") as tree:
+    for rel in (p for p in tree.read().split(b"\0") if p):
+        if not published(rel):
+            sys.stderr.buffer.write(b"fake git: the checkout lacks a fetched file: " + rel + b"\n")
+            sys.exit(1)
+"""
+
 # git-index.py record|status REPO: the fake git's index and its status --porcelain.
 FAKE_GIT_INDEX = r"""
 import fnmatch, hashlib, json, os, sys
@@ -167,12 +205,17 @@ mode, repo = sys.argv[1:]
 index_file = os.path.join(repo, ".git", "fake-index.json")
 
 
+def digest(path):
+    with open(path, "rb") as f:
+        return hashlib.sha256(f.read()).hexdigest()
+
+
 def files():
     for top, dirs, names in os.walk(repo):
         dirs[:] = sorted(d for d in dirs if not (top == repo and d == ".git"))
         for name in sorted(names):
             path = os.path.join(top, name)
-            yield os.path.relpath(path, repo), hashlib.sha256(open(path, "rb").read()).hexdigest()
+            yield os.path.relpath(path, repo), digest(path)
 
 
 def ignored(rel, patterns):
@@ -197,10 +240,24 @@ if mode == "record":
     # matches it, and a tracked file stays tracked; anything else in the
     # checkout, such as ignored build output, stays out of the index.
     # FETCH_TREE is NUL-separated, so a name holding a newline is one path.
+    # Each fetched file is hashed by name, not looked for in the walk, which
+    # skips a directory it cannot list: one that is missing or unreadable fails
+    # the checkout, before the index or HEAD changes, rather than drop out of
+    # the index.
     with open(os.path.join(repo, ".git", "FETCH_TREE"), "rb") as tree:
         fetched = {os.fsdecode(p) for p in tree.read().split(b"\0") if p}
-    json.dump({p: h for p, h in files() if p in fetched or p in index},
-              open(index_file, "w"))
+    recorded = {p: h for p, h in files() if p in index and p not in fetched}
+    for p in sorted(fetched):
+        path = os.path.join(repo, p)
+        try:
+            if os.path.islink(path) or not os.path.isfile(path):
+                raise FileNotFoundError(path)
+            recorded[p] = digest(path)
+        except OSError:
+            sys.stderr.buffer.write(b"fake git: the checkout lacks a fetched file, index and "
+                                    b"HEAD left as they were: " + os.fsencode(p) + b"\n")
+            sys.exit(1)
+    json.dump(recorded, open(index_file, "w"))
     sys.exit()
 tracked_dirs = {"/".join(p.split("/")[:i]) for p in index for i in range(1, p.count("/") + 1)}
 current = dict(files())
@@ -284,6 +341,7 @@ def fake(tmp_path):
     log = tmp_path / "calls.log"
     for name, body in {"git": FAKE_GIT, "git-index.py": FAKE_GIT_INDEX,
                        "git-preflight.py": FAKE_GIT_PREFLIGHT,
+                       "git-published.py": FAKE_GIT_PUBLISHED,
                        "python3": FAKE_PYTHON3, "venv-pip": FAKE_PIP,
                        "claude": FAKE_AGENT_CLI, "codex": FAKE_AGENT_CLI,
                        "cursor": NEVER_CALLED, "opencode": NEVER_CALLED,
@@ -709,6 +767,108 @@ def test_a_source_another_user_owns_but_lets_us_read_is_fetched_in_full(fake, re
     assert _fetched_in_full(upstream, repo)
     assert fake.status() == "" and len(fake.built()) == 2
     assert not list((repo / ".git").glob("fetch-stage*"))
+
+
+@needs_non_root
+def test_a_fetched_path_in_a_directory_we_cannot_list_stops_the_fetch_before_it_writes(fake):
+    upstream = _upstream(fake)
+    assert fake.run("claude", SHA).returncode == 0
+    repo = fake.base / "src"
+    rel = "scripts/subtree.local.yaml"
+    (repo / rel).mkdir()
+    (repo / rel).chmod(0o300)
+    (upstream / rel).mkdir()
+    (upstream / rel / "inside.py").write_text("UPSTREAM = 2\n")
+    with open(upstream / "scripts/install-delegation.py", "a") as f:
+        f.write("# newer upstream revision\n")
+    assert fake.status() == "", "the ignored local directory is not a local change"
+    before = _tree(repo)
+    for _ in range(2):
+        refused = fake.run("claude", SHA, "--force")
+        assert refused.returncode == 1
+        assert refused.stderr == \
+            f"fake git: the checkout cannot take a fetched path, fetched nothing: {rel}\n"
+        assert _tree(repo) == before, "no checkout file, FETCH_* or index entry changed"
+        assert not os.path.lexists(repo / rel / "inside.py")
+        assert (repo / rel).stat().st_mode & 0o777 == 0o300
+        assert fake.status() == "" and len(fake.built()) == 1
+    (repo / rel).chmod(0o700)
+    again = fake.run("claude", SHA, "--force")
+    assert again.returncode == 0, again.stderr
+    assert _fetched_in_full(upstream, repo)
+    assert set(json.loads((repo / ".git/fake-index.json").read_text())) == \
+        {str(p.relative_to(upstream)) for p in upstream.rglob("*") if p.is_file()}
+    assert fake.status() == "" and len(fake.built()) == 2
+    (repo / rel / "inside.py").write_text("LOCAL KEEP ME\n")
+    assert fake.status() == f" M {rel}/inside.py\n", "real git tracks the fetched file"
+    kept = fake.run("claude", SHA, "--force")
+    assert kept.returncode == 1 and "has local changes" in kept.stderr
+    assert (repo / rel / "inside.py").read_text() == "LOCAL KEEP ME\n" and len(fake.built()) == 2
+
+
+# This cp loses the staged file named in $FAKE_LOST just before it copies the
+# stage into the checkout, as if it vanished while cp ran: cp copies the rest
+# and succeeds.
+LOSING_CP = r"""#!/bin/sh
+case "$2" in
+  */.git/fetch-stage/.) rm -f "${2%.}$FAKE_LOST" ;;
+esac
+exec /bin/cp "$@"
+"""
+
+
+def test_a_copy_into_the_checkout_that_leaves_a_fetched_file_out_is_reported(fake):
+    upstream = _upstream(fake)
+    assert fake.run("claude", SHA).returncode == 0
+    repo = fake.base / "src"
+    rel = "scripts/probe.py"
+    (upstream / rel).write_text("PROBE = 1\n")
+    with open(upstream / "scripts/install-delegation.py", "a") as f:
+        f.write("# newer upstream revision\n")
+    cp = Path(fake.env["FAKE_BIN"]) / "cp"
+    cp.write_text(LOSING_CP)
+    cp.chmod(0o755)
+    fake.env["FAKE_LOST"] = rel
+    git_dir = {p.name: p.read_bytes() for p in (repo / ".git").iterdir()}
+    lost = fake.run("claude", SHA, "--force")
+    assert lost.returncode == 1
+    assert lost.stderr == (
+        f"fake git: the checkout lacks a fetched file: {rel}\n"
+        "fake git: copying into the checkout failed part way, it may be partly updated\n")
+    assert {p.name: p.read_bytes() for p in (repo / ".git").iterdir()} == git_dir, \
+        "FETCH_*, HEAD and the index are as they were and no stage is left"
+    assert not (repo / rel).exists() and len(fake.built()) == 1
+    assert fake.status() == " M scripts/install-delegation.py\n", "the partial update shows"
+    retry = fake.run("claude", SHA, "--force")
+    assert retry.returncode == 1 and "has local changes" in retry.stderr
+    assert len(fake.built()) == 1
+
+
+@pytest.mark.parametrize("loss", ["missing", pytest.param("unlisted", marks=needs_non_root)])
+def test_the_fake_checkout_records_every_fetched_file_or_fails(fake, loss):
+    assert fake.run("claude", SHA).returncode == 0
+    repo = fake.base / "src"
+    (repo / ".git/FETCH_HEAD").write_text("f" * 40 + "\n")
+    before = {n: (repo / ".git" / n).read_bytes() for n in ("HEAD", "fake-index.json")}
+    if loss == "missing":
+        (repo / "scripts/install-delegation.py").unlink()
+    else:
+        (repo / "scripts").chmod(0o300)
+    checkout = subprocess.run(["git", "-C", str(repo), "checkout", "-q", "--detach", "FETCH_HEAD"],
+                              env=fake.env, capture_output=True)
+    (repo / "scripts").chmod(0o755)
+    after = {n: (repo / ".git" / n).read_bytes() for n in ("HEAD", "fake-index.json")}
+    if loss == "missing":
+        assert checkout.returncode == 1
+        assert checkout.stderr == b"fake git: the checkout lacks a fetched file, index and HEAD " \
+                                  b"left as they were: scripts/install-delegation.py\n"
+        assert after == before
+    else:
+        assert checkout.returncode == 0, checkout.stderr
+        fetched = {p for p in (repo / ".git/FETCH_TREE").read_bytes().split(b"\0") if p}
+        assert {os.fsencode(p) for p in json.loads(after["fake-index.json"])} == fetched, \
+            "a file the walk cannot reach is still in the index"
+        assert after["HEAD"] == b"f" * 40 + b"\n"
 
 
 def test_a_second_install_into_the_same_home_is_not_refused(fake):
