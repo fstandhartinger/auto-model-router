@@ -443,6 +443,7 @@ Choose the routing classifier under `policy.classifier`:
 ```yaml
 classifier: {backend: local, model: convaiinnovations/laya, threads: 4}
 # classifier: {backend: local-route-head, model: benchmarkheaven/weiche-395m, variant: fp16}
+# classifier: {backend: s1-llm-auto-router, model: /path/to/s1-llm-auto-router, threads: 2}
 # classifier: {backend: local-jev, base_url: http://127.0.0.1:8081/v1, model: jevk5}
 # classifier: {backend: hosted}    # set TYPESAFE_API_KEY
 # classifier: {backend: heuristic} # zero inference cost and latency
@@ -470,6 +471,21 @@ environment that ships `hf-xet`, set `HF_HUB_DISABLE_XET=1` for that download. A
 `hf-xet` transport can abort `snapshot_download` with a `Reqwest builder error`, and this
 router then silently degrades to its Jev fallback instead of failing (independently
 observed in the round-13 review of PR #3, board #2173).
+
+**s1-llm-auto-router** (`s1-llm-auto-router`, optional, model publication pending) is a
+fine-tuned multilingual encoder (mmBERT-small, 11 layers, 183 MB ONNX, MIT base) that answers
+exactly this router's seven classifier questions in one CPU pass. It needs the same extra as Weiche
+(`pip install "auto-model-router[route-head]"`); `model` is a local directory or, once published,
+a Hugging Face repo id. On a 2,175-item held-out routing test in 22 languages (incl. SAP ABAP and
+PL/I/COBOL requests) it got the category right 89.8 % of the time (hosted Jev 84.5 %, Weiche fp16
+78.4 %), and the router picked the same model from its labels as from the gold labels 74.2 % of the
+time (Jev 63.0 %, Weiche 62.2 %). It took about 26 ms per decision (p50) on 4 dedicated CPU threads.
+These are development measurements on synthetic requests, not production traffic.
+
+**Route-head loading fix:** the fp16 Weiche files in the Hugging Face cache are symlinks, which
+ONNX Runtime 1.30+ rejects for external data ("External data path escapes model directory"); the
+router silently used its Jev fallback on every turn. Symlinked snapshots are now materialised once
+under `~/.cache/auto-router/route-head/` (`AUTO_ROUTER_CACHE` overrides the location).
 
 **A local open Jev-class model** (`local-jev`) is any decision model served
 behind an OpenAI-compatible endpoint by `llama-server` or LM Studio. The

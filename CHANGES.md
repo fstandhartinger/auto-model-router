@@ -1,5 +1,17 @@
 # Changes
 
+## Unreleased — s1-llm-auto-router classifier backend (2 Oct 2026)
+
+- **New classifier backend `s1-llm-auto-router`** (`auto_router/s1_router.py`): a fine-tuned
+  11-layer mmBERT-small with seven routing heads, run on CPU through ONNX Runtime and
+  `tokenizers` (no PyTorch). Probabilities use the per-head temperatures from the model's
+  `meta.json`; difficulty and stakes are the expected level scaled to 0..1. Any failure returns
+  `jev.FALLBACK`. Not the default. A parity test (`S1R_MODEL_DIR`) checks it against the
+  reference implementation on 50 held-out requests.
+- **Weiche fp16 loads again from the Hugging Face cache.** Snapshot symlinks made ONNX Runtime
+  1.30+ reject the external `.onnx.data` file, so every turn fell back to the cautious default.
+  Symlinked snapshots are now copied (hard-linked where possible) into a private cache directory.
+
 ## 0.5.1 — fixes found by the paired A/B study (26 Sep 2026)
 
 - **GPT-6 over the Responses API** (`api: responses` on a provider). GPT-6 Luna
