@@ -26,12 +26,24 @@ log and then imitates just enough of the real tool:
   cover such as a full disk, or that ends without a fetched file, can leave the
   checkout partly updated: the fetch then says so, rather than that it fetched
   nothing, and leaves ``FETCH_*`` as they were, but it does not roll the
-  checkout back. The fetch lists the files it copied, separated by NUL so that
+  checkout back. ``FETCH_HEAD`` and ``FETCH_TREE`` are published as one pair:
+  ``FETCH_HEAD`` is written first, in place, so a read-only one fails the fetch
+  as it does in real git, and the tree is renamed into place last; a failure in
+  either step puts the previous ``FETCH_HEAD`` back, says that publishing the
+  pair failed (not that the copy did) and leaves the previous pair, though the
+  checkout itself is already updated. Should the previous ``FETCH_HEAD`` not be
+  restorable, a ``FETCH_PENDING`` marker stays and ``checkout`` refuses the pair
+  until a fetch publishes a new one; no other failure while publishing is
+  modelled. The fetch lists the files it copied, separated by NUL so that
   any file name survives, as the commit's tree, and ``checkout`` records a hash
   of each of them, looked up by name, plus of any file an earlier checkout
   tracked, as the index, and then moves ``HEAD``; a listed file that is missing
   or unreadable fails the checkout and leaves the index and ``HEAD`` as they
-  were, so no fetched file drops out of the index. A fetched file is tracked
+  were, so no fetched file drops out of the index. The index is written to a
+  temporary file, flushed and closed with the result checked, and renamed over
+  the old one, and ``HEAD`` moves only after that: a write that fails (a full
+  disk, a file size limit) or is interrupted fails the checkout and leaves the
+  index whole, as real git does. A fetched file is tracked
   even if ``.gitignore`` matches it, as a file added with ``git add -f`` is;
   any other file in the checkout, such as ignored ``build/`` and
   ``*.egg-info/`` output, stays untracked across repeated checkouts.
@@ -112,15 +124,47 @@ case "$1" in
            { rm -rf "$stage" "$stage.tree"; exit 1; }
          # A copy that ends without every listed file in the checkout is not a fetch.
          if ! { cp -R "$stage/." "$repo/" &&
-                "$FAKE_REAL_PYTHON" "$FAKE_BIN/git-published.py" "$stage" "$repo" &&
-                mv "$stage.tree" "$repo/.git/FETCH_TREE" &&
-                echo "$6" > "$repo/.git/FETCH_HEAD"; }; then
+                "$FAKE_REAL_PYTHON" "$FAKE_BIN/git-published.py" "$stage" "$repo"; }; then
            rm -rf "$stage" "$stage.tree"
            echo "fake git: copying into the checkout failed part way, it may be partly updated" >&2
            exit 1
          fi
-         rm -rf "$stage" ;;
-  checkout) "$FAKE_REAL_PYTHON" "$FAKE_BIN/git-index.py" record "$repo" &&
+         # FETCH_HEAD and FETCH_TREE are one fetch's pair. Keep the previous
+         # FETCH_HEAD aside and mark the pair pending, write FETCH_HEAD in place
+         # (it fails if the file is read-only, as real git does) and only then
+         # rename the new tree over FETCH_TREE. If either step fails, put the
+         # previous FETCH_HEAD back; FETCH_TREE is untouched until the last step.
+         head="$repo/.git/FETCH_HEAD"
+         if ! { { [ ! -e "$head" ] || cp "$head" "$stage.oldhead"; } &&
+                : > "$repo/.git/FETCH_PENDING"; }; then
+           rm -rf "$stage" "$stage.tree" "$stage.oldhead" "$repo/.git/FETCH_PENDING"
+           echo "fake git: publishing FETCH_HEAD and FETCH_TREE failed, the previous pair is kept," \
+                "the checkout is already updated" >&2
+           exit 1
+         fi
+         if echo "$6" > "$head" && mv "$stage.tree" "$repo/.git/FETCH_TREE"; then
+           rm -rf "$stage" "$stage.oldhead" "$repo/.git/FETCH_PENDING"
+         else
+           restored=1
+           if [ -e "$stage.oldhead" ]; then
+             cmp -s "$stage.oldhead" "$head" || cat "$stage.oldhead" > "$head" || restored=
+           else
+             rm -f "$head" || restored=
+           fi
+           rm -rf "$stage" "$stage.tree" "$stage.oldhead"
+           if [ -n "$restored" ]; then
+             rm -f "$repo/.git/FETCH_PENDING"
+             echo "fake git: publishing FETCH_HEAD and FETCH_TREE failed, the previous pair is kept," \
+                  "the checkout is already updated" >&2
+           else
+             echo "fake git: publishing FETCH_HEAD and FETCH_TREE failed and the previous FETCH_HEAD" \
+                  "could not be put back, checkout will refuse them" >&2
+           fi
+           exit 1
+         fi ;;
+  checkout) [ ! -e "$repo/.git/FETCH_PENDING" ] ||
+              { echo "fake git: FETCH_HEAD and FETCH_TREE are not a pair from one fetch" >&2; exit 1; }
+            "$FAKE_REAL_PYTHON" "$FAKE_BIN/git-index.py" record "$repo" &&
             cp "$repo/.git/FETCH_HEAD" "$repo/.git/HEAD" ;;
   rev-parse) if [ -n "${FAKE_GIT_HEAD:-}" ]; then echo "$FAKE_GIT_HEAD"; else cat "$repo/.git/HEAD"; fi ;;
   *) exit 1 ;;
@@ -199,7 +243,7 @@ with open(stage + b".tree", "rb") as tree:
 
 # git-index.py record|status REPO: the fake git's index and its status --porcelain.
 FAKE_GIT_INDEX = r"""
-import fnmatch, hashlib, json, os, sys
+import fnmatch, hashlib, json, os, signal, sys
 
 mode, repo = sys.argv[1:]
 index_file = os.path.join(repo, ".git", "fake-index.json")
@@ -257,7 +301,29 @@ if mode == "record":
             sys.stderr.buffer.write(b"fake git: the checkout lacks a fetched file, index and "
                                     b"HEAD left as they were: " + os.fsencode(p) + b"\n")
             sys.exit(1)
-    json.dump(recorded, open(index_file, "w"))
+    # Publish the index atomically: a temp file next to it, flushed and closed
+    # with the result checked, then renamed over it. A failed or interrupted
+    # write leaves the previous index whole and HEAD, which the caller moves
+    # only after this exits 0, where it was.
+    temp = index_file + ".tmp"
+
+    def abandon(*_):
+        try:
+            os.unlink(temp)
+        except FileNotFoundError:
+            pass
+        sys.exit(1)
+
+    signal.signal(signal.SIGTERM, abandon)
+    try:
+        with open(temp, "w") as out:
+            json.dump(recorded, out)
+            out.flush()
+            os.fsync(out.fileno())
+        os.replace(temp, index_file)
+    except OSError as error:
+        sys.stderr.write(f"fake git: cannot write the index, index and HEAD left as they were: {error}\n")
+        abandon()
     sys.exit()
 tracked_dirs = {"/".join(p.split("/")[:i]) for p in index for i in range(1, p.count("/") + 1)}
 current = dict(files())
@@ -869,6 +935,136 @@ def test_the_fake_checkout_records_every_fetched_file_or_fails(fake, loss):
         assert {os.fsencode(p) for p in json.loads(after["fake-index.json"])} == fetched, \
             "a file the walk cannot reach is still in the index"
         assert after["HEAD"] == b"f" * 40 + b"\n"
+
+
+SHA2 = "fedcba9876543210fedcba9876543210fedcba98"
+
+# Stands in for the interpreter that runs git-index.py. For the record step only
+# it either caps file size at 512 bytes with SIGXFSZ ignored, so a write past
+# that fails with EFBIG as on a full disk ($FAKE_RECORD=fsize), or sends the
+# process SIGTERM the moment it opens an index file for writing
+# ($FAKE_RECORD=term). Every other call goes straight to the real interpreter.
+RECORD_PYTHON = r"""#!/bin/sh
+[ "$2" = record ] || exec "$FAKE_REAL" "$@"
+exec "$FAKE_REAL" -c '
+import builtins, os, resource, runpy, signal, sys
+script, *rest = sys.argv[1:]
+sys.argv = [script] + rest
+if os.environ["FAKE_RECORD"] == "fsize":
+    signal.signal(signal.SIGXFSZ, signal.SIG_IGN)
+    resource.setrlimit(resource.RLIMIT_FSIZE, (512, 512))
+else:
+    real_open = builtins.open
+    def hook(file, mode="r", *a, **k):
+        opened = real_open(file, mode, *a, **k)
+        if "w" in mode and os.path.basename(os.fspath(file)).startswith("fake-index.json"):
+            os.kill(os.getpid(), signal.SIGTERM)
+        return opened
+    builtins.open = hook
+runpy.run_path(script, run_name="__main__")
+' "$@"
+"""
+
+
+def _record_with(fake, how):
+    wrapper = fake.tmp / "record-python"
+    wrapper.write_text(RECORD_PYTHON)
+    wrapper.chmod(0o755)
+    fake.env.update(FAKE_REAL=sys.executable, FAKE_REAL_PYTHON=str(wrapper), FAKE_RECORD=how)
+
+
+def _record_normally(fake):
+    fake.env["FAKE_REAL_PYTHON"] = sys.executable
+    del fake.env["FAKE_RECORD"]
+
+
+def _git_dir(repo):
+    return {p.name: p.read_bytes() for p in (repo / ".git").iterdir()}
+
+
+def _installed_then_upstream_adds(fake):
+    """A first install, then a newer upstream commit that adds an ignored file."""
+    upstream = _upstream(fake)
+    assert fake.run("claude", SHA).returncode == 0
+    (upstream / "scripts/added.local.yaml").write_text("upstream: 2\n")
+    return fake.base / "src"
+
+
+@pytest.mark.parametrize("how", ["fsize", "term"])
+def test_a_failed_or_interrupted_index_write_leaves_the_index_and_head_alone(fake, how):
+    repo = _installed_then_upstream_adds(fake)
+    before = _git_dir(repo)
+    assert len(before["fake-index.json"]) > 512, "the cap would stop a rewrite of it"
+    _record_with(fake, how)
+    failed = fake.run("claude", SHA2, "--force")
+    assert failed.returncode != 0, "a failed index write is not an installed checkout"
+    assert "installed successfully" not in failed.stdout
+    after = _git_dir(repo)
+    assert after["fake-index.json"] == before["fake-index.json"]
+    assert after["HEAD"] == before["HEAD"]
+    assert not [n for n in after if "tmp" in n or n.startswith("fetch-stage")]
+    assert json.loads(after["fake-index.json"]), "the index still parses"
+    assert fake.status() == "", "status still runs against the old index"
+    _record_normally(fake)
+    again = fake.run("claude", SHA2, "--force")
+    assert again.returncode == 0, again.stderr
+    assert "scripts/added.local.yaml" in json.loads((repo / ".git/fake-index.json").read_text())
+    assert (repo / ".git/HEAD").read_text() == SHA2 + "\n"
+    assert fake.status() == ""
+
+
+@needs_non_root
+def test_a_fetch_whose_fetch_head_cannot_be_written_keeps_the_previous_pair(fake):
+    repo = _installed_then_upstream_adds(fake)
+    before = _git_dir(repo)
+    (repo / ".git/FETCH_HEAD").chmod(0o444)
+    refused = fake.run("claude", SHA2, "--force")
+    assert refused.returncode == 1
+    assert "publishing FETCH_HEAD and FETCH_TREE failed, the previous pair is kept" in refused.stderr
+    assert "copying into the checkout failed" not in refused.stderr
+    assert _git_dir(repo) == before, "FETCH_HEAD, FETCH_TREE, HEAD and the index are as they were"
+    assert len(fake.built()) == 1
+    direct = subprocess.run(["git", "-C", str(repo), "checkout", "-q", "--detach", "FETCH_HEAD"],
+                            env=fake.env, capture_output=True)
+    assert direct.returncode == 0, direct.stderr
+    assert "scripts/added.local.yaml" not in json.loads((repo / ".git/fake-index.json").read_text()), \
+        "no new path is indexed under the old HEAD"
+    assert (repo / ".git/HEAD").read_bytes() == before["HEAD"]
+    (repo / ".git/FETCH_HEAD").chmod(0o644)
+    again = fake.run("claude", SHA2, "--force")
+    assert again.returncode == 0, again.stderr
+    assert "scripts/added.local.yaml" in json.loads((repo / ".git/fake-index.json").read_text())
+
+
+FAILING_MV = r"""#!/bin/sh
+case "$2" in */FETCH_TREE) exit 1 ;; esac
+exec /bin/mv "$@"
+"""
+
+
+def test_a_fetch_that_cannot_promote_its_tree_puts_the_previous_fetch_head_back(fake):
+    repo = _installed_then_upstream_adds(fake)
+    before = _git_dir(repo)
+    mv = Path(fake.env["FAKE_BIN"]) / "mv"
+    mv.write_text(FAILING_MV)
+    mv.chmod(0o755)
+    refused = fake.run("claude", SHA2, "--force")
+    assert refused.returncode == 1
+    assert "publishing FETCH_HEAD and FETCH_TREE failed, the previous pair is kept" in refused.stderr
+    assert _git_dir(repo) == before
+
+
+def test_a_checkout_refuses_a_fetch_head_and_tree_that_are_not_one_fetch(fake):
+    assert fake.run("claude", SHA).returncode == 0
+    repo = fake.base / "src"
+    (repo / ".git/FETCH_HEAD").write_text(SHA2 + "\n")
+    (repo / ".git/FETCH_PENDING").write_text("")
+    before = _git_dir(repo)
+    checkout = subprocess.run(["git", "-C", str(repo), "checkout", "-q", "--detach", "FETCH_HEAD"],
+                              env=fake.env, capture_output=True)
+    assert checkout.returncode == 1
+    assert b"are not a pair from one fetch" in checkout.stderr
+    assert _git_dir(repo) == before
 
 
 def test_a_second_install_into_the_same_home_is_not_refused(fake):
