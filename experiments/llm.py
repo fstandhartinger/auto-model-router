@@ -1,6 +1,17 @@
 """Minimal OpenAI-compatible client for experiments: usage, cache fields, cost, latency.
 
-Every call is appended to a JSONL ledger so spend can be audited and capped.
+Every *attempt* is appended to a JSONL ledger so spend can be audited and capped.
+A call makes up to ``retries + 1`` attempts and each one is a row, with the same
+``tag``, its 0-based ``attempt`` and ``final`` set on the last. A metered attempt
+that ends without a billed figure (an exception, a non-200 status, a body without
+``usage``) may still have been billed upstream, so its row reserves the worst case
+in ``list_cost_usd`` while ``cost_usd`` stays 0. ``spent()`` counts the higher of
+the two per row, and the budget is re-checked before every attempt.
+
+For analysis: billed spend per tag is the sum of ``cost_usd`` over all its attempt
+rows; the ``final`` row is the one the caller saw. A reservation row has
+``cost_basis == RESERVATION_BASIS`` and ``cost_usd == 0``, so it never enters a
+billed cash figure; it is resolved against provider receipts.
 """
 
 from __future__ import annotations
@@ -9,17 +20,24 @@ import json
 import os
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
 import httpx
 
+from auto_router.cache_index import estimate_tokens
 from auto_router.catalog import ModelInfo
 from auto_router.config import Provider, RouterConfig
 from auto_router.pricing import parse_openai_usage
 
 _ledger_lock = threading.Lock()
+
+#: Measured billed/list ratio on the metered route (round 2: $0.832962 billed
+#: against $0.416481 list over 70 calls). An unpriced attempt is reserved at
+#: list price times this.
+BILLED_TO_LIST_RATIO = 2.0
+RESERVATION_BASIS = "unpriced attempt: reserved at worst case"
 
 
 class BudgetExceeded(RuntimeError):
@@ -105,8 +123,6 @@ class Client:
     def chat(self, model: ModelInfo, messages: list[dict], *, tools: list[dict] | None = None,
              max_tokens: int = 16000, tag: str = "", extra: dict | None = None,
              retries: int = 2) -> CallResult:
-        if self.spent() >= self.budget:
-            raise BudgetExceeded(f"spend {self.spent():.2f} >= budget {self.budget:.2f}")
         provider: Provider = self.config.providers[model.provider]
         payload: dict[str, Any] = {"model": model.upstream_id, "messages": messages, "max_tokens": max_tokens}
         if tools:
@@ -118,9 +134,13 @@ class Client:
         headers = {"Content-Type": "application/json", **provider.extra_headers}
         if provider.api_key:
             headers["Authorization"] = f"Bearer {provider.api_key}"
+        reserve = self._reservation(model, messages, tools, int(payload.get("max_tokens") or max_tokens))
 
         result = CallResult(ok=False)
         for attempt in range(retries + 1):
+            # Before every attempt, not once per call: a retry can be billed too.
+            if self.spent() >= self.budget:
+                raise BudgetExceeded(f"spend {self.spent():.2f} >= budget {self.budget:.2f}")
             started = time.time()
             try:
                 resp = self.http.post(f"{provider.base_url}/chat/completions", headers=headers, json=payload)
@@ -128,12 +148,16 @@ class Client:
                 data = resp.json()
             except (httpx.HTTPError, json.JSONDecodeError) as exc:
                 result = CallResult(ok=False, error=f"{type(exc).__name__}", latency_s=time.time() - started)
+                last = attempt == retries
+                self._log(model, tag, self._reserved(result, reserve), attempt=attempt, final=last)
                 time.sleep(5 * (attempt + 1))
                 continue
             if resp.status_code != 200 or not data.get("choices"):
                 err = json.dumps(data.get("error") or data)[:300]
                 result = CallResult(ok=False, error=f"HTTP {resp.status_code}: {err}", latency_s=result.latency_s)
-                if resp.status_code in (429, 500, 502, 503, 504, 520, 524) and attempt < retries:
+                retry = resp.status_code in (429, 500, 502, 503, 504, 520, 524) and attempt < retries
+                self._log(model, tag, self._reserved(result, reserve), attempt=attempt, final=not retry)
+                if retry:
                     time.sleep(15 * (attempt + 1))
                     continue
                 break
@@ -161,12 +185,34 @@ class Client:
                 cost_usd=cost, list_cost_usd=list_cost, latency_s=result.latency_s, routed_model=routed,
                 raw_message={k: v for k, v in message.items() if k in ("role", "content", "tool_calls")},
             )
+            if not usage_raw:
+                # An answer without usage may still have been billed: reserve it.
+                result = self._reserved(result, self._reservation(
+                    model, messages, tools, int(payload.get("max_tokens") or max_tokens)))
+            self._log(model, tag, result, attempt=attempt, final=True)
             break
-        self._log(model if not result.routed_model else self.router_catalog[result.routed_model], tag, result)
         return result
 
-    def _log(self, model: ModelInfo, tag: str, r: CallResult) -> None:
-        row = {"ts": time.time(), "model": model.name, "tag": tag, "ok": r.ok,
+    def _reservation(self, model: ModelInfo, messages: list[dict], tools: list[dict] | None,
+                     max_tokens: int) -> float | None:
+        """Worst-case list-cost reservation for an unpriced attempt; None on a free route."""
+        if model.prices.is_free:
+            return None
+        ref = self.list_prices.get(model.name, model)
+        prompt_estimate = estimate_tokens(messages, None, tools)
+        return ((prompt_estimate * ref.prices.input + max_tokens * ref.prices.output)
+                * BILLED_TO_LIST_RATIO / 1e6)
+
+    @staticmethod
+    def _reserved(result: CallResult, reserve: float | None) -> CallResult:
+        """The attempt's result with its cost replaced by the reservation (0 on a free route)."""
+        if reserve is None:
+            return replace(result, cost_usd=0.0, list_cost_usd=0.0)
+        return replace(result, cost_usd=0.0, list_cost_usd=reserve, cost_basis=RESERVATION_BASIS)
+
+    def _log(self, model: ModelInfo, tag: str, r: CallResult, *, attempt: int, final: bool) -> None:
+        row = {"ts": time.time(), "model": model.name, "tag": tag, "attempt": attempt, "final": final,
+               "ok": r.ok,
                "cost_basis": r.cost_basis, "prompt": r.prompt_tokens,
                "cached": r.cached_tokens, "cache_write": r.cache_write_tokens, "output": r.output_tokens,
                "reasoning": r.reasoning_tokens, "cost_usd": r.cost_usd, "list_cost_usd": r.list_cost_usd,
