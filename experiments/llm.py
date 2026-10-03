@@ -3,9 +3,9 @@
 Every *attempt* is appended to a JSONL ledger so spend can be audited and capped.
 A call makes up to ``retries + 1`` attempts and each one is a row, with the same
 ``tag``, its 0-based ``attempt`` and ``final`` set on the last. A metered attempt
-that ends without a billed figure (an exception, a non-200 status, a body without
-``usage``) may still have been billed upstream, so its row reserves the worst case
-in ``list_cost_usd`` while ``cost_usd`` stays 0. ``spent()`` counts the higher of
+that cannot be accounted for (including response-processing errors or unusable
+usage) may still have been billed upstream, so its row reserves the worst case
+in ``list_cost_usd``. Failed responses retain usable reported billing as well. ``spent()`` counts the higher of
 the two per row, and the budget is re-checked before every attempt.
 
 For analysis: billed spend per tag is the sum of ``cost_usd`` over all its attempt
@@ -134,7 +134,10 @@ class Client:
         headers = {"Content-Type": "application/json", **provider.extra_headers}
         if provider.api_key:
             headers["Authorization"] = f"Bearer {provider.api_key}"
-        reserve = self._reservation(model, messages, tools, int(payload.get("max_tokens") or max_tokens))
+        submitted_messages = payload.get("messages", messages)
+        submitted_tools = payload.get("tools", tools)
+        submitted_max_tokens = int(payload.get("max_tokens") or max_tokens)
+        reserve = self._reservation(model, submitted_messages, submitted_tools, submitted_max_tokens)
 
         result = CallResult(ok=False)
         for attempt in range(retries + 1):
@@ -142,55 +145,64 @@ class Client:
             if self.spent() >= self.budget:
                 raise BudgetExceeded(f"spend {self.spent():.2f} >= budget {self.budget:.2f}")
             started = time.time()
+            retry = False
+            attempt_model = model
+            attempt_reserve = reserve
+            routed = None
             try:
                 resp = self.http.post(f"{provider.base_url}/chat/completions", headers=headers, json=payload)
-                result.latency_s = time.time() - started
+                latency = time.time() - started
+                # Resolve the actual route before parsing either success or error bodies.
+                routed = resp.headers.get("x-router-model")
+                if routed and self.router_catalog is not None and routed in self.router_catalog:
+                    attempt_model = self.router_catalog[routed]
+                    attempt_reserve = self._reservation(
+                        attempt_model, submitted_messages, submitted_tools, submitted_max_tokens)
                 data = resp.json()
-            except (httpx.HTTPError, json.JSONDecodeError) as exc:
-                result = CallResult(ok=False, error=f"{type(exc).__name__}", latency_s=time.time() - started)
-                last = attempt == retries
-                self._log(model, tag, self._reserved(result, reserve), attempt=attempt, final=last)
-                time.sleep(5 * (attempt + 1))
-                continue
-            if resp.status_code != 200 or not data.get("choices"):
-                err = json.dumps(data.get("error") or data)[:300]
-                result = CallResult(ok=False, error=f"HTTP {resp.status_code}: {err}", latency_s=result.latency_s)
-                retry = resp.status_code in (429, 500, 502, 503, 504, 520, 524) and attempt < retries
-                self._log(model, tag, self._reserved(result, reserve), attempt=attempt, final=not retry)
-                if retry:
-                    time.sleep(15 * (attempt + 1))
-                    continue
+                failed = resp.status_code != 200 or not data.get("choices")
+                retry = failed and resp.status_code in (429, 500, 502, 503, 504, 520, 524) and attempt < retries
+                usage_raw = data.get("usage") or {}
+                usage = parse_openai_usage(usage_raw)
+                details = usage_raw.get("completion_tokens_details") or {}
+                ref = self.list_prices.get(attempt_model.name, attempt_model)
+                list_cost = (usage.uncached_input * ref.prices.input + usage.cached_read * ref.prices.read
+                             + usage.cache_write * ref.prices.write + usage.output * ref.prices.output) / 1e6
+                cost, cost_basis = _billed_cost(provider, usage_raw, usage, attempt_model, list_cost)
+                result = CallResult(
+                    ok=not failed, cost_basis=cost_basis, prompt_tokens=usage.total_input,
+                    cached_tokens=usage.cached_read, cache_write_tokens=usage.cache_write,
+                    output_tokens=usage.output, reasoning_tokens=int(details.get("reasoning_tokens") or 0),
+                    cost_usd=cost, list_cost_usd=list_cost, latency_s=latency, routed_model=routed,
+                )
+                if failed:
+                    err = json.dumps(data.get("error") or data)[:300]
+                    result.error = f"HTTP {resp.status_code}: {err}"
+                    # Keep reported billing, while reserving at least the worst case.
+                    result = self._reserved(result, attempt_reserve)
+                else:
+                    choice = data["choices"][0]
+                    message = choice.get("message") or {}
+                    content = message.get("content") or ""
+                    if isinstance(content, list):
+                        content = "".join(p.get("text", "") for p in content if isinstance(p, dict))
+                    result.content = content
+                    result.tool_calls = message.get("tool_calls") or []
+                    result.finish_reason = choice.get("finish_reason")
+                    result.raw_message = {k: v for k, v in message.items() if k in ("role", "content", "tool_calls")}
+                    if not (cost > 0 or list_cost > 0):
+                        # Nonempty usage is insufficient without usable accounting.
+                        result = self._reserved(result, attempt_reserve)
+            except (httpx.HTTPError, AttributeError, ValueError, TypeError, KeyError, IndexError) as exc:
+                # A completed post may already be billed even if its body cannot be processed.
+                result = self._reserved(CallResult(
+                    ok=False, error=f"{type(exc).__name__}", latency_s=time.time() - started,
+                    routed_model=routed), attempt_reserve)
+                retry = attempt < retries
+            # Exactly one append per dispatched attempt, including processing failures.
+            self._log(attempt_model, tag, result, attempt=attempt, final=not retry)
+            if not retry:
                 break
-            choice = data["choices"][0]
-            message = choice.get("message") or {}
-            usage_raw = data.get("usage") or {}
-            usage = parse_openai_usage(usage_raw)
-            details = usage_raw.get("completion_tokens_details") or {}
-            routed = resp.headers.get("x-router-model")
-            if routed and self.router_catalog is not None and routed in self.router_catalog:
-                model = self.router_catalog[routed]
-            ref = self.list_prices.get(model.name, model)
-            list_cost = (usage.uncached_input * ref.prices.input + usage.cached_read * ref.prices.read
-                         + usage.cache_write * ref.prices.write + usage.output * ref.prices.output) / 1e6
-            cost, cost_basis = _billed_cost(provider, usage_raw, usage, model, list_cost)
-            content = message.get("content") or ""
-            if isinstance(content, list):
-                content = "".join(p.get("text", "") for p in content if isinstance(p, dict))
-            result = CallResult(
-                ok=True, content=content, cost_basis=cost_basis,
-                tool_calls=message.get("tool_calls") or [],
-                finish_reason=choice.get("finish_reason"), prompt_tokens=usage.total_input,
-                cached_tokens=usage.cached_read, cache_write_tokens=usage.cache_write,
-                output_tokens=usage.output, reasoning_tokens=int(details.get("reasoning_tokens") or 0),
-                cost_usd=cost, list_cost_usd=list_cost, latency_s=result.latency_s, routed_model=routed,
-                raw_message={k: v for k, v in message.items() if k in ("role", "content", "tool_calls")},
-            )
-            if not usage_raw:
-                # An answer without usage may still have been billed: reserve it.
-                result = self._reserved(result, self._reservation(
-                    model, messages, tools, int(payload.get("max_tokens") or max_tokens)))
-            self._log(model, tag, result, attempt=attempt, final=True)
-            break
+            time.sleep((15 if result.error and result.error.startswith("HTTP ") else 5) * (attempt + 1))
         return result
 
     def _reservation(self, model: ModelInfo, messages: list[dict], tools: list[dict] | None,
@@ -205,10 +217,11 @@ class Client:
 
     @staticmethod
     def _reserved(result: CallResult, reserve: float | None) -> CallResult:
-        """The attempt's result with its cost replaced by the reservation (0 on a free route)."""
+        """Retain reported accounting and reserve at least the worst case (0 on free routes)."""
         if reserve is None:
             return replace(result, cost_usd=0.0, list_cost_usd=0.0)
-        return replace(result, cost_usd=0.0, list_cost_usd=reserve, cost_basis=RESERVATION_BASIS)
+        return replace(result, list_cost_usd=max(result.list_cost_usd, reserve),
+                       cost_basis=result.cost_basis if result.cost_usd > 0 else RESERVATION_BASIS)
 
     def _log(self, model: ModelInfo, tag: str, r: CallResult, *, attempt: int, final: bool) -> None:
         row = {"ts": time.time(), "model": model.name, "tag": tag, "attempt": attempt, "final": final,

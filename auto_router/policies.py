@@ -501,13 +501,13 @@ class ExpectedCostPolicy(EscalatePolicy):
         pool = candidates(req, ctx, allow_subscription=self.allow_subscription)
         if self.rule_applies(req):
             route = next((m for m in pool if m.name == self.paid_rule_route), None)
-            if route is not None:
+            if route is not None and not route.prices.is_free and not route.subscription:
                 v, p = self.value(route, conv, req, ctx, d, pool)
                 return Choice(route.name, f"operator rule: stated max_tokens {req.stated_max_tokens} >= "
                                           f"{self.paid_rule_min_max_tokens} -> {route.name}", v, p)
             choice = self._expected(conv, req, ctx, d, pool)
-            choice.reason += (f"; operator rule not applied: {self.paid_rule_route} is not a "
-                              "candidate for this turn")
+            why = "not a candidate for this turn" if route is None else "not a metered route"
+            choice.reason += f"; operator rule not applied: {self.paid_rule_route} is {why}"
             return choice
         return self._expected(conv, req, ctx, d, pool)
 
