@@ -18,7 +18,7 @@ from typing import Any, Callable
 from . import jev
 from .cache_index import CalibratedEstimator, estimate_tokens, prefix_hashes
 from .catalog import CATEGORIES, Catalog, ModelInfo
-from .config import RouterConfig
+from .config import RouterConfig, validate_paid_rule
 from .decision import (
     CacheDecision,
     EstimatedOutcome,
@@ -176,7 +176,15 @@ class Router:
                  judge: Callable[..., jev.Judgement] | None = None):
         self.config = config
         name = (config.policy or {}).get("name") or os.environ.get("AUTO_ROUTER_POLICY", "F_expected")
-        self.policy = policy or POLICIES[name]()
+        if policy is None:
+            settings = config.policy or {}
+            kwargs = {}
+            if issubclass(POLICIES[name], ExpectedCostPolicy):
+                validate_paid_rule(settings, config.catalog)
+                kwargs = {"paid_rule_route": settings.get("paid_rule_route"),
+                          "paid_rule_min_max_tokens": settings.get("paid_rule_min_max_tokens")}
+            policy = POLICIES[name](**kwargs)
+        self.policy = policy
         #: Answer verification: the policy that decides which answers are
         #: checked, and the judge that checks them. A deployment without a Jev
         #: key keeps a policy object - so the configuration still reads the
@@ -699,7 +707,7 @@ class Router:
             return TurnRequest(category="agentic" if has_tools else "general", difficulty=0.5,
                                prompt_tokens=prompt_tokens, output_tokens=max_tokens or 1500, now=now,
                                needs_tools=has_tools, stakes_usd=STAKES_USD[2], difficulty_confidence=0.0,
-                               request_chars=request_chars)
+                               request_chars=request_chars, stated_max_tokens=explicit_budget(max_tokens))
         stakes_idx = min(len(STAKES_USD) - 1, int(round(cls.stakes * (len(STAKES_USD) - 1))))
         agentic = has_tools and cls.needs_tools > 0.5
         difficulty = max(0.0, min(1.0, (cls.difficulty - self.jev_offset) / self.jev_scale))
@@ -718,6 +726,7 @@ class Router:
             difficulty_confidence=cls.difficulty_confidence,
             needs_long_context=cls.needs_long_context > 0.5,
             request_chars=request_chars,
+            stated_max_tokens=explicit_budget(max_tokens),
         )
 
     @staticmethod

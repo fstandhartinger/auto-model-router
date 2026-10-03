@@ -73,6 +73,9 @@ class TurnRequest:
     #: which the gate treats as "short enough", because the runtime's own
     #: character check runs again before any judge call is made.
     request_chars: int = 0
+    #: The caller's own ``max_tokens``, as stated (``outcome_memory.explicit_budget``).
+    #: Not ``output_tokens``: that is an estimate, capped on the classifier path.
+    stated_max_tokens: int | None = None
 
 
 @dataclass
@@ -386,9 +389,16 @@ class ExpectedCostPolicy(EscalatePolicy):
 
     def __init__(self, horizon_turns: float = 3.0, memory_half_life_s: float = 1800.0,
                  switch_margin: float = 0.0, verify: VerifyPolicy | None = None,
-                 judge_available: bool = False):
+                 judge_available: bool = False, paid_rule_route: str | None = None,
+                 paid_rule_min_max_tokens: int | None = None):
         super().__init__(horizon_turns=horizon_turns, memory_half_life_s=memory_half_life_s)
         self.switch_margin = switch_margin
+        #: An explicit operator rule, off by default: a caller that states a
+        #: ``max_tokens`` of at least this many tokens is sent to this metered
+        #: route, whatever the expected-cost ranking says. The config refuses a
+        #: free or subscription route here (config.validate_paid_rule).
+        self.paid_rule_route = paid_rule_route
+        self.paid_rule_min_max_tokens = paid_rule_min_max_tokens
         #: The answer-judge policy, when one is configured, and whether a judge
         #: can actually be called. Both matter: pricing a check that the
         #: deployment cannot perform would make cheap routes look better than
@@ -479,10 +489,29 @@ class ExpectedCostPolicy(EscalatePolicy):
             out.append((m, turn_call_cost(m, req, conv.warm_tokens(m, req.now), ctx), p, value))
         return out
 
+    def rule_applies(self, req: TurnRequest) -> bool:
+        """Is the operator rule configured and does this turn's stated budget meet it?"""
+        return (self.paid_rule_route is not None and self.paid_rule_min_max_tokens is not None
+                and req.stated_max_tokens is not None
+                and req.stated_max_tokens >= self.paid_rule_min_max_tokens)
+
     def choose(self, conv, req, ctx):
         floor = self._decayed_floor(conv, req.now)
         d = req.difficulty + max(0.0, floor - req.difficulty) * req.follow_up
         pool = candidates(req, ctx, allow_subscription=self.allow_subscription)
+        if self.rule_applies(req):
+            route = next((m for m in pool if m.name == self.paid_rule_route), None)
+            if route is not None:
+                v, p = self.value(route, conv, req, ctx, d, pool)
+                return Choice(route.name, f"operator rule: stated max_tokens {req.stated_max_tokens} >= "
+                                          f"{self.paid_rule_min_max_tokens} -> {route.name}", v, p)
+            choice = self._expected(conv, req, ctx, d, pool)
+            choice.reason += (f"; operator rule not applied: {self.paid_rule_route} is not a "
+                              "candidate for this turn")
+            return choice
+        return self._expected(conv, req, ctx, d, pool)
+
+    def _expected(self, conv, req, ctx, d, pool):
         scored = []
         for m in pool:
             v, p = self.value(m, conv, req, ctx, d, pool)

@@ -385,6 +385,31 @@ def for_http(config: RouterConfig) -> RouterConfig:
     return replace(config, catalog=Catalog(config.catalog.http_routable()))
 
 
+def validate_paid_rule(policy: dict, catalog: Catalog) -> None:
+    """Refuse an operator paid-routing rule that would not pay for anything.
+
+    ``policy.paid_rule_route`` must name a metered route in the catalog: a rule
+    that "pays" for a free or subscription route is vacuous, and a name the
+    catalog does not know can never fire. ``paid_rule_min_max_tokens`` must be a
+    positive integer. Both stay flat scalars so ``policy_identity`` hashes them.
+    """
+    route = (policy or {}).get("paid_rule_route")
+    threshold = (policy or {}).get("paid_rule_min_max_tokens")
+    if route is not None:
+        model = catalog.get(route) if isinstance(route, str) else None
+        if model is None:
+            raise ValueError(f"policy.paid_rule_route {route!r} is not a route in the catalog")
+        if model.subscription:
+            raise ValueError(f"policy.paid_rule_route {route!r} is a subscription route; "
+                             "the rule must name a metered route")
+        if model.prices.is_free:
+            raise ValueError(f"policy.paid_rule_route {route!r} is a free route; "
+                             "the rule must name a metered route")
+    if threshold is not None and (isinstance(threshold, bool) or not isinstance(threshold, int)
+                                  or threshold <= 0):
+        raise ValueError(f"policy.paid_rule_min_max_tokens must be a positive integer, got {threshold!r}")
+
+
 def load_config(path: str | Path | None = None, *, bench: BenchmarkClient | None = None,
                 use_bench: bool = True) -> RouterConfig:
     path = path or os.environ.get("AUTO_ROUTER_CONFIG")
@@ -416,6 +441,7 @@ def load_config(path: str | Path | None = None, *, bench: BenchmarkClient | None
                           subscriptions=raw.get("subscriptions") or {},
                           policy=policy, raw=raw,
                           intelligence_reference=resolve_reference(policy, client))
+    validate_paid_rule(policy, config.catalog)
     if refs:
         config.reference_models = Catalog([build_model(e, providers, client)
                                            for e in raw.get("models") or []
