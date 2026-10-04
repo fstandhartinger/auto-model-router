@@ -9,14 +9,15 @@ in ``list_cost_usd``. Failed responses retain usable reported billing as well. `
 the two per row, and the budget is re-checked before every attempt.
 
 For analysis: billed spend per tag is the sum of ``cost_usd`` over all its attempt
-rows; the ``final`` row is the one the caller saw. A reservation row has
-``cost_basis == RESERVATION_BASIS`` and ``cost_usd == 0``, so it never enters a
-billed cash figure; it is resolved against provider receipts.
+rows; the ``final`` row is the one the caller saw. A reservation without known
+billing has ``cost_basis == RESERVATION_BASIS`` and ``cost_usd == 0``; known
+charges retain their reported basis. Reservations are resolved against provider receipts.
 """
 
 from __future__ import annotations
 
 import json
+import math
 import os
 import threading
 import time
@@ -66,6 +67,18 @@ class CallResult:
     raw_message: dict = field(default_factory=dict)
 
 
+def _reported_cost(usage_raw: dict) -> tuple[float, str] | None:
+    """Extract usable reported billing without interpreting any token fields."""
+    details = usage_raw.get("cost_details")
+    upstream = details.get("upstream_inference_cost") if isinstance(details, dict) else None
+    for value, basis in ((upstream, "gateway-reported upstream inference cost"),
+                         (usage_raw.get("cost"), "gateway-reported cost")):
+        if (isinstance(value, (int, float)) and not isinstance(value, bool)
+                and value > 0 and math.isfinite(value)):
+            return float(value), basis
+    return None
+
+
 def _billed_cost(provider, usage_raw: dict, usage, model: ModelInfo,
                  list_cost: float) -> tuple[float, str]:
     """What this call actually cost, and on what basis.
@@ -77,13 +90,10 @@ def _billed_cost(provider, usage_raw: dict, usage, model: ModelInfo,
     printed "$0.0000" for an arm that had just spent sixteen cents - the exact
     mistake this project refuses to make elsewhere, made here.
     """
-    details = usage_raw.get("cost_details") or {}
-    upstream = details.get("upstream_inference_cost")
-    if isinstance(upstream, (int, float)) and upstream > 0:
-        return float(upstream), "gateway-reported upstream inference cost"
+    known = _reported_cost(usage_raw)
+    if known is not None:
+        return known
     reported = usage_raw.get("cost")
-    if isinstance(reported, (int, float)) and reported > 0:
-        return float(reported), "gateway-reported cost"
     if model.prices.is_free:
         return 0.0, "route configured as free"
     if isinstance(reported, (int, float)) and reported == 0 and usage_raw.get("is_byok"):
@@ -149,6 +159,7 @@ class Client:
             attempt_model = model
             attempt_reserve = reserve
             routed = None
+            result = CallResult(ok=False)  # Accounting belongs only to this attempt.
             try:
                 resp = self.http.post(f"{provider.base_url}/chat/completions", headers=headers, json=payload)
                 latency = time.time() - started
@@ -159,9 +170,12 @@ class Client:
                     attempt_reserve = self._reservation(
                         attempt_model, submitted_messages, submitted_tools, submitted_max_tokens)
                 data = resp.json()
+                usage_raw = data.get("usage") or {}
+                known = _reported_cost(usage_raw)
+                if known is not None:
+                    result.cost_usd, result.cost_basis = known
                 failed = resp.status_code != 200 or not data.get("choices")
                 retry = failed and resp.status_code in (429, 500, 502, 503, 504, 520, 524) and attempt < retries
-                usage_raw = data.get("usage") or {}
                 usage = parse_openai_usage(usage_raw)
                 details = usage_raw.get("completion_tokens_details") or {}
                 ref = self.list_prices.get(attempt_model.name, attempt_model)
@@ -171,9 +185,10 @@ class Client:
                 result = CallResult(
                     ok=not failed, cost_basis=cost_basis, prompt_tokens=usage.total_input,
                     cached_tokens=usage.cached_read, cache_write_tokens=usage.cache_write,
-                    output_tokens=usage.output, reasoning_tokens=int(details.get("reasoning_tokens") or 0),
+                    output_tokens=usage.output,
                     cost_usd=cost, list_cost_usd=list_cost, latency_s=latency, routed_model=routed,
                 )
+                result.reasoning_tokens = int(details.get("reasoning_tokens") or 0)
                 if failed:
                     err = json.dumps(data.get("error") or data)[:300]
                     result.error = f"HTTP {resp.status_code}: {err}"
@@ -194,7 +209,7 @@ class Client:
                         result = self._reserved(result, attempt_reserve)
             except (httpx.HTTPError, AttributeError, ValueError, TypeError, KeyError, IndexError) as exc:
                 # A completed post may already be billed even if its body cannot be processed.
-                result = self._reserved(CallResult(
+                result = self._reserved(replace(result,
                     ok=False, error=f"{type(exc).__name__}", latency_s=time.time() - started,
                     routed_model=routed), attempt_reserve)
                 retry = attempt < retries
@@ -219,13 +234,13 @@ class Client:
     def _reserved(result: CallResult, reserve: float | None) -> CallResult:
         """Retain reported accounting and reserve at least the worst case (0 on free routes)."""
         if reserve is None:
-            return replace(result, cost_usd=0.0, list_cost_usd=0.0)
+            return replace(result, list_cost_usd=0.0)
         return replace(result, list_cost_usd=max(result.list_cost_usd, reserve),
                        cost_basis=result.cost_basis if result.cost_usd > 0 else RESERVATION_BASIS)
 
     def _log(self, model: ModelInfo, tag: str, r: CallResult, *, attempt: int, final: bool) -> None:
         row = {"ts": time.time(), "model": model.name, "tag": tag, "attempt": attempt, "final": final,
-               "ok": r.ok,
+               "ok": r.ok, "routed_model": r.routed_model,
                "cost_basis": r.cost_basis, "prompt": r.prompt_tokens,
                "cached": r.cached_tokens, "cache_write": r.cache_write_tokens, "output": r.output_tokens,
                "reasoning": r.reasoning_tokens, "cost_usd": r.cost_usd, "list_cost_usd": r.list_cost_usd,

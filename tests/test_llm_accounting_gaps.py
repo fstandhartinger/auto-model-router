@@ -129,3 +129,92 @@ def test_unknown_routed_failure_keeps_original_envelope(tmp_path):
     c.chat(METERED, MESSAGES, max_tokens=MAX_TOKENS, retries=0)
     assert rows(c)[0]["model"] == METERED.name
     assert c.spent() == pytest.approx(RESERVE)
+
+
+CHARGED_MALFORMED_BODIES = [
+    {"choices": [None], "usage": {"prompt_tokens": 120, "completion_tokens": 30, "cost": 0.5}},
+    {"choices": [{"message": {"content": "hi"}}],
+     "usage": {"prompt_tokens": "unknown", "cost": 0.5}},
+    {"error": {"message": "failed after inference"},
+     "usage": {"prompt_tokens": 120, "completion_tokens": 30, "cost": 0.5,
+               "completion_tokens_details": {"reasoning_tokens": "unknown"}}},
+]
+
+
+@pytest.mark.parametrize("body", CHARGED_MALFORMED_BODIES,
+                         ids=["choices", "tokens", "reasoning-details"])
+def test_reported_billing_survives_processing_failure(tmp_path, body):
+    c, posts = client(tmp_path, [(200, body)])
+    result = c.chat(METERED, MESSAGES, max_tokens=MAX_TOKENS, retries=0)
+    assert not result.ok
+    assert len(posts) == len(rows(c)) == 1
+    [row] = rows(c)
+    assert row["cost_usd"] == pytest.approx(0.5)
+    assert result.cost_usd == pytest.approx(0.5)
+    assert row["cost_basis"] == "gateway-reported cost"
+    assert row["list_cost_usd"] >= RESERVE
+    assert c.spent() == pytest.approx(max(0.5, row["list_cost_usd"]))
+    assert c.spent() >= 0.5
+    assert row["routed_model"] is None
+
+
+def test_known_over_budget_charge_stops_processing_failure_retry(tmp_path):
+    c, posts = client(tmp_path, [(200, CHARGED_MALFORMED_BODIES[0]), (200, OK_BODY)], budget=0.3)
+    with pytest.raises(llm.BudgetExceeded):
+        c.chat(METERED, MESSAGES, max_tokens=MAX_TOKENS)
+    assert len(posts) == len(rows(c)) == 1
+    assert rows(c)[0]["cost_usd"] == pytest.approx(0.5)
+    assert c.spent() == pytest.approx(0.5)
+
+
+def test_unknown_route_header_retained_in_reservation_ledger(tmp_path):
+    c, posts = client(tmp_path, [])
+    c.router_catalog = {METERED.name: METERED}
+
+    def respond(request):
+        posts.append(request)
+        return httpx.Response(500, json={}, headers={"x-router-model": "unknown-routed-model"})
+
+    c.http = httpx.Client(transport=httpx.MockTransport(respond))
+    result = c.chat(METERED, MESSAGES, max_tokens=MAX_TOKENS, retries=0)
+    assert len(posts) == len(rows(c)) == 1
+    assert result.routed_model == rows(c)[0]["routed_model"] == "unknown-routed-model"
+    assert rows(c)[0]["model"] == METERED.name
+    assert c.spent() == pytest.approx(RESERVE)
+
+
+@pytest.mark.parametrize("usage,expected,basis", [
+    ({"prompt_tokens": "unknown", "cost": 0,
+      "cost_details": {"upstream_inference_cost": 0.5}}, 0.5,
+     "gateway-reported upstream inference cost"),
+    ({"prompt_tokens": "unknown", "cost": 0.01, "cost_details": "malformed"}, 0.01,
+     "gateway-reported cost"),
+])
+def test_reported_charge_extracted_independently_of_token_and_cost_details(tmp_path, usage, expected, basis):
+    c, _ = client(tmp_path, [(200, {"choices": [None], "usage": usage})])
+    result = c.chat(METERED, MESSAGES, max_tokens=MAX_TOKENS, retries=0)
+    [row] = rows(c)
+    assert not result.ok
+    assert row["cost_usd"] == pytest.approx(expected)
+    assert row["cost_basis"] == basis
+    assert c.spent() == pytest.approx(max(expected, RESERVE))
+
+
+def test_processing_failure_accounting_does_not_leak_to_next_attempt(tmp_path):
+    c, posts = client(tmp_path, [(200, CHARGED_MALFORMED_BODIES[0]),
+                                 httpx.ReadTimeout("slow"), (200, OK_BODY)])
+    result = c.chat(METERED, MESSAGES, max_tokens=MAX_TOKENS)
+    assert result.ok
+    assert len(posts) == len(rows(c)) == 3
+    assert [r["cost_usd"] for r in rows(c)] == pytest.approx([0.5, 0, OK_BODY["usage"]["cost"]])
+    assert rows(c)[1]["cost_basis"] == llm.RESERVATION_BASIS
+    assert c.spent() == pytest.approx(0.5 + RESERVE + OK_BODY["usage"]["cost"])
+
+
+def test_known_charge_on_configured_free_route_is_retained(tmp_path):
+    c, _ = client(tmp_path, [(200, CHARGED_MALFORMED_BODIES[0])])
+    result = c.chat(FREE, MESSAGES, max_tokens=MAX_TOKENS, retries=0)
+    assert not result.ok
+    assert rows(c)[0]["cost_usd"] == pytest.approx(0.5)
+    assert rows(c)[0]["list_cost_usd"] == 0
+    assert c.spent() == pytest.approx(0.5)
