@@ -20,11 +20,14 @@ import json
 import os
 import threading
 import time
+import warnings
 
 from . import jev
 
 DEFAULT_MODEL = "benchmarkheaven/weiche-395m"
 VARIANTS = {"fp32": "model.onnx", "fp16": "model_fp16.onnx", "int8": "model_int8.onnx", "int4": "model_int4.onnx"}
+#: Published quantised exports whose outputs are near chance; they are mapped to fp16.
+BROKEN_VARIANTS = {"int8"}
 CATS = ["coding", "agentic", "math", "knowledge", "long_context", "tool_use", "design", "summarisation", "general"]
 NOULS = ["needs_tools", "needs_vision", "needs_long_context", "follow_up"]
 TIERS = ["small", "mid", "strong"]
@@ -42,12 +45,51 @@ def render(request: str, context: str = "") -> str:
     return f"Context: {ctx}\nRequest: {req}"
 
 
+def _materialise(root: str, name: str) -> str:
+    """Return a directory where the model and its external data are real files, not symlinks.
+
+    The Hugging Face cache stores snapshot files as symlinks into ``blobs/``. ONNX Runtime 1.30+
+    rejects external data whose resolved path leaves the model directory ("External data path
+    escapes model directory"), so a symlinked ``.onnx.data`` made every turn fall back silently.
+    Symlinked snapshots are copied once (hard links when possible) into a private cache directory.
+    """
+    files = [name, name + ".data", "tokenizer.json", "router_head_config.json"]
+    if not any(os.path.islink(os.path.join(root, f)) for f in files):
+        return root
+    import hashlib
+    import shutil
+    key = hashlib.sha256(os.path.realpath(os.path.join(root, name)).encode()).hexdigest()[:16]
+    cache = os.environ.get("AUTO_ROUTER_CACHE") or os.path.join(os.path.expanduser("~"), ".cache", "auto-router")
+    out = os.path.join(cache, "route-head", f"{os.path.splitext(name)[0]}-{key}")
+    if os.path.exists(os.path.join(out, ".complete")):
+        return out
+    os.makedirs(out, exist_ok=True)
+    for f in files:
+        src = os.path.join(root, f)
+        if not os.path.exists(src):
+            continue
+        dst = os.path.join(out, f)
+        if os.path.lexists(dst):
+            os.remove(dst)
+        try:
+            os.link(os.path.realpath(src), dst)
+        except OSError:
+            shutil.copyfile(os.path.realpath(src), dst)
+    open(os.path.join(out, ".complete"), "w").close()
+    return out
+
+
 class LocalRouteHeadClassifier:
     """Lazy ONNX route-head classifier with the same result shape as hosted Jev."""
 
     def __init__(self, model: str = DEFAULT_MODEL, variant: str = "fp16", threads: int = 2):
         if variant not in VARIANTS:
             raise ValueError(f"unknown route-head variant {variant!r}; use one of {sorted(VARIANTS)}")
+        if variant in BROKEN_VARIANTS:
+            warnings.warn(f"route-head variant {variant!r} gives near-chance answers (measured category 0.19, "
+                          "stakes 0.04 on a 585-request test set); using 'fp16' instead",
+                          RuntimeWarning, stacklevel=2)
+            variant = "fp16"
         self.model = model
         self.variant = variant
         self.threads = max(1, int(threads))
@@ -58,11 +100,11 @@ class LocalRouteHeadClassifier:
 
     def _files(self) -> str:
         if os.path.isdir(self.model):
-            return self.model
+            return _materialise(self.model, VARIANTS[self.variant])
         from huggingface_hub import snapshot_download
         name = VARIANTS[self.variant]
-        return snapshot_download(self.model, allow_patterns=[name, name + ".data", "tokenizer.json",
-                                                             "router_head_config.json"])
+        return _materialise(snapshot_download(self.model, allow_patterns=[name, name + ".data", "tokenizer.json",
+                                                                          "router_head_config.json"]), name)
 
     def _load(self):
         if self._session is None:
