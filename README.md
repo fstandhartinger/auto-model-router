@@ -1212,3 +1212,9 @@ implemented or live-tested here.
 ## Licence
 
 MIT
+
+## Inference Routing Protocol (IRP)
+
+IRP v0.3.0-draft suggest-only model discovery and candidate ranking are available at
+`GET /v1/routing/models` and `POST /v1/routing/rank`. See [the wire contract,
+public curl example and conformance scope](docs/irp.md).
