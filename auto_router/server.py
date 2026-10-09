@@ -53,6 +53,10 @@ app = FastAPI(title="auto-model-router", version="0.5.1")
 #: surface never sees them. See ``config.for_http`` and ``launcher.py``.
 config: RouterConfig = for_http(load_config())
 router = Router(config)
+
+# IRP suggest-only shares the configured catalog and classifier, with no proxy side effects.
+from .irp import endpoints as irp_endpoints
+app.include_router(irp_endpoints(lambda: router))
 _client: httpx.AsyncClient | None = None
 TIMEOUT = float(os.environ.get("AUTO_ROUTER_TIMEOUT_S", "600"))
 MAX_ATTEMPTS = int(os.environ.get("AUTO_ROUTER_MAX_ATTEMPTS", "3"))
