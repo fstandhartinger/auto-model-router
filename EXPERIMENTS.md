@@ -1072,6 +1072,24 @@ HTML structure, not appearance. The run used API routes only; it says nothing ab
 or local routes. The router's measured setting also omitted answer checks and retries. Method and
 machine-readable aggregate results are in [`evaluation/paired-router-ab-20260929/`](evaluation/paired-router-ab-20260929/).
 
+## 20. Round-3 metered-arm supplement: a real cash difference (12 Oct 2026)
+
+The round-2 runs above could not show a cash difference because the router's own
+catalog had no capable *paid* route — with a free capable route present, the expected
+policy keeps choosing it and the router-arm cash difference stays $0. Round 3 is the
+pre-registered metered-arm supplement that changes exactly that: a default-off operator
+rule routes the 14 long-output (design) tasks to the metered `gpt-5.6-sol` (stated output
+budget 12000 ≥ 10000) and the other 56 to the free `kimi-k3`. On that registered 70-task
+set the router's billed inference spend was **$0.594188 versus $0.791442** for sending
+all 70 to `gpt-5.6-sol` (paired difference **$0.197254**, 95% CI $0.081624–$0.281017);
+**$0.196794** of it came from the 56 free-routed pairs (95% CI $0.164404–$0.228941). No
+stop condition fired and the receipts reconcile to the cent. This run gives the router a
+measurable cash figure on the registered set — it is *not* a publication, and no
+percentage-saving, payment-benefit, or quality-superiority claim is made. Full external
+evidence anchor (frozen-input digests, run digests, review chain, probe-budget decision,
+and the one authorised claim):
+[`docs/round3-metered-evidence-anchor.md`](docs/round3-metered-evidence-anchor.md).
+
 ## Limits
 
 - Cells hold 4–6 tasks; task difficulty for real traffic is a proxy (calls per turn).
