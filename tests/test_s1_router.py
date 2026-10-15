@@ -207,6 +207,21 @@ def test_decisionmodels_null_ordinal_answer_falls_back(monkeypatch, field):
     assert s1_router.DecisionModelsClassifier()("hi") is jev.FALLBACK
 
 
+@pytest.mark.parametrize("usage", [[], "", 0, False])
+def test_decisionmodels_falsy_wrong_typed_usage_falls_back(monkeypatch, usage):
+    monkeypatch.setenv("DECISIONMODELS_API_KEY", "k")
+    monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout: Resp({"answers": _api_answers(), "usage": usage}))
+    assert s1_router.DecisionModelsClassifier()("hi") is jev.FALLBACK
+
+
+def test_decisionmodels_omitted_usage_still_classifies(monkeypatch):
+    monkeypatch.setenv("DECISIONMODELS_API_KEY", "k")
+    monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout: Resp({"answers": _api_answers()}))
+    out = s1_router.DecisionModelsClassifier()("hi")
+    assert out is not jev.FALLBACK and not out.failed and out.category == "math"
+    assert out.source == "decisionmodels" and out.input_tokens == 0 and out.output_tokens == 0
+
+
 @pytest.mark.skipif(not os.environ.get("S1_LIVE_MODEL"), reason="set S1_LIVE_MODEL=1 (pinned model already in the HF cache; the suite blocks network)")
 def test_pinned_revision_loads_and_routes_real_requests():
     pytest.importorskip("onnxruntime"); pytest.importorskip("tokenizers"); pytest.importorskip("huggingface_hub")

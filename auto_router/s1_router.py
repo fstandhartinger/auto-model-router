@@ -184,7 +184,8 @@ class LocalS1Classifier:
 def classification_from_answers(a: dict, *, latency_s: float, model: str, usage: dict | None = None,
                                 source_name: str = HOSTED_SOURCE) -> jev.Classification:
     """Turn a ``/v1/systemone`` answer set for the seven questions into a ``jev.Classification``."""
-    usage = usage or {}
+    if usage is None:  # only an omitted/null usage defaults; any other non-dict is malformed
+        usage = {}
     # Validate shapes up front so malformed answers raise TypeError (caught by the caller), never AttributeError.
     if not isinstance(a, dict) or not all(isinstance(a.get(q), dict) for q in QUESTIONS) \
             or not isinstance(a["category"].get("choice"), str) or not isinstance(usage, dict):
