@@ -74,7 +74,7 @@ The run's raw `calls.jsonl`/`ledger.jsonl` were re-aggregated independently and
 ### Receipts (reconciled to the cent)
 
 OpenRouter `byok_usage` 64.211802235 → 65.597736235 = **$1.385934** = health $0.000304 +
-run $1.385630 (residual $0.000000). Chutes balance 5.0 → 5.0 = $0. OpenRouter credits
+run $1.385630 (residual $0.000000). Second BYOK provider balance 5.0 → 5.0 = $0. OpenRouter credits
 `total_usage` delta $0.000001642 = the disclosed BYOK fee for the health-plus-run window
 (not part of the 70-pair billed-inference figures). Health billed spend $0.000304 is
 excluded from the comparison. Run billed inference $1.385630 < the $2.50 cap.
