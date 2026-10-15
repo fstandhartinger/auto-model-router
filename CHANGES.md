@@ -1,5 +1,16 @@
 # Changes
 
+## Unreleased — s1-llm-auto-router classifier backends
+
+- **`local-s1` classifier backend** (`auto_router/s1_router.py`, extra `[s1-router]`): the open
+  s1-llm-auto-router (MIT) on CPU through ONNX Runtime and `tokenizers`; no PyTorch, no server code.
+  Files come from a pinned Hugging Face revision and are verified against pinned SHA-256 digests
+  before loading. Difficulty and stakes are the expected level scaled to 0..1, as in the model
+  card's routing-agreement evaluation. Failures return the cautious fallback.
+- **`decisionmodels` classifier backend**: the same model through `api.decisionmodels.io`, key from
+  `DECISIONMODELS_API_KEY` (or `api_key_env`), never logged. Aliases `s1-llm-auto-router` /
+  `s1-llm-auto-router-api`. The default classifier is unchanged.
+
 ## 0.5.1 — fixes found by the paired A/B study (26 Sep 2026)
 
 - **GPT-6 over the Responses API** (`api: responses` on a provider). GPT-6 Luna

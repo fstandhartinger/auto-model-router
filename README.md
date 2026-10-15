@@ -442,6 +442,8 @@ Choose the routing classifier under `policy.classifier`:
 
 ```yaml
 classifier: {backend: local, model: convaiinnovations/laya, threads: 4}
+# classifier: {backend: local-s1, threads: 2}   # s1-llm-auto-router, open weights, CPU
+# classifier: {backend: decisionmodels}         # same model, hosted; set DECISIONMODELS_API_KEY
 # classifier: {backend: local-route-head, model: benchmarkheaven/weiche-395m, variant: fp16}
 # classifier: {backend: local-jev, base_url: http://127.0.0.1:8081/v1, model: jevk5}
 # classifier: {backend: hosted}    # set TYPESAFE_API_KEY
@@ -451,6 +453,23 @@ classifier: {backend: local, model: convaiinnovations/laya, threads: 4}
 Local means the scrubbed routing input stays on the machine. Hosted uses the
 existing Jev API path. If local inference or model loading fails, routing falls
 back cautiously instead of failing the user's LLM call.
+
+**s1-llm-auto-router** (`local-s1` or `decisionmodels`) is an open (MIT) 183 MB routing model
+from Decision Models: `mmBERT-small` with seven typed heads, one CPU pass per decision
+([model card](https://huggingface.co/decisionmodels/s1-llm-auto-router)). It answers exactly the
+router's seven classifier questions (category, difficulty, stakes, needs_tools, needs_vision,
+needs_long_context, follow_up). `local-s1` runs it through ONNX Runtime and `tokenizers` (no
+PyTorch, no model server: `pip install "auto-model-router[s1-router]"`). The three files are fetched
+from a pinned Hugging Face revision and checked against pinned SHA-256 digests before they are
+loaded; a mismatch makes routing fall back cautiously instead of running unverified weights.
+`decisionmodels` sends the same seven questions to `api.decisionmodels.io` (model id
+`s1-llm-auto-router`) with your own key in `DECISIONMODELS_API_KEY`; the key is read from the
+environment and never logged. Difficulty and stakes are the model's expected level scaled to 0..1.
+On the model card's held-out set of 2,175 requests it got the category right 89.8 % of the time and
+picked the same model as the gold labels in 74.2 % of cases (hosted Jev 1.13: 84.5 % and 63.0 %);
+that comparison is the vendor's own, so read the card's limitations. Measured for this router on a
+12-core x86-64 server: about 18 ms median per decision on one or two threads once loaded (the first
+call after a start loads the model, about 2 to 3 s), 650 MB peak RAM.
 
 **Weiche** (`local-route-head`, optional) is a 395M routing model trained for this router
 ([model card](https://huggingface.co/benchmarkheaven/weiche-395m),
