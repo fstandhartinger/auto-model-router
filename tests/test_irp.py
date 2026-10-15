@@ -184,6 +184,15 @@ def test_numeric_overflow_limits_and_multiple_completions(router):
     assert all(two[c]['expected_usage']['output_tokens']==2*one[c]['expected_usage']['output_tokens'] for c in one)
 
 
+def test_irp_overflow_400_must_not_consume_classifier(router):
+    calls=[]
+    router.classifier=lambda *args:calls.append(args)
+    b=body([candidate('a','test/small')]);b['routing']['candidates'][0]['pricing']['input']=1e308
+    b['request']['messages'][0]['content']='x'*4000
+    r=client_for(router).post('/v1/routing/rank',json=b)
+    assert r.status_code==400 and 'numeric range' in r.json()['detail'] and calls==[]
+
+
 @pytest.mark.parametrize('field', ['id', 'model'])
 def test_surrogate_strings_are_invalid_problem_json(router,field):
     b=body();b['routing']['candidates'][0][field]='\ud800'

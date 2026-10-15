@@ -185,6 +185,10 @@ def classification_from_answers(a: dict, *, latency_s: float, model: str, usage:
                                 source_name: str = HOSTED_SOURCE) -> jev.Classification:
     """Turn a ``/v1/systemone`` answer set for the seven questions into a ``jev.Classification``."""
     usage = usage or {}
+    # Validate shapes up front so malformed answers raise TypeError (caught by the caller), never AttributeError.
+    if not isinstance(a, dict) or not all(isinstance(a.get(q), dict) for q in QUESTIONS) \
+            or not isinstance(a["category"].get("choice"), str) or not isinstance(usage, dict):
+        raise TypeError("malformed /v1/systemone answers")
     return jev.Classification(
         category=a["category"]["choice"], category_probs=a["category"].get("probabilities") or {},
         category_confidence=jev._confidence(a["category"]),
@@ -221,5 +225,6 @@ class DecisionModelsClassifier:
             return classification_from_answers(
                 payload["answers"], latency_s=time.perf_counter() - started,
                 model=str(payload.get("model") or MODEL_ID), usage=payload.get("usage"))
-        except (urllib.error.URLError, KeyError, TypeError, ValueError, RuntimeError, OSError):
+        except (urllib.error.URLError, KeyError, TypeError, ValueError, RuntimeError, OSError,
+                AttributeError, OverflowError):
             return jev.FALLBACK  # an API outage must never take down the routed LLM call

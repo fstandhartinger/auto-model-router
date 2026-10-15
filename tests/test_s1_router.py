@@ -198,6 +198,15 @@ def test_decisionmodels_malformed_answer_falls_back(monkeypatch):
     assert s1_router.DecisionModelsClassifier()("hi") is jev.FALLBACK
 
 
+@pytest.mark.parametrize("field", ["difficulty", "stakes"])
+def test_decisionmodels_null_ordinal_answer_falls_back(monkeypatch, field):
+    answers = _api_answers()
+    answers[field] = None
+    monkeypatch.setenv("DECISIONMODELS_API_KEY", "k")
+    monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout: Resp({"answers": answers}))
+    assert s1_router.DecisionModelsClassifier()("hi") is jev.FALLBACK
+
+
 @pytest.mark.skipif(not os.environ.get("S1_LIVE_MODEL"), reason="set S1_LIVE_MODEL=1 (pinned model already in the HF cache; the suite blocks network)")
 def test_pinned_revision_loads_and_routes_real_requests():
     pytest.importorskip("onnxruntime"); pytest.importorskip("tokenizers"); pytest.importorskip("huggingface_hub")

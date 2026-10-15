@@ -159,6 +159,16 @@ def supported(config) -> dict:
             "extra": {NAMESPACE: {"mode": "suggest-only", "protocol": "0.3.0-draft"}}}
 
 
+def _cost(prices: dict, input_tokens: int, cache: int, output: int) -> float:
+    try:
+        cost = ((input_tokens - cache) * prices["input"] + cache * prices["cache_read"] + output * prices["output"]) / 1e6
+    except OverflowError:
+        raise Problem(400, "Candidate prices and usage exceed the supported numeric range.")
+    if not math.isfinite(cost):
+        raise Problem(400, "Candidate prices and usage exceed the supported numeric range.")
+    return cost
+
+
 def rank(router, body: Any) -> dict:
     request, tradeoff, candidates = validate(body)
     index = model_index(router.config)
@@ -166,9 +176,17 @@ def rank(router, body: Any) -> dict:
     # Include every supplied message, tool schema and modality in usage estimates.
     # A fixed estimator keeps these predictions independent of live proxy state.
     prompt = estimate_tokens(messages, None, request.get("tools"))
+    budget = request.get("max_completion_tokens", request.get("max_tokens"))
+    # Reject out-of-range prices before classifying: the classifier-independent output
+    # bound gives an upper-bound cost, so the in-loop check below can never fail later.
+    for candidate in candidates:
+        found = index.get(candidate["model"])
+        if found is not None:
+            cache = candidate["cache_read_tokens"]
+            bound = min(found[0].max_output_tokens, budget if budget is not None else found[0].max_output_tokens)
+            _cost(candidate["pricing"], max(prompt, cache), cache, bound * request.get("n", 1))
     from .router import last_user_text
     cls = router.classifier(last_user_text(messages), router._summary(messages, request.get("tools"))) if router.classifier else None
-    budget = request.get("max_completion_tokens", request.get("max_tokens"))
     req = router._turn_request(cls, prompt, budget, time.time(), bool(request.get("tools")), messages)
     ranked = []
     for candidate in candidates:
@@ -185,12 +203,7 @@ def rank(router, body: Any) -> dict:
         prices = candidate["pricing"]
         output *= request.get("n", 1)
         usage["output_tokens"] = output
-        try:
-            cost = ((input_tokens - cache) * prices["input"] + cache * prices["cache_read"] + output * prices["output"]) / 1e6
-        except OverflowError:
-            raise Problem(400, "Candidate prices and usage exceed the supported numeric range.")
-        if not math.isfinite(cost):
-            raise Problem(400, "Candidate prices and usage exceed the supported numeric range.")
+        cost = _cost(prices, input_tokens, cache, output)
         quality = router.success.p(model, req.category, req.difficulty)
         entry = {"candidate_id": candidate["id"], "expected_quality": max(0.0, min(1.0, quality)),
                  "expected_cost_usd": cost, "expected_usage": usage}
