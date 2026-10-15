@@ -29,7 +29,7 @@ class FakeTokenizer:
 
 def loaded(monkeypatch):
     pytest.importorskip("numpy")
-    clf = route_head.LocalRouteHeadClassifier("some/repo", "int8", threads=1)
+    clf = route_head.LocalRouteHeadClassifier("some/repo", "fp16", threads=1)
     session = FakeSession()
     monkeypatch.setattr(clf, "_load", lambda: (session, FakeTokenizer()))
     return clf, session

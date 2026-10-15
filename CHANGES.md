@@ -1,5 +1,28 @@
 # Changes
 
+## Unreleased — s1-llm-auto-router classifier backend (2 Oct 2026)
+
+- **s1-llm-auto-router is the default classifier** when its CPU runtime is installed (new extra
+  `[s1-router]`); the model downloads from `system1models/s1-llm-auto-router` on Hugging Face.
+  Without the runtime the previous default (hosted Jev with a key, else heuristics) is unchanged.
+  The installer's `--classifier auto` picks it too, and `--classifier s1-llm-auto-router` selects it.
+- **New backend `s1-llm-auto-router-api`**: the same model on system1models.ai, all seven
+  questions in one request (`S1M_API_KEY`).
+- **Weiche `variant: int8` now loads fp16 with a warning**; the published int8 export answers near
+  chance (category 0.19, stakes 0.04 on 585 requests).
+- **The Laya backend (`local`) warns** that its category answers are near chance (0.18 on 2,175
+  requests, mostly `long_context`); the installer marks it as not recommended.
+
+- **New classifier backend `s1-llm-auto-router`** (`auto_router/s1_router.py`): a fine-tuned
+  11-layer mmBERT-small with seven routing heads, run on CPU through ONNX Runtime and
+  `tokenizers` (no PyTorch). Probabilities use the per-head temperatures from the model's
+  `meta.json`; difficulty and stakes are the expected level scaled to 0..1. Any failure returns
+  `jev.FALLBACK`. A parity test (`S1R_MODEL_DIR`) checks it against the
+  reference implementation on 50 held-out requests.
+- **Weiche fp16 loads again from the Hugging Face cache.** Snapshot symlinks made ONNX Runtime
+  1.30+ reject the external `.onnx.data` file, so every turn fell back to the cautious default.
+  Symlinked snapshots are now copied (hard-linked where possible) into a private cache directory.
+
 ## 0.5.1 — fixes found by the paired A/B study (26 Sep 2026)
 
 - **GPT-6 over the Responses API** (`api: responses` on a provider). GPT-6 Luna
