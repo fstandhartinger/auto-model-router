@@ -1,0 +1,41 @@
+{
+ "files_sha256": {
+  "analysis-plan.md": "9252b9753c779f483a3eb8d7295906cbf4d8bd0694d11a0e288f5d02b2f84f21",
+  "build_prices.py": "bbfd9deb3f68c418d1fc192700e60b998cffb4995decb6094fa3f0a768d3fab6",
+  "build_tasks.py": "51e934358f5331e25c15685d9d0e342c9355016f5eb08ffb76286ed24e2ff59a",
+  "check_disjoint.py": "8234fe76ed686a0ad8e2d103e979e44bfae737eee3362d119a8b80527d35896f",
+  "grade_w2.py": "1fce5773a2c6c89b590c9927665525439ccddb0553ee63364bdd115fc04400fa",
+  "make_manifest.py": "7ebf6f7e1458238fe602216eb3415da1280911d1437aa8a9471c59dea3df3cbb",
+  "prices.json": "a7e1c3e6000dc6c67aa1f84f476f3e16d2c2a1bf0dab1a2d7d11d106e51533dc",
+  "reference-solutions.json": "7215f7b60d6cc65f698e7c3ea616d7ab83fe00778f61efaaef2a512535d3e6d6",
+  "reproduce.py": "fee1cb97b6c9af4f238152647567d39026b11b7ed998981ccdd4664550ef58e6",
+  "router-catalog.json": "9c94648339c03e0a1b5bb0a787b0279173d472b1188f2d15b371fb3c8fd89ada",
+  "router-plan.csv": "c7e1b94e4970e1c77e2a0747a6c77020d59aa4cfeca4f31ed09235774da0b7c2",
+  "router_plan.py": "025a0b05f595f4239b841983758013f51ad38fc7947ab26faa54713613d68e33",
+  "run-order.json": "a97d661c1ce405846beaea5f0316acee396c398d4da9b5dde686a02672c01bbe",
+  "run.py": "f9bddbfcdd0fef256bd532fa3928a729c4381c9b6d2f8a68798dd2fd64beac10",
+  "tasks-public.jsonl": "5f553964af059dc7872935d34e25d674692155301c3f4818159b4e38f6c97453",
+  "validate_graders.py": "bb90daee0970034d8f5f19dcf1fb3982aa74e8f7da86e55d817fa56b2bb2c076"
+ },
+ "models": [
+  "claude-opus-5",
+  "deepseek-v4.1-flash",
+  "glm-5.3-flash",
+  "gpt-5.6-luna",
+  "gpt-5.6-sol",
+  "kimi-k3"
+ ],
+ "openrouter_credits_before": {
+  "total_credits": 578.9112268,
+  "total_usage": 509.528709362
+ },
+ "registered_at": "2026-10-17T11:00:45+00:00",
+ "sources": {
+  "auto-model-router_commit": "973d60c",
+  "auto-router-demo_commit": "f3fdee1031852b733477e9cffa69256ce861d127",
+  "wave1": "../manifest.json (same models, router build, AntSeed snapshot)"
+ },
+ "study": "antseed-irp-eval-20261017/wave2",
+ "task_count": 60,
+ "tasks_full_sha256 (not committed; rebuilt by build_tasks.py)": "6a282ff498d39387838bced0d9e0172551e5f9b38f69f7187d71e3f7e20913e2"
+}

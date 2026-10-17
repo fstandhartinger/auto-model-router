@@ -1,0 +1,94 @@
+{
+ "max_tokens_in_request": 16000,
+ "models": {
+  "claude-opus-5": {
+   "capability": {
+    "agentic": 64.1,
+    "coding": 74.3,
+    "design": 74.3,
+    "general": 67.2,
+    "knowledge": 67.2,
+    "long_context": 82.0,
+    "math": 67.2,
+    "summarisation": 72.13,
+    "tool_use": 67.2
+   },
+   "max_output_tokens": 32000
+  },
+  "dsv4.1-flash": {
+   "capability": {
+    "general": 59.25,
+    "knowledge": 59.25,
+    "long_context": 84.0,
+    "math": 59.25,
+    "summarisation": 67.5,
+    "tool_use": 59.25
+   },
+   "max_output_tokens": 32000
+  },
+  "glm-5.3-flash": {
+   "capability": {
+    "agentic": 60.67,
+    "coding": 71.5,
+    "design": 71.5,
+    "general": 62.7,
+    "knowledge": 62.7,
+    "long_context": 80.0,
+    "math": 62.7,
+    "summarisation": 68.47,
+    "tool_use": 62.7
+   },
+   "max_output_tokens": 32000
+  },
+  "gpt-5.6-luna": {
+   "capability": {
+    "agentic": 42.0,
+    "coding": 50.7,
+    "design": 50.7,
+    "general": 37.5,
+    "knowledge": 37.5,
+    "long_context": 75.0,
+    "math": 37.5,
+    "summarisation": 50.0,
+    "tool_use": 37.5
+   },
+   "max_output_tokens": 32000
+  },
+  "gpt-5.6-sol": {
+   "capability": {
+    "agentic": 61.6,
+    "coding": 76.3,
+    "design": 42.62,
+    "general": 58.8,
+    "knowledge": 58.8,
+    "long_context": 80.33,
+    "math": 58.8,
+    "summarisation": 65.98,
+    "tool_use": 80.99
+   },
+   "max_output_tokens": 32000
+  },
+  "kimi-k3": {
+   "capability": {
+    "agentic": 61.21,
+    "coding": 76.2,
+    "design": 74.75,
+    "general": 65.4,
+    "knowledge": 65.4,
+    "long_context": 88.67,
+    "math": 65.4,
+    "summarisation": 73.16,
+    "tool_use": 65.4
+   },
+   "max_output_tokens": 32000
+  }
+ },
+ "note": "same router build as wave 1 (../router_plan.py, demo-catalog.json, success.measured.json); picks in router-plan.csv are the record",
+ "s1_files_sha256": {
+  "meta.json": "b6689ba21a44e0910cc2ae831c6ecf2bcc6f542b3fc5cd29d570e012865649c2",
+  "model.gq.onnx": "53a02107e46be7913f148037b63b4f4735a400f91221789b0aaefcde0ad8da80",
+  "tokenizer/tokenizer.json": "c01f8492531b2e569bd8d28ef1de1c66779275753c78cb497f7118762ae3230d"
+ },
+ "s1_revision": "572c5b6cdb53b77fbb26ed33568ebbc5b71c69c0",
+ "success_measured_rows": 168
+}
