@@ -23,9 +23,9 @@ for wave, p in ((1, EV / "results.csv"), (2, EV / "wave2/results.csv")):
 measured = {(a, b, c): p for a, b, c, p in json.load(open(EV / 'success.measured.json'))}
 rows = []
 for tid, t in tasks.items():
-    msgs = [{"role": "user", "content": t["prompt"]}]
-    cls = s1(t["prompt"], router._summary(msgs, None))
-    req = router._turn_request(cls, 500, 16000, 0.0, False, msgs)
+    chat_messages = [{"role": "user", "content": t["prompt"]}]
+    cls = s1(t["prompt"], router._summary(chat_messages, None))
+    req = router._turn_request(cls, 500, 16000, 0.0, False, chat_messages)
     for m in models:
         name = w1.DEMO_NAMES.get(m.name, m.name)
         r = res[(tid, name)]
