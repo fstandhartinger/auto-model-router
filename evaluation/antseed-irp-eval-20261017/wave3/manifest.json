@@ -1,0 +1,43 @@
+{
+ "files_sha256": {
+  "analysis-plan.md": "fb5ba83858f0d3a260326912e8396ad46b3111b88526b1529ad9cbec384e7856",
+  "build_prices.py": "bbfd9deb3f68c418d1fc192700e60b998cffb4995decb6094fa3f0a768d3fab6",
+  "build_tasks.py": "dd14fa207895ccc8e6c2b4430ace46f18d4264f0fda95b4b84762fc49206144f",
+  "check_disjoint.py": "ed4da614e913f7fed81ed67467c4619c81ce7b801401f93c36495011d8fc8c48",
+  "grade_w3.py": "30aebd29b8db357183c4fa94df3e045081180f2881c67a94144fb6cedff9cfb2",
+  "make_manifest.py": "ef770e2391e6083b0fef9507c6e41824f5261adec20cd204939648fd7fb5e488",
+  "prices.json": "a7e1c3e6000dc6c67aa1f84f476f3e16d2c2a1bf0dab1a2d7d11d106e51533dc",
+  "reference-solutions.json": "7215f7b60d6cc65f698e7c3ea616d7ab83fe00778f61efaaef2a512535d3e6d6",
+  "reproduce.py": "08e969a3547e9d2707a4de467cfbdea46e89b099f1f2a14e1b407fd8bdc4a34c",
+  "router-catalog.json": "a0594d922513edd5ad5cf2fe439e6882e4077e564f5cbd358057e3d062ad331b",
+  "router-plan.csv": "b161d9412ff18239fed112bbe36952c3255ea145634303c0827de981a27d00f9",
+  "router_plan.py": "ab9268d1523d6524db2b9fe949b1f85f8df91ce046d1dfecaf1fe5b115d4a826",
+  "run-order.json": "db8db50f2604f22dc4cfaf9a2c888dd4957c95ac0af1ca3a1d9b33bcfcaa61eb",
+  "run.py": "934dcef482cc3cbab92d04af1b89701db5f7a4fd3e7003c094afa78257fdbae8",
+  "tasks-public.jsonl": "8a7d9695ea8ba508d05e5dfb1892aaf96596c1590609d974e930da235d80f9a7",
+  "validate_graders.py": "717f08ac8b5d71b4e7ecf78457d63951a1b8d3b9399625d70500b61e7fbb8c11"
+ },
+ "models": [
+  "claude-opus-5",
+  "deepseek-v4.1-flash",
+  "glm-5.3-flash",
+  "gpt-5.6-luna",
+  "gpt-5.6-sol",
+  "kimi-k3"
+ ],
+ "openrouter_credits_before": {
+  "total_credits": 578.9112268,
+  "total_usage": 517.621532418
+ },
+ "registered_at": "2026-10-17T12:24:00+00:00",
+ "sources": {
+  "auto-model-router_commit": "2d088b3",
+  "auto-router-demo_commit": "f3fdee1",
+  "success_v2": "auto_router/data/success_v2.json (library PR #10); sha256 in router-catalog.json",
+  "wave1": "../manifest.json (same models, router build, AntSeed snapshot)",
+  "wave2": "../wave2/manifest.json"
+ },
+ "study": "antseed-irp-eval-20261017/wave3",
+ "task_count": 60,
+ "tasks_full_sha256 (not committed; rebuilt by build_tasks.py)": "35c4af9794a32def604f1a4017b849ec71dfd19360fba2146d801a52cfc7c141"
+}
