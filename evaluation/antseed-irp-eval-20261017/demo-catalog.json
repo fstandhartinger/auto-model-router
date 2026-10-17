@@ -1,0 +1,306 @@
+{
+ "about": "The models the demo router reasons about. Every route here is one a visitor could use themselves: an OpenRouter public endpoint at its public price (the :free ones included) or the peer-to-peer Bonsai swarm. Routes marked demo.frontier are priced on every request and can win the decision, but this free demo never runs them; when one wins, the page says so and the answer comes from the best affordable route. Prices, context length and per-topic capability are read live from the Benchmark Heaven API through bench_id; cache hit rates are our own measurements (EXPERIMENTS.md section 2). Which endpoint actually serves a model, and under which account, is supplied at runtime through DEMO_ROUTES_JSON and never stored here.",
+ "models": [
+  {
+   "name": "bonsai-2-27b-p2p",
+   "bench_id": null,
+   "free": true,
+   "context_tokens": 32000,
+   "max_output_tokens": 2048,
+   "tools": false,
+   "latency_s": 6.0,
+   "cache": {
+    "ttl_seconds": 0,
+    "min_tokens": 1000000000,
+    "hit_rate": 0.0
+   },
+   "capability": {
+    "general": 42,
+    "coding": 45,
+    "math": 40,
+    "knowledge": 38,
+    "summarisation": 44,
+    "design": 38,
+    "long_context": 30,
+    "tool_use": 30,
+    "agentic": 25
+   },
+   "demo": {
+    "label": "Bonsai 2 27B",
+    "org": "community GPUs (peer-to-peer)",
+    "badge": "p2p",
+    "note": "A ternary 27B model running on WebGPU in volunteers' browsers. Free, best effort, short requests only - and the only route here that needs no account anywhere.",
+    "capability_basis": "Hand-set from the published model card and our own browser evaluation, not from a benchmark feed. Treated as weak evidence.",
+    "peer_to_peer": true,
+    "speed": {
+     "reasoning": false,
+     "thinking_dialect": null,
+     "health_key": null
+    }
+   },
+   "irp_model_id": "prism-ml/ternary-bonsai-2-27b"
+  },
+  {
+   "name": "nex-n2.5-pro",
+   "bench_id": "nex-n2.5-pro::default",
+   "bench_offer": {
+    "platform": "OpenRouter"
+   },
+   "free": true,
+   "latency_s": 3.0,
+   "cache": {
+    "ttl_seconds": 0,
+    "min_tokens": 1000000000,
+    "hit_rate": 0.0
+   },
+   "demo": {
+    "label": "Nex-N2.5 Pro",
+    "org": "Nex AGI",
+    "badge": "free",
+    "note": "OpenRouter's public :free endpoint - no cost, shared upstream rate limit.",
+    "capability_basis": "Benchmark Heaven lists the model and its price but has no scores for it yet, so every category falls back to the neutral prior of 50 and the evidence discount applies in full.",
+    "speed": {
+     "reasoning": true,
+     "thinking_dialect": "openrouter_reasoning",
+     "health_key": null
+    }
+   },
+   "irp_model_id": "nex-agi/nex-n2.5-pro"
+  },
+  {
+   "name": "dsv4-flash",
+   "bench_id": "deepseek-v4-flash-0731::max",
+   "free": true,
+   "latency_s": 3.0,
+   "cache": {
+    "ttl_seconds": 0,
+    "min_tokens": 1000000000,
+    "hit_rate": 0.0
+   },
+   "demo": {
+    "label": "DeepSeek V4 Flash",
+    "org": "DeepSeek",
+    "badge": "free",
+    "note": "OpenRouter's public :free endpoint for DeepSeek V4 Flash - the same weights as the metered route, with a shared upstream rate limit and no prefix cache.",
+    "speed": {
+     "reasoning": true,
+     "thinking_dialect": "openrouter_reasoning",
+     "health_key": null
+    }
+   },
+   "bench_offer": {
+    "platform": "OpenRouter"
+   },
+   "irp_model_id": "deepseek/deepseek-v4-flash-0731"
+  },
+  {
+   "name": "glm-5.2-free",
+   "bench_id": "glm-5.2::max",
+   "bench_offer": {
+    "platform": "OpenRouter"
+   },
+   "free": true,
+   "latency_s": 4.0,
+   "cache": {
+    "ttl_seconds": 0,
+    "min_tokens": 1000000000,
+    "hit_rate": 0.0
+   },
+   "demo": {
+    "label": "GLM-5.2 (free)",
+    "org": "Z.ai",
+    "badge": "free",
+    "note": "OpenRouter's public :free endpoint. Strong for a free route, and the one that hit an upstream rate limit most often in our measurements (3 of 5 calls answered).",
+    "speed": {
+     "reasoning": true,
+     "thinking_dialect": "openrouter_reasoning",
+     "health_key": null
+    }
+   },
+   "irp_model_id": "z-ai/glm-5.2"
+  },
+  {
+   "name": "dsv4.1-flash",
+   "bench_id": "deepseek-v4.1-flash::max",
+   "bench_offer": {
+    "platform": "OpenRouter"
+   },
+   "latency_s": 4.0,
+   "cache": {
+    "ttl_seconds": 300,
+    "hit_rate": 0.6
+   },
+   "demo": {
+    "label": "DeepSeek V4.1 Flash",
+    "org": "DeepSeek",
+    "badge": "cheap",
+    "note": "Metered at OpenRouter's public price. Fast to the first token, cheap per answer.",
+    "speed": {
+     "reasoning": true,
+     "thinking_dialect": "openrouter_reasoning",
+     "health_key": null
+    }
+   },
+   "irp_model_id": "deepseek/deepseek-v4.1-flash"
+  },
+  {
+   "name": "glm-5.3-flash",
+   "bench_id": "glm-5.3-flash::default",
+   "latency_s": 4.0,
+   "cache": {
+    "ttl_seconds": 300,
+    "hit_rate": 0.95
+   },
+   "demo": {
+    "label": "GLM-5.3 Flash",
+    "org": "Z.ai",
+    "badge": "cheap",
+    "note": "Metered, very cheap, high cache read share.",
+    "speed": {
+     "reasoning": true,
+     "thinking_dialect": "reasoning_effort",
+     "health_key": "glm-5.3-flash"
+    }
+   },
+   "_offer": "no offer pinned: the cheapest public offer that publishes cache prices is used",
+   "irp_model_id": "z-ai/glm-5.3-flash"
+  },
+  {
+   "name": "gpt-5.6-luna",
+   "bench_id": "gpt-5.6-luna::medium",
+   "bench_offer": {
+    "platform": "OpenRouter",
+    "provider": "OpenAI"
+   },
+   "vision": true,
+   "latency_s": 6.0,
+   "cache": {
+    "ttl_seconds": 300,
+    "hit_rate": 0.98
+   },
+   "demo": {
+    "label": "GPT-5.6 Luna",
+    "org": "OpenAI",
+    "badge": "cheap",
+    "note": "Metered. Solved 68 of 78 tasks for $0.25 - the best success per dollar we measured.",
+    "speed": {
+     "reasoning": true,
+     "thinking_dialect": "reasoning_effort",
+     "health_key": null
+    }
+   },
+   "irp_model_id": "openai/gpt-5.6-luna"
+  },
+  {
+   "name": "gpt-5.6-sol",
+   "bench_id": "gpt-5.6-sol::medium",
+   "bench_offer": {
+    "platform": "OpenRouter",
+    "provider": "OpenAI"
+   },
+   "vision": true,
+   "latency_s": 9.0,
+   "cache": {
+    "ttl_seconds": 300,
+    "hit_rate": 0.99
+   },
+   "demo": {
+    "label": "GPT-5.6 Sol",
+    "org": "OpenAI",
+    "badge": "frontier",
+    "note": "Solved the most tasks of any model we measured: 75 of 78. Priced and considered on every request, never run here: one answer from a frontier model costs more than this free demo can give away.",
+    "speed": {
+     "reasoning": true,
+     "thinking_dialect": "reasoning_effort",
+     "health_key": null
+    },
+    "frontier": true
+   },
+   "irp_model_id": "openai/gpt-5.6-sol"
+  },
+  {
+   "name": "claude-opus-5",
+   "bench_id": "claude-opus-5::medium",
+   "bench_offer": {
+    "platform": "OpenRouter",
+    "provider": "Anthropic"
+   },
+   "cache_family": "anthropic",
+   "vision": true,
+   "latency_s": 10.0,
+   "cache": {
+    "ttl_seconds": 300,
+    "hit_rate": 0.95
+   },
+   "demo": {
+    "label": "Claude Opus 5",
+    "org": "Anthropic",
+    "badge": "frontier",
+    "note": "The frontier baseline the saving is measured against. Priced and considered on every request, never run here: one answer from a frontier model costs more than this free demo can give away.",
+    "baseline": true,
+    "speed": {
+     "reasoning": true,
+     "thinking_dialect": "openrouter_reasoning",
+     "health_key": null
+    },
+    "frontier": true
+   },
+   "irp_model_id": "anthropic/claude-opus-5"
+  },
+  {
+   "name": "claude-fable-5.1",
+   "bench_id": "claude-fable-5.1::medium",
+   "bench_offer": {
+    "platform": "OpenRouter",
+    "provider": "Anthropic"
+   },
+   "cache_family": "anthropic",
+   "vision": true,
+   "latency_s": 10.0,
+   "cache": {
+    "ttl_seconds": 300,
+    "hit_rate": 0.95
+   },
+   "demo": {
+    "label": "Claude Fable 5.1",
+    "org": "Anthropic",
+    "badge": "frontier",
+    "frontier": true,
+    "note": "Anthropic's strongest model, at $10 / $50 per million tokens. Priced and considered on every request, never run here: one answer from a frontier model costs more than this free demo can give away.",
+    "speed": {
+     "reasoning": true,
+     "thinking_dialect": "openrouter_reasoning",
+     "health_key": null
+    }
+   },
+   "irp_model_id": "anthropic/claude-fable-5.1"
+  },
+  {
+   "name": "gpt-6-astra",
+   "bench_id": "gpt-6-astra::medium",
+   "bench_offer": {
+    "platform": "OpenRouter",
+    "provider": "OpenAI"
+   },
+   "vision": true,
+   "latency_s": 10.0,
+   "cache": {
+    "ttl_seconds": 300,
+    "hit_rate": 0.95
+   },
+   "demo": {
+    "label": "GPT-6 Astra",
+    "org": "OpenAI",
+    "badge": "frontier",
+    "frontier": true,
+    "note": "OpenAI's strongest model, at $10 / $50 per million tokens. Priced and considered on every request, never run here: one answer from a frontier model costs more than this free demo can give away.",
+    "speed": {
+     "reasoning": true,
+     "thinking_dialect": "reasoning_effort",
+     "health_key": null
+    }
+   },
+   "irp_model_id": "openai/gpt-6-astra"
+  }
+ ]
+}

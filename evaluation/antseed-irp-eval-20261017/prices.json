@@ -1,0 +1,108 @@
+{
+ "models": {
+  "claude-opus-5": {
+   "antseed_id": "claude-opus-5",
+   "cheapest": {
+    "cache_read": 0.03,
+    "input": 0.1121,
+    "output": 0.6175,
+    "seller": "ZLKPro-Api"
+   },
+   "median": {
+    "cache_read": 0.152475484334,
+    "input": 1.2,
+    "output": 6
+   },
+   "openrouter_id": "anthropic/claude-opus-5",
+   "sellers_priced": 21,
+   "sellers_total": 21
+  },
+  "deepseek-v4.1-flash": {
+   "antseed_id": "deepseek-v4.1-flash",
+   "cheapest": {
+    "cache_read": 7.411e-06,
+    "input": 0.000349388,
+    "output": 0.00139755,
+    "seller": "bartly.eth64.de"
+   },
+   "median": {
+    "cache_read": 0.0027070975845,
+    "input": 0.0353825,
+    "output": 0.2347205
+   },
+   "openrouter_id": "deepseek/deepseek-v4.1-flash",
+   "sellers_priced": 14,
+   "sellers_total": 14
+  },
+  "glm-5.3-flash": {
+   "antseed_id": "glm-5.3-flash",
+   "cheapest": {
+    "cache_read": 0.000373861,
+    "input": 0.001870575,
+    "output": 0.0062349,
+    "seller": "bartly.eth64.de"
+   },
+   "median": {
+    "cache_read": 0.017425,
+    "input": 0.068,
+    "output": 0.215
+   },
+   "openrouter_id": "z-ai/glm-5.3-flash",
+   "sellers_priced": 20,
+   "sellers_total": 21
+  },
+  "gpt-5.6-luna": {
+   "antseed_id": "gpt-5.6-luna",
+   "cheapest": {
+    "cache_read": 0.00023,
+    "input": 0.002301,
+    "output": 0.013802,
+    "seller": "klinn"
+   },
+   "median": {
+    "cache_read": 0.011200000000000002,
+    "input": 0.084,
+    "output": 0.497
+   },
+   "openrouter_id": "openai/gpt-5.6-luna",
+   "sellers_priced": 20,
+   "sellers_total": 20
+  },
+  "gpt-5.6-sol": {
+   "antseed_id": "gpt-5.6-sol",
+   "cheapest": {
+    "cache_read": 0.007396404,
+    "input": 0.07396935,
+    "output": 0.36984675,
+    "seller": "bartly.eth64.de"
+   },
+   "median": {
+    "cache_read": 0.1,
+    "input": 0.55,
+    "output": 3.8
+   },
+   "openrouter_id": "openai/gpt-5.6-sol",
+   "sellers_priced": 23,
+   "sellers_total": 23
+  },
+  "kimi-k3": {
+   "antseed_id": "kimi-k3",
+   "cheapest": {
+    "cache_read": 0.007938,
+    "input": 0.007938,
+    "output": 0.294,
+    "seller": "JOI SEED"
+   },
+   "median": {
+    "cache_read": 0.12,
+    "input": 0.3,
+    "output": 1.65181774695
+   },
+   "openrouter_id": "moonshotai/kimi-k3",
+   "sellers_priced": 25,
+   "sellers_total": 25
+  }
+ },
+ "snapshot_sha256": "c7f1414e517117b7e04d828a60959ad6c6039657d0dd0c9b6206de33fc26e464",
+ "unit": "USD per 1M tokens"
+}

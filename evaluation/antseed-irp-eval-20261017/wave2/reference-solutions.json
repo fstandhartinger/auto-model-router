@@ -1,0 +1,5 @@
+{
+ "coding-lcb6-atcoder-abc392_a": "from itertools import permutations\na=list(map(int,input().split()))\nprint('Yes' if any(p[0]*p[1]==p[2] for p in permutations(a)) else 'No')",
+ "coding-lcb6-atcoder-abc400_a": "import sys\nA=int(sys.stdin.buffer.read())\nprint(400//A if 400%A==0 else -1)",
+ "coding-lcb6-leetcode-3736": "class Solution:\n    def findValidPair(self, s: str) -> str:\n        from collections import Counter\n        c=Counter(s)\n        for a,b in zip(s,s[1:]):\n            if a!=b and c[a]==int(a) and c[b]==int(b):\n                return a+b\n        return ''\n"
+}

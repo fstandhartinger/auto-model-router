@@ -1,0 +1,4517 @@
+{
+ "bases": {
+  "cheapest": {
+   "always_best_model": "claude-opus-5",
+   "always_cheapest_model": "deepseek-v4.1-flash",
+   "arms": {
+    "always-best": {
+     "cost_ratio_vs_always_best": 1.0,
+     "cost_ratio_vs_always_best_ci95": [
+      1.0,
+      1.0
+     ],
+     "cost_ratio_vs_always_opus": 1.0,
+     "cost_ratio_vs_always_opus_ci95": [
+      1.0,
+      1.0
+     ],
+     "kind": "single",
+     "mean_cost_per_task_usd": 0.000864224,
+     "n": 120,
+     "pass_diff_vs_always_best": 0.0,
+     "pass_diff_vs_always_best_ci95": [
+      0.0,
+      0.0
+     ],
+     "pass_diff_vs_always_opus": 0.0,
+     "pass_diff_vs_always_opus_ci95": [
+      0.0,
+      0.0
+     ],
+     "pass_rate": 0.916666667,
+     "pass_rate_wilson95": [
+      0.853378,
+      0.954106
+     ],
+     "passed": 110,
+     "total_cost_usd": 0.10370683
+    },
+    "always-cheapest": {
+     "cost_ratio_vs_always_best": 0.00481598,
+     "cost_ratio_vs_always_best_ci95": [
+      0.003892207,
+      0.006244334
+     ],
+     "cost_ratio_vs_always_opus": 0.00481598,
+     "cost_ratio_vs_always_opus_ci95": [
+      0.003892207,
+      0.006244334
+     ],
+     "kind": "single",
+     "mean_cost_per_task_usd": 4.162e-06,
+     "n": 120,
+     "pass_diff_vs_always_best": -0.108333333,
+     "pass_diff_vs_always_best_ci95": [
+      -0.175,
+      -0.05
+     ],
+     "pass_diff_vs_always_opus": -0.108333333,
+     "pass_diff_vs_always_opus_ci95": [
+      -0.175,
+      -0.05
+     ],
+     "pass_rate": 0.808333333,
+     "pass_rate_wilson95": [
+      0.728788,
+      0.86875
+     ],
+     "passed": 97,
+     "total_cost_usd": 0.00049945
+    },
+    "always-claude-opus-5": {
+     "cost_ratio_vs_always_best": 1.0,
+     "cost_ratio_vs_always_best_ci95": [
+      1.0,
+      1.0
+     ],
+     "cost_ratio_vs_always_opus": 1.0,
+     "cost_ratio_vs_always_opus_ci95": [
+      1.0,
+      1.0
+     ],
+     "kind": "single",
+     "mean_cost_per_task_usd": 0.000864224,
+     "n": 120,
+     "pass_diff_vs_always_best": 0.0,
+     "pass_diff_vs_always_best_ci95": [
+      0.0,
+      0.0
+     ],
+     "pass_diff_vs_always_opus": 0.0,
+     "pass_diff_vs_always_opus_ci95": [
+      0.0,
+      0.0
+     ],
+     "pass_rate": 0.916666667,
+     "pass_rate_wilson95": [
+      0.853378,
+      0.954106
+     ],
+     "passed": 110,
+     "total_cost_usd": 0.10370683
+    },
+    "always-deepseek-v4.1-flash": {
+     "cost_ratio_vs_always_best": 0.00481598,
+     "cost_ratio_vs_always_best_ci95": [
+      0.003892207,
+      0.006244334
+     ],
+     "cost_ratio_vs_always_opus": 0.00481598,
+     "cost_ratio_vs_always_opus_ci95": [
+      0.003892207,
+      0.006244334
+     ],
+     "kind": "single",
+     "mean_cost_per_task_usd": 4.162e-06,
+     "n": 120,
+     "pass_diff_vs_always_best": -0.108333333,
+     "pass_diff_vs_always_best_ci95": [
+      -0.175,
+      -0.05
+     ],
+     "pass_diff_vs_always_opus": -0.108333333,
+     "pass_diff_vs_always_opus_ci95": [
+      -0.175,
+      -0.05
+     ],
+     "pass_rate": 0.808333333,
+     "pass_rate_wilson95": [
+      0.728788,
+      0.86875
+     ],
+     "passed": 97,
+     "total_cost_usd": 0.00049945
+    },
+    "always-glm-5.3-flash": {
+     "cost_ratio_vs_always_best": 0.021716072,
+     "cost_ratio_vs_always_best_ci95": [
+      0.017230459,
+      0.02853814
+     ],
+     "cost_ratio_vs_always_opus": 0.021716072,
+     "cost_ratio_vs_always_opus_ci95": [
+      0.017230459,
+      0.02853814
+     ],
+     "kind": "single",
+     "mean_cost_per_task_usd": 1.8768e-05,
+     "n": 120,
+     "pass_diff_vs_always_best": -0.166666667,
+     "pass_diff_vs_always_best_ci95": [
+      -0.241666667,
+      -0.1
+     ],
+     "pass_diff_vs_always_opus": -0.166666667,
+     "pass_diff_vs_always_opus_ci95": [
+      -0.241666667,
+      -0.1
+     ],
+     "pass_rate": 0.75,
+     "pass_rate_wilson95": [
+      0.665589,
+      0.818902
+     ],
+     "passed": 90,
+     "total_cost_usd": 0.002252105
+    },
+    "always-gpt-5.6-luna": {
+     "cost_ratio_vs_always_best": 0.012305998,
+     "cost_ratio_vs_always_best_ci95": [
+      0.010420496,
+      0.015375057
+     ],
+     "cost_ratio_vs_always_opus": 0.012305998,
+     "cost_ratio_vs_always_opus_ci95": [
+      0.010420496,
+      0.015375057
+     ],
+     "kind": "single",
+     "mean_cost_per_task_usd": 1.0635e-05,
+     "n": 120,
+     "pass_diff_vs_always_best": -0.016666667,
+     "pass_diff_vs_always_best_ci95": [
+      -0.058333333,
+      0.025
+     ],
+     "pass_diff_vs_always_opus": -0.016666667,
+     "pass_diff_vs_always_opus_ci95": [
+      -0.058333333,
+      0.025
+     ],
+     "pass_rate": 0.9,
+     "pass_rate_wilson95": [
+      0.833318,
+      0.941866
+     ],
+     "passed": 108,
+     "total_cost_usd": 0.001276216
+    },
+    "always-gpt-5.6-sol": {
+     "cost_ratio_vs_always_best": 0.303056809,
+     "cost_ratio_vs_always_best_ci95": [
+      0.254473965,
+      0.376625071
+     ],
+     "cost_ratio_vs_always_opus": 0.303056809,
+     "cost_ratio_vs_always_opus_ci95": [
+      0.254473965,
+      0.376625071
+     ],
+     "kind": "single",
+     "mean_cost_per_task_usd": 0.000261909,
+     "n": 120,
+     "pass_diff_vs_always_best": -0.008333333,
+     "pass_diff_vs_always_best_ci95": [
+      -0.041666667,
+      0.025
+     ],
+     "pass_diff_vs_always_opus": -0.008333333,
+     "pass_diff_vs_always_opus_ci95": [
+      -0.041666667,
+      0.025
+     ],
+     "pass_rate": 0.908333333,
+     "pass_rate_wilson95": [
+      0.843292,
+      0.948043
+     ],
+     "passed": 109,
+     "total_cost_usd": 0.031429061
+    },
+    "always-kimi-k3": {
+     "cost_ratio_vs_always_best": 0.96799178,
+     "cost_ratio_vs_always_best_ci95": [
+      0.782743947,
+      1.242468838
+     ],
+     "cost_ratio_vs_always_opus": 0.96799178,
+     "cost_ratio_vs_always_opus_ci95": [
+      0.782743947,
+      1.242468838
+     ],
+     "kind": "single",
+     "mean_cost_per_task_usd": 0.000836561,
+     "n": 120,
+     "pass_diff_vs_always_best": -0.075,
+     "pass_diff_vs_always_best_ci95": [
+      -0.133333333,
+      -0.016666667
+     ],
+     "pass_diff_vs_always_opus": -0.075,
+     "pass_diff_vs_always_opus_ci95": [
+      -0.133333333,
+      -0.016666667
+     ],
+     "pass_rate": 0.841666667,
+     "pass_rate_wilson95": [
+      0.765907,
+      0.89623
+     ],
+     "passed": 101,
+     "total_cost_usd": 0.100387359
+    },
+    "oracle": {
+     "cost_ratio_vs_always_best": 0.052123597,
+     "cost_ratio_vs_always_best_ci95": [
+      0.007030368,
+      0.139903213
+     ],
+     "cost_ratio_vs_always_opus": 0.052123597,
+     "cost_ratio_vs_always_opus_ci95": [
+      0.007030368,
+      0.139903213
+     ],
+     "kind": "oracle",
+     "mean_cost_per_task_usd": 4.5046e-05,
+     "n": 120,
+     "pass_diff_vs_always_best": 0.033333333,
+     "pass_diff_vs_always_best_ci95": [
+      0.008333333,
+      0.066666667
+     ],
+     "pass_diff_vs_always_opus": 0.033333333,
+     "pass_diff_vs_always_opus_ci95": [
+      0.008333333,
+      0.066666667
+     ],
+     "pass_rate": 0.95,
+     "pass_rate_wilson95": [
+      0.895197,
+      0.976886
+     ],
+     "passed": 114,
+     "total_cost_usd": 0.005405573
+    },
+    "router-prior-t0": {
+     "classifier": "prior",
+     "cost_ratio_vs_always_best": 0.303056809,
+     "cost_ratio_vs_always_best_ci95": [
+      0.254473965,
+      0.376625071
+     ],
+     "cost_ratio_vs_always_opus": 0.303056809,
+     "cost_ratio_vs_always_opus_ci95": [
+      0.254473965,
+      0.376625071
+     ],
+     "kind": "router",
+     "mean_cost_per_task_usd": 0.000261909,
+     "n": 120,
+     "pass_diff_vs_always_best": -0.008333333,
+     "pass_diff_vs_always_best_ci95": [
+      -0.041666667,
+      0.025
+     ],
+     "pass_diff_vs_always_opus": -0.008333333,
+     "pass_diff_vs_always_opus_ci95": [
+      -0.041666667,
+      0.025
+     ],
+     "pass_rate": 0.908333333,
+     "pass_rate_wilson95": [
+      0.843292,
+      0.948043
+     ],
+     "passed": 109,
+     "picks_by_model": {
+      "gpt-5.6-sol": 120
+     },
+     "total_cost_usd": 0.031429061,
+     "tradeoff": 0
+    },
+    "router-prior-t1": {
+     "classifier": "prior",
+     "cost_ratio_vs_always_best": 0.303056809,
+     "cost_ratio_vs_always_best_ci95": [
+      0.254473965,
+      0.376625071
+     ],
+     "cost_ratio_vs_always_opus": 0.303056809,
+     "cost_ratio_vs_always_opus_ci95": [
+      0.254473965,
+      0.376625071
+     ],
+     "kind": "router",
+     "mean_cost_per_task_usd": 0.000261909,
+     "n": 120,
+     "pass_diff_vs_always_best": -0.008333333,
+     "pass_diff_vs_always_best_ci95": [
+      -0.041666667,
+      0.025
+     ],
+     "pass_diff_vs_always_opus": -0.008333333,
+     "pass_diff_vs_always_opus_ci95": [
+      -0.041666667,
+      0.025
+     ],
+     "pass_rate": 0.908333333,
+     "pass_rate_wilson95": [
+      0.843292,
+      0.948043
+     ],
+     "passed": 109,
+     "picks_by_model": {
+      "gpt-5.6-sol": 120
+     },
+     "total_cost_usd": 0.031429061,
+     "tradeoff": 1
+    },
+    "router-prior-t10": {
+     "classifier": "prior",
+     "cost_ratio_vs_always_best": 0.00481598,
+     "cost_ratio_vs_always_best_ci95": [
+      0.003892207,
+      0.006244334
+     ],
+     "cost_ratio_vs_always_opus": 0.00481598,
+     "cost_ratio_vs_always_opus_ci95": [
+      0.003892207,
+      0.006244334
+     ],
+     "kind": "router",
+     "mean_cost_per_task_usd": 4.162e-06,
+     "n": 120,
+     "pass_diff_vs_always_best": -0.108333333,
+     "pass_diff_vs_always_best_ci95": [
+      -0.175,
+      -0.05
+     ],
+     "pass_diff_vs_always_opus": -0.108333333,
+     "pass_diff_vs_always_opus_ci95": [
+      -0.175,
+      -0.05
+     ],
+     "pass_rate": 0.808333333,
+     "pass_rate_wilson95": [
+      0.728788,
+      0.86875
+     ],
+     "passed": 97,
+     "picks_by_model": {
+      "deepseek-v4.1-flash": 120
+     },
+     "total_cost_usd": 0.00049945,
+     "tradeoff": 10
+    },
+    "router-prior-t2": {
+     "classifier": "prior",
+     "cost_ratio_vs_always_best": 0.021716072,
+     "cost_ratio_vs_always_best_ci95": [
+      0.017230459,
+      0.02853814
+     ],
+     "cost_ratio_vs_always_opus": 0.021716072,
+     "cost_ratio_vs_always_opus_ci95": [
+      0.017230459,
+      0.02853814
+     ],
+     "kind": "router",
+     "mean_cost_per_task_usd": 1.8768e-05,
+     "n": 120,
+     "pass_diff_vs_always_best": -0.166666667,
+     "pass_diff_vs_always_best_ci95": [
+      -0.241666667,
+      -0.1
+     ],
+     "pass_diff_vs_always_opus": -0.166666667,
+     "pass_diff_vs_always_opus_ci95": [
+      -0.241666667,
+      -0.1
+     ],
+     "pass_rate": 0.75,
+     "pass_rate_wilson95": [
+      0.665589,
+      0.818902
+     ],
+     "passed": 90,
+     "picks_by_model": {
+      "glm-5.3-flash": 120
+     },
+     "total_cost_usd": 0.002252105,
+     "tradeoff": 2
+    },
+    "router-prior-t3": {
+     "classifier": "prior",
+     "cost_ratio_vs_always_best": 0.021716072,
+     "cost_ratio_vs_always_best_ci95": [
+      0.017230459,
+      0.02853814
+     ],
+     "cost_ratio_vs_always_opus": 0.021716072,
+     "cost_ratio_vs_always_opus_ci95": [
+      0.017230459,
+      0.02853814
+     ],
+     "kind": "router",
+     "mean_cost_per_task_usd": 1.8768e-05,
+     "n": 120,
+     "pass_diff_vs_always_best": -0.166666667,
+     "pass_diff_vs_always_best_ci95": [
+      -0.241666667,
+      -0.1
+     ],
+     "pass_diff_vs_always_opus": -0.166666667,
+     "pass_diff_vs_always_opus_ci95": [
+      -0.241666667,
+      -0.1
+     ],
+     "pass_rate": 0.75,
+     "pass_rate_wilson95": [
+      0.665589,
+      0.818902
+     ],
+     "passed": 90,
+     "picks_by_model": {
+      "glm-5.3-flash": 120
+     },
+     "total_cost_usd": 0.002252105,
+     "tradeoff": 3
+    },
+    "router-prior-t4": {
+     "classifier": "prior",
+     "cost_ratio_vs_always_best": 0.021716072,
+     "cost_ratio_vs_always_best_ci95": [
+      0.017230459,
+      0.02853814
+     ],
+     "cost_ratio_vs_always_opus": 0.021716072,
+     "cost_ratio_vs_always_opus_ci95": [
+      0.017230459,
+      0.02853814
+     ],
+     "kind": "router",
+     "mean_cost_per_task_usd": 1.8768e-05,
+     "n": 120,
+     "pass_diff_vs_always_best": -0.166666667,
+     "pass_diff_vs_always_best_ci95": [
+      -0.241666667,
+      -0.1
+     ],
+     "pass_diff_vs_always_opus": -0.166666667,
+     "pass_diff_vs_always_opus_ci95": [
+      -0.241666667,
+      -0.1
+     ],
+     "pass_rate": 0.75,
+     "pass_rate_wilson95": [
+      0.665589,
+      0.818902
+     ],
+     "passed": 90,
+     "picks_by_model": {
+      "glm-5.3-flash": 120
+     },
+     "total_cost_usd": 0.002252105,
+     "tradeoff": 4
+    },
+    "router-prior-t5": {
+     "classifier": "prior",
+     "cost_ratio_vs_always_best": 0.021716072,
+     "cost_ratio_vs_always_best_ci95": [
+      0.017230459,
+      0.02853814
+     ],
+     "cost_ratio_vs_always_opus": 0.021716072,
+     "cost_ratio_vs_always_opus_ci95": [
+      0.017230459,
+      0.02853814
+     ],
+     "kind": "router",
+     "mean_cost_per_task_usd": 1.8768e-05,
+     "n": 120,
+     "pass_diff_vs_always_best": -0.166666667,
+     "pass_diff_vs_always_best_ci95": [
+      -0.241666667,
+      -0.1
+     ],
+     "pass_diff_vs_always_opus": -0.166666667,
+     "pass_diff_vs_always_opus_ci95": [
+      -0.241666667,
+      -0.1
+     ],
+     "pass_rate": 0.75,
+     "pass_rate_wilson95": [
+      0.665589,
+      0.818902
+     ],
+     "passed": 90,
+     "picks_by_model": {
+      "glm-5.3-flash": 120
+     },
+     "total_cost_usd": 0.002252105,
+     "tradeoff": 5
+    },
+    "router-prior-t6": {
+     "classifier": "prior",
+     "cost_ratio_vs_always_best": 0.021716072,
+     "cost_ratio_vs_always_best_ci95": [
+      0.017230459,
+      0.02853814
+     ],
+     "cost_ratio_vs_always_opus": 0.021716072,
+     "cost_ratio_vs_always_opus_ci95": [
+      0.017230459,
+      0.02853814
+     ],
+     "kind": "router",
+     "mean_cost_per_task_usd": 1.8768e-05,
+     "n": 120,
+     "pass_diff_vs_always_best": -0.166666667,
+     "pass_diff_vs_always_best_ci95": [
+      -0.241666667,
+      -0.1
+     ],
+     "pass_diff_vs_always_opus": -0.166666667,
+     "pass_diff_vs_always_opus_ci95": [
+      -0.241666667,
+      -0.1
+     ],
+     "pass_rate": 0.75,
+     "pass_rate_wilson95": [
+      0.665589,
+      0.818902
+     ],
+     "passed": 90,
+     "picks_by_model": {
+      "glm-5.3-flash": 120
+     },
+     "total_cost_usd": 0.002252105,
+     "tradeoff": 6
+    },
+    "router-prior-t7": {
+     "classifier": "prior",
+     "cost_ratio_vs_always_best": 0.021716072,
+     "cost_ratio_vs_always_best_ci95": [
+      0.017230459,
+      0.02853814
+     ],
+     "cost_ratio_vs_always_opus": 0.021716072,
+     "cost_ratio_vs_always_opus_ci95": [
+      0.017230459,
+      0.02853814
+     ],
+     "kind": "router",
+     "mean_cost_per_task_usd": 1.8768e-05,
+     "n": 120,
+     "pass_diff_vs_always_best": -0.166666667,
+     "pass_diff_vs_always_best_ci95": [
+      -0.241666667,
+      -0.1
+     ],
+     "pass_diff_vs_always_opus": -0.166666667,
+     "pass_diff_vs_always_opus_ci95": [
+      -0.241666667,
+      -0.1
+     ],
+     "pass_rate": 0.75,
+     "pass_rate_wilson95": [
+      0.665589,
+      0.818902
+     ],
+     "passed": 90,
+     "picks_by_model": {
+      "glm-5.3-flash": 120
+     },
+     "total_cost_usd": 0.002252105,
+     "tradeoff": 7
+    },
+    "router-prior-t8": {
+     "classifier": "prior",
+     "cost_ratio_vs_always_best": 0.00481598,
+     "cost_ratio_vs_always_best_ci95": [
+      0.003892207,
+      0.006244334
+     ],
+     "cost_ratio_vs_always_opus": 0.00481598,
+     "cost_ratio_vs_always_opus_ci95": [
+      0.003892207,
+      0.006244334
+     ],
+     "kind": "router",
+     "mean_cost_per_task_usd": 4.162e-06,
+     "n": 120,
+     "pass_diff_vs_always_best": -0.108333333,
+     "pass_diff_vs_always_best_ci95": [
+      -0.175,
+      -0.05
+     ],
+     "pass_diff_vs_always_opus": -0.108333333,
+     "pass_diff_vs_always_opus_ci95": [
+      -0.175,
+      -0.05
+     ],
+     "pass_rate": 0.808333333,
+     "pass_rate_wilson95": [
+      0.728788,
+      0.86875
+     ],
+     "passed": 97,
+     "picks_by_model": {
+      "deepseek-v4.1-flash": 120
+     },
+     "total_cost_usd": 0.00049945,
+     "tradeoff": 8
+    },
+    "router-prior-t9": {
+     "classifier": "prior",
+     "cost_ratio_vs_always_best": 0.00481598,
+     "cost_ratio_vs_always_best_ci95": [
+      0.003892207,
+      0.006244334
+     ],
+     "cost_ratio_vs_always_opus": 0.00481598,
+     "cost_ratio_vs_always_opus_ci95": [
+      0.003892207,
+      0.006244334
+     ],
+     "kind": "router",
+     "mean_cost_per_task_usd": 4.162e-06,
+     "n": 120,
+     "pass_diff_vs_always_best": -0.108333333,
+     "pass_diff_vs_always_best_ci95": [
+      -0.175,
+      -0.05
+     ],
+     "pass_diff_vs_always_opus": -0.108333333,
+     "pass_diff_vs_always_opus_ci95": [
+      -0.175,
+      -0.05
+     ],
+     "pass_rate": 0.808333333,
+     "pass_rate_wilson95": [
+      0.728788,
+      0.86875
+     ],
+     "passed": 97,
+     "picks_by_model": {
+      "deepseek-v4.1-flash": 120
+     },
+     "total_cost_usd": 0.00049945,
+     "tradeoff": 9
+    },
+    "router-s1-t0": {
+     "classifier": "s1",
+     "cost_ratio_vs_always_best": 0.217993357,
+     "cost_ratio_vs_always_best_ci95": [
+      0.094404381,
+      0.383054994
+     ],
+     "cost_ratio_vs_always_opus": 0.217993357,
+     "cost_ratio_vs_always_opus_ci95": [
+      0.094404381,
+      0.383054994
+     ],
+     "kind": "router",
+     "mean_cost_per_task_usd": 0.000188395,
+     "n": 120,
+     "pass_diff_vs_always_best": -0.083333333,
+     "pass_diff_vs_always_best_ci95": [
+      -0.141666667,
+      -0.025
+     ],
+     "pass_diff_vs_always_opus": -0.083333333,
+     "pass_diff_vs_always_opus_ci95": [
+      -0.141666667,
+      -0.025
+     ],
+     "pass_rate": 0.833333333,
+     "pass_rate_wilson95": [
+      0.756547,
+      0.88944
+     ],
+     "passed": 100,
+     "picks_by_model": {
+      "deepseek-v4.1-flash": 34,
+      "glm-5.3-flash": 68,
+      "gpt-5.6-sol": 10,
+      "kimi-k3": 8
+     },
+     "total_cost_usd": 0.0226074,
+     "tradeoff": 0
+    },
+    "router-s1-t1": {
+     "classifier": "s1",
+     "cost_ratio_vs_always_best": 0.108616009,
+     "cost_ratio_vs_always_best_ci95": [
+      0.04190118,
+      0.189517211
+     ],
+     "cost_ratio_vs_always_opus": 0.108616009,
+     "cost_ratio_vs_always_opus_ci95": [
+      0.04190118,
+      0.189517211
+     ],
+     "kind": "router",
+     "mean_cost_per_task_usd": 9.3869e-05,
+     "n": 120,
+     "pass_diff_vs_always_best": -0.091666667,
+     "pass_diff_vs_always_best_ci95": [
+      -0.158333333,
+      -0.033333333
+     ],
+     "pass_diff_vs_always_opus": -0.091666667,
+     "pass_diff_vs_always_opus_ci95": [
+      -0.158333333,
+      -0.033333333
+     ],
+     "pass_rate": 0.825,
+     "pass_rate_wilson95": [
+      0.747243,
+      0.882595
+     ],
+     "passed": 99,
+     "picks_by_model": {
+      "deepseek-v4.1-flash": 41,
+      "glm-5.3-flash": 67,
+      "gpt-5.6-sol": 9,
+      "kimi-k3": 3
+     },
+     "total_cost_usd": 0.011264222,
+     "tradeoff": 1
+    },
+    "router-s1-t10": {
+     "classifier": "s1",
+     "cost_ratio_vs_always_best": 0.00481598,
+     "cost_ratio_vs_always_best_ci95": [
+      0.003892207,
+      0.006244334
+     ],
+     "cost_ratio_vs_always_opus": 0.00481598,
+     "cost_ratio_vs_always_opus_ci95": [
+      0.003892207,
+      0.006244334
+     ],
+     "kind": "router",
+     "mean_cost_per_task_usd": 4.162e-06,
+     "n": 120,
+     "pass_diff_vs_always_best": -0.108333333,
+     "pass_diff_vs_always_best_ci95": [
+      -0.175,
+      -0.05
+     ],
+     "pass_diff_vs_always_opus": -0.108333333,
+     "pass_diff_vs_always_opus_ci95": [
+      -0.175,
+      -0.05
+     ],
+     "pass_rate": 0.808333333,
+     "pass_rate_wilson95": [
+      0.728788,
+      0.86875
+     ],
+     "passed": 97,
+     "picks_by_model": {
+      "deepseek-v4.1-flash": 120
+     },
+     "total_cost_usd": 0.00049945,
+     "tradeoff": 10
+    },
+    "router-s1-t2": {
+     "classifier": "s1",
+     "cost_ratio_vs_always_best": 0.014962071,
+     "cost_ratio_vs_always_best_ci95": [
+      0.011314952,
+      0.019878032
+     ],
+     "cost_ratio_vs_always_opus": 0.014962071,
+     "cost_ratio_vs_always_opus_ci95": [
+      0.011314952,
+      0.019878032
+     ],
+     "kind": "router",
+     "mean_cost_per_task_usd": 1.2931e-05,
+     "n": 120,
+     "pass_diff_vs_always_best": -0.1,
+     "pass_diff_vs_always_best_ci95": [
+      -0.166666667,
+      -0.041666667
+     ],
+     "pass_diff_vs_always_opus": -0.1,
+     "pass_diff_vs_always_opus_ci95": [
+      -0.166666667,
+      -0.041666667
+     ],
+     "pass_rate": 0.816666667,
+     "pass_rate_wilson95": [
+      0.737991,
+      0.875697
+     ],
+     "passed": 98,
+     "picks_by_model": {
+      "deepseek-v4.1-flash": 44,
+      "glm-5.3-flash": 71,
+      "gpt-5.6-luna": 5
+     },
+     "total_cost_usd": 0.001551669,
+     "tradeoff": 2
+    },
+    "router-s1-t3": {
+     "classifier": "s1",
+     "cost_ratio_vs_always_best": 0.015054042,
+     "cost_ratio_vs_always_best_ci95": [
+      0.011406719,
+      0.019975484
+     ],
+     "cost_ratio_vs_always_opus": 0.015054042,
+     "cost_ratio_vs_always_opus_ci95": [
+      0.011406719,
+      0.019975484
+     ],
+     "kind": "router",
+     "mean_cost_per_task_usd": 1.301e-05,
+     "n": 120,
+     "pass_diff_vs_always_best": -0.108333333,
+     "pass_diff_vs_always_best_ci95": [
+      -0.175,
+      -0.041666667
+     ],
+     "pass_diff_vs_always_opus": -0.108333333,
+     "pass_diff_vs_always_opus_ci95": [
+      -0.175,
+      -0.041666667
+     ],
+     "pass_rate": 0.808333333,
+     "pass_rate_wilson95": [
+      0.728788,
+      0.86875
+     ],
+     "passed": 97,
+     "picks_by_model": {
+      "deepseek-v4.1-flash": 45,
+      "glm-5.3-flash": 70,
+      "gpt-5.6-luna": 5
+     },
+     "total_cost_usd": 0.001561207,
+     "tradeoff": 3
+    },
+    "router-s1-t4": {
+     "classifier": "s1",
+     "cost_ratio_vs_always_best": 0.015054042,
+     "cost_ratio_vs_always_best_ci95": [
+      0.011406719,
+      0.019975484
+     ],
+     "cost_ratio_vs_always_opus": 0.015054042,
+     "cost_ratio_vs_always_opus_ci95": [
+      0.011406719,
+      0.019975484
+     ],
+     "kind": "router",
+     "mean_cost_per_task_usd": 1.301e-05,
+     "n": 120,
+     "pass_diff_vs_always_best": -0.108333333,
+     "pass_diff_vs_always_best_ci95": [
+      -0.175,
+      -0.041666667
+     ],
+     "pass_diff_vs_always_opus": -0.108333333,
+     "pass_diff_vs_always_opus_ci95": [
+      -0.175,
+      -0.041666667
+     ],
+     "pass_rate": 0.808333333,
+     "pass_rate_wilson95": [
+      0.728788,
+      0.86875
+     ],
+     "passed": 97,
+     "picks_by_model": {
+      "deepseek-v4.1-flash": 45,
+      "glm-5.3-flash": 70,
+      "gpt-5.6-luna": 5
+     },
+     "total_cost_usd": 0.001561207,
+     "tradeoff": 4
+    },
+    "router-s1-t5": {
+     "classifier": "s1",
+     "cost_ratio_vs_always_best": 0.0147131,
+     "cost_ratio_vs_always_best_ci95": [
+      0.011127173,
+      0.019540625
+     ],
+     "cost_ratio_vs_always_opus": 0.0147131,
+     "cost_ratio_vs_always_opus_ci95": [
+      0.011127173,
+      0.019540625
+     ],
+     "kind": "router",
+     "mean_cost_per_task_usd": 1.2715e-05,
+     "n": 120,
+     "pass_diff_vs_always_best": -0.116666667,
+     "pass_diff_vs_always_best_ci95": [
+      -0.183333333,
+      -0.05
+     ],
+     "pass_diff_vs_always_opus": -0.116666667,
+     "pass_diff_vs_always_opus_ci95": [
+      -0.183333333,
+      -0.05
+     ],
+     "pass_rate": 0.8,
+     "pass_rate_wilson95": [
+      0.719633,
+      0.861755
+     ],
+     "passed": 96,
+     "picks_by_model": {
+      "deepseek-v4.1-flash": 48,
+      "glm-5.3-flash": 67,
+      "gpt-5.6-luna": 5
+     },
+     "total_cost_usd": 0.001525849,
+     "tradeoff": 5
+    },
+    "router-s1-t6": {
+     "classifier": "s1",
+     "cost_ratio_vs_always_best": 0.014240672,
+     "cost_ratio_vs_always_best_ci95": [
+      0.010809072,
+      0.018862958
+     ],
+     "cost_ratio_vs_always_opus": 0.014240672,
+     "cost_ratio_vs_always_opus_ci95": [
+      0.010809072,
+      0.018862958
+     ],
+     "kind": "router",
+     "mean_cost_per_task_usd": 1.2307e-05,
+     "n": 120,
+     "pass_diff_vs_always_best": -0.108333333,
+     "pass_diff_vs_always_best_ci95": [
+      -0.175,
+      -0.05
+     ],
+     "pass_diff_vs_always_opus": -0.108333333,
+     "pass_diff_vs_always_opus_ci95": [
+      -0.175,
+      -0.05
+     ],
+     "pass_rate": 0.808333333,
+     "pass_rate_wilson95": [
+      0.728788,
+      0.86875
+     ],
+     "passed": 97,
+     "picks_by_model": {
+      "deepseek-v4.1-flash": 50,
+      "glm-5.3-flash": 65,
+      "gpt-5.6-luna": 5
+     },
+     "total_cost_usd": 0.001476855,
+     "tradeoff": 6
+    },
+    "router-s1-t7": {
+     "classifier": "s1",
+     "cost_ratio_vs_always_best": 0.01299278,
+     "cost_ratio_vs_always_best_ci95": [
+      0.009653818,
+      0.017305941
+     ],
+     "cost_ratio_vs_always_opus": 0.01299278,
+     "cost_ratio_vs_always_opus_ci95": [
+      0.009653818,
+      0.017305941
+     ],
+     "kind": "router",
+     "mean_cost_per_task_usd": 1.1229e-05,
+     "n": 120,
+     "pass_diff_vs_always_best": -0.108333333,
+     "pass_diff_vs_always_best_ci95": [
+      -0.175,
+      -0.05
+     ],
+     "pass_diff_vs_always_opus": -0.108333333,
+     "pass_diff_vs_always_opus_ci95": [
+      -0.175,
+      -0.05
+     ],
+     "pass_rate": 0.808333333,
+     "pass_rate_wilson95": [
+      0.728788,
+      0.86875
+     ],
+     "passed": 97,
+     "picks_by_model": {
+      "deepseek-v4.1-flash": 83,
+      "glm-5.3-flash": 32,
+      "gpt-5.6-luna": 5
+     },
+     "total_cost_usd": 0.00134744,
+     "tradeoff": 7
+    },
+    "router-s1-t8": {
+     "classifier": "s1",
+     "cost_ratio_vs_always_best": 0.011678575,
+     "cost_ratio_vs_always_best_ci95": [
+      0.008165997,
+      0.016123154
+     ],
+     "cost_ratio_vs_always_opus": 0.011678575,
+     "cost_ratio_vs_always_opus_ci95": [
+      0.008165997,
+      0.016123154
+     ],
+     "kind": "router",
+     "mean_cost_per_task_usd": 1.0093e-05,
+     "n": 120,
+     "pass_diff_vs_always_best": -0.108333333,
+     "pass_diff_vs_always_best_ci95": [
+      -0.175,
+      -0.041666667
+     ],
+     "pass_diff_vs_always_opus": -0.108333333,
+     "pass_diff_vs_always_opus_ci95": [
+      -0.175,
+      -0.041666667
+     ],
+     "pass_rate": 0.808333333,
+     "pass_rate_wilson95": [
+      0.728788,
+      0.86875
+     ],
+     "passed": 97,
+     "picks_by_model": {
+      "deepseek-v4.1-flash": 92,
+      "glm-5.3-flash": 23,
+      "gpt-5.6-luna": 5
+     },
+     "total_cost_usd": 0.001211148,
+     "tradeoff": 8
+    },
+    "router-s1-t9": {
+     "classifier": "s1",
+     "cost_ratio_vs_always_best": 0.009169126,
+     "cost_ratio_vs_always_best_ci95": [
+      0.006431826,
+      0.012267399
+     ],
+     "cost_ratio_vs_always_opus": 0.009169126,
+     "cost_ratio_vs_always_opus_ci95": [
+      0.006431826,
+      0.012267399
+     ],
+     "kind": "router",
+     "mean_cost_per_task_usd": 7.924e-06,
+     "n": 120,
+     "pass_diff_vs_always_best": -0.091666667,
+     "pass_diff_vs_always_best_ci95": [
+      -0.158333333,
+      -0.025
+     ],
+     "pass_diff_vs_always_opus": -0.091666667,
+     "pass_diff_vs_always_opus_ci95": [
+      -0.158333333,
+      -0.025
+     ],
+     "pass_rate": 0.825,
+     "pass_rate_wilson95": [
+      0.747243,
+      0.882595
+     ],
+     "passed": 99,
+     "picks_by_model": {
+      "deepseek-v4.1-flash": 104,
+      "glm-5.3-flash": 12,
+      "gpt-5.6-luna": 4
+     },
+     "total_cost_usd": 0.000950901,
+     "tradeoff": 9
+    }
+   },
+   "by_category": {
+    "coding": {
+     "always-best": {
+      "cost_usd": 0.032062123,
+      "pass_rate": 0.862068966
+     },
+     "always-cheapest": {
+      "cost_usd": 0.000199803,
+      "pass_rate": 0.793103448
+     },
+     "always-claude-opus-5": {
+      "cost_usd": 0.032062123,
+      "pass_rate": 0.862068966
+     },
+     "always-deepseek-v4.1-flash": {
+      "cost_usd": 0.000199803,
+      "pass_rate": 0.793103448
+     },
+     "always-glm-5.3-flash": {
+      "cost_usd": 0.0009502,
+      "pass_rate": 0.586206897
+     },
+     "always-gpt-5.6-luna": {
+      "cost_usd": 0.000409494,
+      "pass_rate": 0.931034483
+     },
+     "always-gpt-5.6-sol": {
+      "cost_usd": 0.007876924,
+      "pass_rate": 0.896551724
+     },
+     "always-kimi-k3": {
+      "cost_usd": 0.039579935,
+      "pass_rate": 0.75862069
+     },
+     "n": 29,
+     "oracle": {
+      "cost_usd": 0.000328163,
+      "pass_rate": 0.965517241
+     },
+     "router-prior-t0": {
+      "cost_usd": 0.007876924,
+      "pass_rate": 0.896551724
+     },
+     "router-prior-t1": {
+      "cost_usd": 0.007876924,
+      "pass_rate": 0.896551724
+     },
+     "router-prior-t10": {
+      "cost_usd": 0.000199803,
+      "pass_rate": 0.793103448
+     },
+     "router-prior-t2": {
+      "cost_usd": 0.0009502,
+      "pass_rate": 0.586206897
+     },
+     "router-prior-t3": {
+      "cost_usd": 0.0009502,
+      "pass_rate": 0.586206897
+     },
+     "router-prior-t4": {
+      "cost_usd": 0.0009502,
+      "pass_rate": 0.586206897
+     },
+     "router-prior-t5": {
+      "cost_usd": 0.0009502,
+      "pass_rate": 0.586206897
+     },
+     "router-prior-t6": {
+      "cost_usd": 0.0009502,
+      "pass_rate": 0.586206897
+     },
+     "router-prior-t7": {
+      "cost_usd": 0.0009502,
+      "pass_rate": 0.586206897
+     },
+     "router-prior-t8": {
+      "cost_usd": 0.000199803,
+      "pass_rate": 0.793103448
+     },
+     "router-prior-t9": {
+      "cost_usd": 0.000199803,
+      "pass_rate": 0.793103448
+     },
+     "router-s1-t0": {
+      "cost_usd": 0.0107655,
+      "pass_rate": 0.793103448
+     },
+     "router-s1-t1": {
+      "cost_usd": 0.003159845,
+      "pass_rate": 0.793103448
+     },
+     "router-s1-t10": {
+      "cost_usd": 0.000199803,
+      "pass_rate": 0.793103448
+     },
+     "router-s1-t2": {
+      "cost_usd": 0.000530723,
+      "pass_rate": 0.793103448
+     },
+     "router-s1-t3": {
+      "cost_usd": 0.000530723,
+      "pass_rate": 0.793103448
+     },
+     "router-s1-t4": {
+      "cost_usd": 0.000530723,
+      "pass_rate": 0.793103448
+     },
+     "router-s1-t5": {
+      "cost_usd": 0.000530723,
+      "pass_rate": 0.793103448
+     },
+     "router-s1-t6": {
+      "cost_usd": 0.000530723,
+      "pass_rate": 0.793103448
+     },
+     "router-s1-t7": {
+      "cost_usd": 0.000502856,
+      "pass_rate": 0.793103448
+     },
+     "router-s1-t8": {
+      "cost_usd": 0.000498128,
+      "pass_rate": 0.827586207
+     },
+     "router-s1-t9": {
+      "cost_usd": 0.000471528,
+      "pass_rate": 0.827586207
+     }
+    },
+    "everyday": {
+     "always-best": {
+      "cost_usd": 0.010226121,
+      "pass_rate": 0.971428571
+     },
+     "always-cheapest": {
+      "cost_usd": 3.4753e-05,
+      "pass_rate": 0.971428571
+     },
+     "always-claude-opus-5": {
+      "cost_usd": 0.010226121,
+      "pass_rate": 0.971428571
+     },
+     "always-deepseek-v4.1-flash": {
+      "cost_usd": 3.4753e-05,
+      "pass_rate": 0.971428571
+     },
+     "always-glm-5.3-flash": {
+      "cost_usd": 0.000158854,
+      "pass_rate": 0.857142857
+     },
+     "always-gpt-5.6-luna": {
+      "cost_usd": 0.000106837,
+      "pass_rate": 0.942857143
+     },
+     "always-gpt-5.6-sol": {
+      "cost_usd": 0.002265754,
+      "pass_rate": 0.971428571
+     },
+     "always-kimi-k3": {
+      "cost_usd": 0.007809202,
+      "pass_rate": 0.971428571
+     },
+     "n": 35,
+     "oracle": {
+      "cost_usd": 3.4753e-05,
+      "pass_rate": 0.971428571
+     },
+     "router-prior-t0": {
+      "cost_usd": 0.002265754,
+      "pass_rate": 0.971428571
+     },
+     "router-prior-t1": {
+      "cost_usd": 0.002265754,
+      "pass_rate": 0.971428571
+     },
+     "router-prior-t10": {
+      "cost_usd": 3.4753e-05,
+      "pass_rate": 0.971428571
+     },
+     "router-prior-t2": {
+      "cost_usd": 0.000158854,
+      "pass_rate": 0.857142857
+     },
+     "router-prior-t3": {
+      "cost_usd": 0.000158854,
+      "pass_rate": 0.857142857
+     },
+     "router-prior-t4": {
+      "cost_usd": 0.000158854,
+      "pass_rate": 0.857142857
+     },
+     "router-prior-t5": {
+      "cost_usd": 0.000158854,
+      "pass_rate": 0.857142857
+     },
+     "router-prior-t6": {
+      "cost_usd": 0.000158854,
+      "pass_rate": 0.857142857
+     },
+     "router-prior-t7": {
+      "cost_usd": 0.000158854,
+      "pass_rate": 0.857142857
+     },
+     "router-prior-t8": {
+      "cost_usd": 3.4753e-05,
+      "pass_rate": 0.971428571
+     },
+     "router-prior-t9": {
+      "cost_usd": 3.4753e-05,
+      "pass_rate": 0.971428571
+     },
+     "router-s1-t0": {
+      "cost_usd": 0.000111607,
+      "pass_rate": 0.971428571
+     },
+     "router-s1-t1": {
+      "cost_usd": 0.000111607,
+      "pass_rate": 0.971428571
+     },
+     "router-s1-t10": {
+      "cost_usd": 3.4753e-05,
+      "pass_rate": 0.971428571
+     },
+     "router-s1-t2": {
+      "cost_usd": 0.000111607,
+      "pass_rate": 0.971428571
+     },
+     "router-s1-t3": {
+      "cost_usd": 0.000111607,
+      "pass_rate": 0.971428571
+     },
+     "router-s1-t4": {
+      "cost_usd": 0.000111607,
+      "pass_rate": 0.971428571
+     },
+     "router-s1-t5": {
+      "cost_usd": 0.000111607,
+      "pass_rate": 0.971428571
+     },
+     "router-s1-t6": {
+      "cost_usd": 0.000111607,
+      "pass_rate": 0.971428571
+     },
+     "router-s1-t7": {
+      "cost_usd": 4.074e-05,
+      "pass_rate": 0.971428571
+     },
+     "router-s1-t8": {
+      "cost_usd": 3.7984e-05,
+      "pass_rate": 0.971428571
+     },
+     "router-s1-t9": {
+      "cost_usd": 3.4753e-05,
+      "pass_rate": 0.971428571
+     }
+    },
+    "knowledge": {
+     "always-best": {
+      "cost_usd": 0.007841899,
+      "pass_rate": 0.88
+     },
+     "always-cheapest": {
+      "cost_usd": 7.2447e-05,
+      "pass_rate": 0.76
+     },
+     "always-claude-opus-5": {
+      "cost_usd": 0.007841899,
+      "pass_rate": 0.88
+     },
+     "always-deepseek-v4.1-flash": {
+      "cost_usd": 7.2447e-05,
+      "pass_rate": 0.76
+     },
+     "always-glm-5.3-flash": {
+      "cost_usd": 0.000289924,
+      "pass_rate": 0.8
+     },
+     "always-gpt-5.6-luna": {
+      "cost_usd": 0.000111131,
+      "pass_rate": 0.84
+     },
+     "always-gpt-5.6-sol": {
+      "cost_usd": 0.002770228,
+      "pass_rate": 0.8
+     },
+     "always-kimi-k3": {
+      "cost_usd": 0.011997963,
+      "pass_rate": 0.88
+     },
+     "n": 25,
+     "oracle": {
+      "cost_usd": 0.003304629,
+      "pass_rate": 0.92
+     },
+     "router-prior-t0": {
+      "cost_usd": 0.002770228,
+      "pass_rate": 0.8
+     },
+     "router-prior-t1": {
+      "cost_usd": 0.002770228,
+      "pass_rate": 0.8
+     },
+     "router-prior-t10": {
+      "cost_usd": 7.2447e-05,
+      "pass_rate": 0.76
+     },
+     "router-prior-t2": {
+      "cost_usd": 0.000289924,
+      "pass_rate": 0.8
+     },
+     "router-prior-t3": {
+      "cost_usd": 0.000289924,
+      "pass_rate": 0.8
+     },
+     "router-prior-t4": {
+      "cost_usd": 0.000289924,
+      "pass_rate": 0.8
+     },
+     "router-prior-t5": {
+      "cost_usd": 0.000289924,
+      "pass_rate": 0.8
+     },
+     "router-prior-t6": {
+      "cost_usd": 0.000289924,
+      "pass_rate": 0.8
+     },
+     "router-prior-t7": {
+      "cost_usd": 0.000289924,
+      "pass_rate": 0.8
+     },
+     "router-prior-t8": {
+      "cost_usd": 7.2447e-05,
+      "pass_rate": 0.76
+     },
+     "router-prior-t9": {
+      "cost_usd": 7.2447e-05,
+      "pass_rate": 0.76
+     },
+     "router-s1-t0": {
+      "cost_usd": 0.001247968,
+      "pass_rate": 0.76
+     },
+     "router-s1-t1": {
+      "cost_usd": 0.001195517,
+      "pass_rate": 0.76
+     },
+     "router-s1-t10": {
+      "cost_usd": 7.2447e-05,
+      "pass_rate": 0.76
+     },
+     "router-s1-t2": {
+      "cost_usd": 0.000273828,
+      "pass_rate": 0.8
+     },
+     "router-s1-t3": {
+      "cost_usd": 0.000283366,
+      "pass_rate": 0.76
+     },
+     "router-s1-t4": {
+      "cost_usd": 0.000283366,
+      "pass_rate": 0.76
+     },
+     "router-s1-t5": {
+      "cost_usd": 0.000248008,
+      "pass_rate": 0.72
+     },
+     "router-s1-t6": {
+      "cost_usd": 0.000248008,
+      "pass_rate": 0.72
+     },
+     "router-s1-t7": {
+      "cost_usd": 0.000245636,
+      "pass_rate": 0.72
+     },
+     "router-s1-t8": {
+      "cost_usd": 0.00021784,
+      "pass_rate": 0.68
+     },
+     "router-s1-t9": {
+      "cost_usd": 0.000116092,
+      "pass_rate": 0.76
+     }
+    },
+    "math": {
+     "always-best": {
+      "cost_usd": 0.053576687,
+      "pass_rate": 0.935483871
+     },
+     "always-cheapest": {
+      "cost_usd": 0.000192447,
+      "pass_rate": 0.677419355
+     },
+     "always-claude-opus-5": {
+      "cost_usd": 0.053576687,
+      "pass_rate": 0.935483871
+     },
+     "always-deepseek-v4.1-flash": {
+      "cost_usd": 0.000192447,
+      "pass_rate": 0.677419355
+     },
+     "always-glm-5.3-flash": {
+      "cost_usd": 0.000853127,
+      "pass_rate": 0.741935484
+     },
+     "always-gpt-5.6-luna": {
+      "cost_usd": 0.000648754,
+      "pass_rate": 0.870967742
+     },
+     "always-gpt-5.6-sol": {
+      "cost_usd": 0.018516155,
+      "pass_rate": 0.935483871
+     },
+     "always-kimi-k3": {
+      "cost_usd": 0.041000259,
+      "pass_rate": 0.741935484
+     },
+     "n": 31,
+     "oracle": {
+      "cost_usd": 0.001738028,
+      "pass_rate": 0.935483871
+     },
+     "router-prior-t0": {
+      "cost_usd": 0.018516155,
+      "pass_rate": 0.935483871
+     },
+     "router-prior-t1": {
+      "cost_usd": 0.018516155,
+      "pass_rate": 0.935483871
+     },
+     "router-prior-t10": {
+      "cost_usd": 0.000192447,
+      "pass_rate": 0.677419355
+     },
+     "router-prior-t2": {
+      "cost_usd": 0.000853127,
+      "pass_rate": 0.741935484
+     },
+     "router-prior-t3": {
+      "cost_usd": 0.000853127,
+      "pass_rate": 0.741935484
+     },
+     "router-prior-t4": {
+      "cost_usd": 0.000853127,
+      "pass_rate": 0.741935484
+     },
+     "router-prior-t5": {
+      "cost_usd": 0.000853127,
+      "pass_rate": 0.741935484
+     },
+     "router-prior-t6": {
+      "cost_usd": 0.000853127,
+      "pass_rate": 0.741935484
+     },
+     "router-prior-t7": {
+      "cost_usd": 0.000853127,
+      "pass_rate": 0.741935484
+     },
+     "router-prior-t8": {
+      "cost_usd": 0.000192447,
+      "pass_rate": 0.677419355
+     },
+     "router-prior-t9": {
+      "cost_usd": 0.000192447,
+      "pass_rate": 0.677419355
+     },
+     "router-s1-t0": {
+      "cost_usd": 0.010482325,
+      "pass_rate": 0.774193548
+     },
+     "router-s1-t1": {
+      "cost_usd": 0.006797253,
+      "pass_rate": 0.741935484
+     },
+     "router-s1-t10": {
+      "cost_usd": 0.000192447,
+      "pass_rate": 0.677419355
+     },
+     "router-s1-t2": {
+      "cost_usd": 0.000635511,
+      "pass_rate": 0.677419355
+     },
+     "router-s1-t3": {
+      "cost_usd": 0.000635511,
+      "pass_rate": 0.677419355
+     },
+     "router-s1-t4": {
+      "cost_usd": 0.000635511,
+      "pass_rate": 0.677419355
+     },
+     "router-s1-t5": {
+      "cost_usd": 0.000635511,
+      "pass_rate": 0.677419355
+     },
+     "router-s1-t6": {
+      "cost_usd": 0.000586517,
+      "pass_rate": 0.709677419
+     },
+     "router-s1-t7": {
+      "cost_usd": 0.000558208,
+      "pass_rate": 0.709677419
+     },
+     "router-s1-t8": {
+      "cost_usd": 0.000457196,
+      "pass_rate": 0.709677419
+     },
+     "router-s1-t9": {
+      "cost_usd": 0.000328528,
+      "pass_rate": 0.709677419
+     }
+    }
+   },
+   "by_difficulty": {
+    "easy": {
+     "always-best": {
+      "cost_usd": 0.00691629,
+      "pass_rate": 0.9375
+     },
+     "always-cheapest": {
+      "cost_usd": 3.0519e-05,
+      "pass_rate": 0.875
+     },
+     "always-claude-opus-5": {
+      "cost_usd": 0.00691629,
+      "pass_rate": 0.9375
+     },
+     "always-deepseek-v4.1-flash": {
+      "cost_usd": 3.0519e-05,
+      "pass_rate": 0.875
+     },
+     "always-glm-5.3-flash": {
+      "cost_usd": 0.000177307,
+      "pass_rate": 0.90625
+     },
+     "always-gpt-5.6-luna": {
+      "cost_usd": 0.00010608,
+      "pass_rate": 0.90625
+     },
+     "always-gpt-5.6-sol": {
+      "cost_usd": 0.002006121,
+      "pass_rate": 0.90625
+     },
+     "always-kimi-k3": {
+      "cost_usd": 0.009065587,
+      "pass_rate": 0.96875
+     },
+     "n": 32,
+     "oracle": {
+      "cost_usd": 0.003284173,
+      "pass_rate": 0.96875
+     },
+     "router-prior-t0": {
+      "cost_usd": 0.002006121,
+      "pass_rate": 0.90625
+     },
+     "router-prior-t1": {
+      "cost_usd": 0.002006121,
+      "pass_rate": 0.90625
+     },
+     "router-prior-t10": {
+      "cost_usd": 3.0519e-05,
+      "pass_rate": 0.875
+     },
+     "router-prior-t2": {
+      "cost_usd": 0.000177307,
+      "pass_rate": 0.90625
+     },
+     "router-prior-t3": {
+      "cost_usd": 0.000177307,
+      "pass_rate": 0.90625
+     },
+     "router-prior-t4": {
+      "cost_usd": 0.000177307,
+      "pass_rate": 0.90625
+     },
+     "router-prior-t5": {
+      "cost_usd": 0.000177307,
+      "pass_rate": 0.90625
+     },
+     "router-prior-t6": {
+      "cost_usd": 0.000177307,
+      "pass_rate": 0.90625
+     },
+     "router-prior-t7": {
+      "cost_usd": 0.000177307,
+      "pass_rate": 0.90625
+     },
+     "router-prior-t8": {
+      "cost_usd": 3.0519e-05,
+      "pass_rate": 0.875
+     },
+     "router-prior-t9": {
+      "cost_usd": 3.0519e-05,
+      "pass_rate": 0.875
+     },
+     "router-s1-t0": {
+      "cost_usd": 0.000397934,
+      "pass_rate": 0.90625
+     },
+     "router-s1-t1": {
+      "cost_usd": 0.000290885,
+      "pass_rate": 0.90625
+     },
+     "router-s1-t10": {
+      "cost_usd": 3.0519e-05,
+      "pass_rate": 0.875
+     },
+     "router-s1-t2": {
+      "cost_usd": 0.000144908,
+      "pass_rate": 0.90625
+     },
+     "router-s1-t3": {
+      "cost_usd": 0.000144908,
+      "pass_rate": 0.90625
+     },
+     "router-s1-t4": {
+      "cost_usd": 0.000144908,
+      "pass_rate": 0.90625
+     },
+     "router-s1-t5": {
+      "cost_usd": 0.00014016,
+      "pass_rate": 0.90625
+     },
+     "router-s1-t6": {
+      "cost_usd": 9.1212e-05,
+      "pass_rate": 0.90625
+     },
+     "router-s1-t7": {
+      "cost_usd": 7.2477e-05,
+      "pass_rate": 0.90625
+     },
+     "router-s1-t8": {
+      "cost_usd": 3.5949e-05,
+      "pass_rate": 0.875
+     },
+     "router-s1-t9": {
+      "cost_usd": 3.0519e-05,
+      "pass_rate": 0.875
+     }
+    },
+    "hard": {
+     "always-best": {
+      "cost_usd": 0.064167321,
+      "pass_rate": 0.901960784
+     },
+     "always-cheapest": {
+      "cost_usd": 0.000288304,
+      "pass_rate": 0.745098039
+     },
+     "always-claude-opus-5": {
+      "cost_usd": 0.064167321,
+      "pass_rate": 0.901960784
+     },
+     "always-deepseek-v4.1-flash": {
+      "cost_usd": 0.000288304,
+      "pass_rate": 0.745098039
+     },
+     "always-glm-5.3-flash": {
+      "cost_usd": 0.001428757,
+      "pass_rate": 0.62745098
+     },
+     "always-gpt-5.6-luna": {
+      "cost_usd": 0.000781397,
+      "pass_rate": 0.901960784
+     },
+     "always-gpt-5.6-sol": {
+      "cost_usd": 0.021744474,
+      "pass_rate": 0.921568627
+     },
+     "always-kimi-k3": {
+      "cost_usd": 0.061514125,
+      "pass_rate": 0.764705882
+     },
+     "n": 51,
+     "oracle": {
+      "cost_usd": 0.000515848,
+      "pass_rate": 0.921568627
+     },
+     "router-prior-t0": {
+      "cost_usd": 0.021744474,
+      "pass_rate": 0.921568627
+     },
+     "router-prior-t1": {
+      "cost_usd": 0.021744474,
+      "pass_rate": 0.921568627
+     },
+     "router-prior-t10": {
+      "cost_usd": 0.000288304,
+      "pass_rate": 0.745098039
+     },
+     "router-prior-t2": {
+      "cost_usd": 0.001428757,
+      "pass_rate": 0.62745098
+     },
+     "router-prior-t3": {
+      "cost_usd": 0.001428757,
+      "pass_rate": 0.62745098
+     },
+     "router-prior-t4": {
+      "cost_usd": 0.001428757,
+      "pass_rate": 0.62745098
+     },
+     "router-prior-t5": {
+      "cost_usd": 0.001428757,
+      "pass_rate": 0.62745098
+     },
+     "router-prior-t6": {
+      "cost_usd": 0.001428757,
+      "pass_rate": 0.62745098
+     },
+     "router-prior-t7": {
+      "cost_usd": 0.001428757,
+      "pass_rate": 0.62745098
+     },
+     "router-prior-t8": {
+      "cost_usd": 0.000288304,
+      "pass_rate": 0.745098039
+     },
+     "router-prior-t9": {
+      "cost_usd": 0.000288304,
+      "pass_rate": 0.745098039
+     },
+     "router-s1-t0": {
+      "cost_usd": 0.015851116,
+      "pass_rate": 0.784313725
+     },
+     "router-s1-t1": {
+      "cost_usd": 0.008418692,
+      "pass_rate": 0.764705882
+     },
+     "router-s1-t10": {
+      "cost_usd": 0.000288304,
+      "pass_rate": 0.745098039
+     },
+     "router-s1-t2": {
+      "cost_usd": 0.000952251,
+      "pass_rate": 0.745098039
+     },
+     "router-s1-t3": {
+      "cost_usd": 0.000952251,
+      "pass_rate": 0.745098039
+     },
+     "router-s1-t4": {
+      "cost_usd": 0.000952251,
+      "pass_rate": 0.745098039
+     },
+     "router-s1-t5": {
+      "cost_usd": 0.000921641,
+      "pass_rate": 0.725490196
+     },
+     "router-s1-t6": {
+      "cost_usd": 0.000921595,
+      "pass_rate": 0.745098039
+     },
+     "router-s1-t7": {
+      "cost_usd": 0.00086769,
+      "pass_rate": 0.745098039
+     },
+     "router-s1-t8": {
+      "cost_usd": 0.000763922,
+      "pass_rate": 0.745098039
+     },
+     "router-s1-t9": {
+      "cost_usd": 0.000511156,
+      "pass_rate": 0.784313725
+     }
+    },
+    "medium": {
+     "always-best": {
+      "cost_usd": 0.032623219,
+      "pass_rate": 0.918918919
+     },
+     "always-cheapest": {
+      "cost_usd": 0.000180627,
+      "pass_rate": 0.837837838
+     },
+     "always-claude-opus-5": {
+      "cost_usd": 0.032623219,
+      "pass_rate": 0.918918919
+     },
+     "always-deepseek-v4.1-flash": {
+      "cost_usd": 0.000180627,
+      "pass_rate": 0.837837838
+     },
+     "always-glm-5.3-flash": {
+      "cost_usd": 0.000646041,
+      "pass_rate": 0.783783784
+     },
+     "always-gpt-5.6-luna": {
+      "cost_usd": 0.000388739,
+      "pass_rate": 0.891891892
+     },
+     "always-gpt-5.6-sol": {
+      "cost_usd": 0.007678466,
+      "pass_rate": 0.891891892
+     },
+     "always-kimi-k3": {
+      "cost_usd": 0.029807647,
+      "pass_rate": 0.837837838
+     },
+     "n": 37,
+     "oracle": {
+      "cost_usd": 0.001605552,
+      "pass_rate": 0.972972973
+     },
+     "router-prior-t0": {
+      "cost_usd": 0.007678466,
+      "pass_rate": 0.891891892
+     },
+     "router-prior-t1": {
+      "cost_usd": 0.007678466,
+      "pass_rate": 0.891891892
+     },
+     "router-prior-t10": {
+      "cost_usd": 0.000180627,
+      "pass_rate": 0.837837838
+     },
+     "router-prior-t2": {
+      "cost_usd": 0.000646041,
+      "pass_rate": 0.783783784
+     },
+     "router-prior-t3": {
+      "cost_usd": 0.000646041,
+      "pass_rate": 0.783783784
+     },
+     "router-prior-t4": {
+      "cost_usd": 0.000646041,
+      "pass_rate": 0.783783784
+     },
+     "router-prior-t5": {
+      "cost_usd": 0.000646041,
+      "pass_rate": 0.783783784
+     },
+     "router-prior-t6": {
+      "cost_usd": 0.000646041,
+      "pass_rate": 0.783783784
+     },
+     "router-prior-t7": {
+      "cost_usd": 0.000646041,
+      "pass_rate": 0.783783784
+     },
+     "router-prior-t8": {
+      "cost_usd": 0.000180627,
+      "pass_rate": 0.837837838
+     },
+     "router-prior-t9": {
+      "cost_usd": 0.000180627,
+      "pass_rate": 0.837837838
+     },
+     "router-s1-t0": {
+      "cost_usd": 0.00635835,
+      "pass_rate": 0.837837838
+     },
+     "router-s1-t1": {
+      "cost_usd": 0.002554645,
+      "pass_rate": 0.837837838
+     },
+     "router-s1-t10": {
+      "cost_usd": 0.000180627,
+      "pass_rate": 0.837837838
+     },
+     "router-s1-t2": {
+      "cost_usd": 0.00045451,
+      "pass_rate": 0.837837838
+     },
+     "router-s1-t3": {
+      "cost_usd": 0.000464048,
+      "pass_rate": 0.810810811
+     },
+     "router-s1-t4": {
+      "cost_usd": 0.000464048,
+      "pass_rate": 0.810810811
+     },
+     "router-s1-t5": {
+      "cost_usd": 0.000464048,
+      "pass_rate": 0.810810811
+     },
+     "router-s1-t6": {
+      "cost_usd": 0.000464048,
+      "pass_rate": 0.810810811
+     },
+     "router-s1-t7": {
+      "cost_usd": 0.000407273,
+      "pass_rate": 0.810810811
+     },
+     "router-s1-t8": {
+      "cost_usd": 0.000411277,
+      "pass_rate": 0.837837838
+     },
+     "router-s1-t9": {
+      "cost_usd": 0.000409226,
+      "pass_rate": 0.837837838
+     }
+    }
+   },
+   "headline": {
+    "prior/equal_quality/vs_always_best": {
+     "cost_pct": 30.3056809,
+     "cost_pct_ci95": [
+      25.4473965,
+      37.6625071
+     ],
+     "pass_diff": -0.008333333,
+     "pass_diff_ci95": [
+      -0.041666667,
+      0.025
+     ],
+     "pass_rate": 0.908333333,
+     "picks_by_model": {
+      "gpt-5.6-sol": 120
+     },
+     "tradeoff": 0
+    },
+    "prior/equal_quality/vs_always_opus": {
+     "cost_pct": 30.3056809,
+     "cost_pct_ci95": [
+      25.4473965,
+      37.6625071
+     ],
+     "pass_diff": -0.008333333,
+     "pass_diff_ci95": [
+      -0.041666667,
+      0.025
+     ],
+     "pass_rate": 0.908333333,
+     "picks_by_model": {
+      "gpt-5.6-sol": 120
+     },
+     "tradeoff": 0
+    },
+    "s1/equal_quality/vs_always_best": null,
+    "s1/equal_quality/vs_always_opus": null
+   },
+   "s1_vs_prior": {
+    "0": {
+     "ci95": [
+      -0.133333333,
+      -0.025
+     ],
+     "cost_ratio_ci95": [
+      0.310435885,
+      1.240000223
+     ],
+     "cost_ratio_s1_over_prior": 0.719315159,
+     "pass_diff_s1_minus_prior": -0.075
+    },
+    "1": {
+     "ci95": [
+      -0.141666667,
+      -0.033333333
+     ],
+     "cost_ratio_ci95": [
+      0.133548086,
+      0.63207967
+     ],
+     "cost_ratio_s1_over_prior": 0.358401481,
+     "pass_diff_s1_minus_prior": -0.083333333
+    },
+    "10": {
+     "ci95": [
+      0.0,
+      0.0
+     ],
+     "cost_ratio_ci95": [
+      1.0,
+      1.0
+     ],
+     "cost_ratio_s1_over_prior": 1.0,
+     "pass_diff_s1_minus_prior": 0.0
+    },
+    "2": {
+     "ci95": [
+      0.016666667,
+      0.125
+     ],
+     "cost_ratio_ci95": [
+      0.54963046,
+      0.82166227
+     ],
+     "cost_ratio_s1_over_prior": 0.688986082,
+     "pass_diff_s1_minus_prior": 0.066666667
+    },
+    "3": {
+     "ci95": [
+      0.0,
+      0.116666667
+     ],
+     "cost_ratio_ci95": [
+      0.554354504,
+      0.827300936
+     ],
+     "cost_ratio_s1_over_prior": 0.693221231,
+     "pass_diff_s1_minus_prior": 0.058333333
+    },
+    "4": {
+     "ci95": [
+      0.0,
+      0.116666667
+     ],
+     "cost_ratio_ci95": [
+      0.554354504,
+      0.827300936
+     ],
+     "cost_ratio_s1_over_prior": 0.693221231,
+     "pass_diff_s1_minus_prior": 0.058333333
+    },
+    "5": {
+     "ci95": [
+      -0.008333333,
+      0.116666667
+     ],
+     "cost_ratio_ci95": [
+      0.537202935,
+      0.812433451
+     ],
+     "cost_ratio_s1_over_prior": 0.677521252,
+     "pass_diff_s1_minus_prior": 0.05
+    },
+    "6": {
+     "ci95": [
+      0.0,
+      0.125
+     ],
+     "cost_ratio_ci95": [
+      0.516578486,
+      0.791168369
+     ],
+     "cost_ratio_s1_over_prior": 0.655766494,
+     "pass_diff_s1_minus_prior": 0.058333333
+    },
+    "7": {
+     "ci95": [
+      0.0,
+      0.125
+     ],
+     "cost_ratio_ci95": [
+      0.453993093,
+      0.732025667
+     ],
+     "cost_ratio_s1_over_prior": 0.598302477,
+     "pass_diff_s1_minus_prior": 0.058333333
+    },
+    "8": {
+     "ci95": [
+      -0.05,
+      0.05
+     ],
+     "cost_ratio_ci95": [
+      1.752349919,
+      3.134631702
+     ],
+     "cost_ratio_s1_over_prior": 2.42496346,
+     "pass_diff_s1_minus_prior": 0.0
+    },
+    "9": {
+     "ci95": [
+      -0.016666667,
+      0.05
+     ],
+     "cost_ratio_ci95": [
+      1.361428508,
+      2.439740801
+     ],
+     "cost_ratio_s1_over_prior": 1.903896286,
+     "pass_diff_s1_minus_prior": 0.016666667
+    }
+   }
+  },
+  "median": {
+   "always_best_model": "claude-opus-5",
+   "always_cheapest_model": "deepseek-v4.1-flash",
+   "arms": {
+    "always-best": {
+     "cost_ratio_vs_always_best": 1.0,
+     "cost_ratio_vs_always_best_ci95": [
+      1.0,
+      1.0
+     ],
+     "cost_ratio_vs_always_opus": 1.0,
+     "cost_ratio_vs_always_opus_ci95": [
+      1.0,
+      1.0
+     ],
+     "kind": "single",
+     "mean_cost_per_task_usd": 0.00842551,
+     "n": 120,
+     "pass_diff_vs_always_best": 0.0,
+     "pass_diff_vs_always_best_ci95": [
+      0.0,
+      0.0
+     ],
+     "pass_diff_vs_always_opus": 0.0,
+     "pass_diff_vs_always_opus_ci95": [
+      0.0,
+      0.0
+     ],
+     "pass_rate": 0.916666667,
+     "pass_rate_wilson95": [
+      0.853378,
+      0.954106
+     ],
+     "passed": 110,
+     "total_cost_usd": 1.0110612
+    },
+    "always-cheapest": {
+     "cost_ratio_vs_always_best": 0.082403481,
+     "cost_ratio_vs_always_best_ci95": [
+      0.066649075,
+      0.106715616
+     ],
+     "cost_ratio_vs_always_opus": 0.082403481,
+     "cost_ratio_vs_always_opus_ci95": [
+      0.066649075,
+      0.106715616
+     ],
+     "kind": "single",
+     "mean_cost_per_task_usd": 0.000694291,
+     "n": 120,
+     "pass_diff_vs_always_best": -0.108333333,
+     "pass_diff_vs_always_best_ci95": [
+      -0.175,
+      -0.05
+     ],
+     "pass_diff_vs_always_opus": -0.108333333,
+     "pass_diff_vs_always_opus_ci95": [
+      -0.175,
+      -0.05
+     ],
+     "pass_rate": 0.808333333,
+     "pass_rate_wilson95": [
+      0.728788,
+      0.86875
+     ],
+     "passed": 97,
+     "total_cost_usd": 0.083314962
+    },
+    "always-claude-opus-5": {
+     "cost_ratio_vs_always_best": 1.0,
+     "cost_ratio_vs_always_best_ci95": [
+      1.0,
+      1.0
+     ],
+     "cost_ratio_vs_always_opus": 1.0,
+     "cost_ratio_vs_always_opus_ci95": [
+      1.0,
+      1.0
+     ],
+     "kind": "single",
+     "mean_cost_per_task_usd": 0.00842551,
+     "n": 120,
+     "pass_diff_vs_always_best": 0.0,
+     "pass_diff_vs_always_best_ci95": [
+      0.0,
+      0.0
+     ],
+     "pass_diff_vs_always_opus": 0.0,
+     "pass_diff_vs_always_opus_ci95": [
+      0.0,
+      0.0
+     ],
+     "pass_rate": 0.916666667,
+     "pass_rate_wilson95": [
+      0.853378,
+      0.954106
+     ],
+     "passed": 110,
+     "total_cost_usd": 1.0110612
+    },
+    "always-deepseek-v4.1-flash": {
+     "cost_ratio_vs_always_best": 0.082403481,
+     "cost_ratio_vs_always_best_ci95": [
+      0.066649075,
+      0.106715616
+     ],
+     "cost_ratio_vs_always_opus": 0.082403481,
+     "cost_ratio_vs_always_opus_ci95": [
+      0.066649075,
+      0.106715616
+     ],
+     "kind": "single",
+     "mean_cost_per_task_usd": 0.000694291,
+     "n": 120,
+     "pass_diff_vs_always_best": -0.108333333,
+     "pass_diff_vs_always_best_ci95": [
+      -0.175,
+      -0.05
+     ],
+     "pass_diff_vs_always_opus": -0.108333333,
+     "pass_diff_vs_always_opus_ci95": [
+      -0.175,
+      -0.05
+     ],
+     "pass_rate": 0.808333333,
+     "pass_rate_wilson95": [
+      0.728788,
+      0.86875
+     ],
+     "passed": 97,
+     "total_cost_usd": 0.083314962
+    },
+    "always-glm-5.3-flash": {
+     "cost_ratio_vs_always_best": 0.076891397,
+     "cost_ratio_vs_always_best_ci95": [
+      0.061034005,
+      0.100933723
+     ],
+     "cost_ratio_vs_always_opus": 0.076891397,
+     "cost_ratio_vs_always_opus_ci95": [
+      0.061034005,
+      0.100933723
+     ],
+     "kind": "single",
+     "mean_cost_per_task_usd": 0.000647849,
+     "n": 120,
+     "pass_diff_vs_always_best": -0.166666667,
+     "pass_diff_vs_always_best_ci95": [
+      -0.241666667,
+      -0.1
+     ],
+     "pass_diff_vs_always_opus": -0.166666667,
+     "pass_diff_vs_always_opus_ci95": [
+      -0.241666667,
+      -0.1
+     ],
+     "pass_rate": 0.75,
+     "pass_rate_wilson95": [
+      0.665589,
+      0.818902
+     ],
+     "passed": 90,
+     "total_cost_usd": 0.077741908
+    },
+    "always-gpt-5.6-luna": {
+     "cost_ratio_vs_always_best": 0.045478345,
+     "cost_ratio_vs_always_best_ci95": [
+      0.03853016,
+      0.056752851
+     ],
+     "cost_ratio_vs_always_opus": 0.045478345,
+     "cost_ratio_vs_always_opus_ci95": [
+      0.03853016,
+      0.056752851
+     ],
+     "kind": "single",
+     "mean_cost_per_task_usd": 0.000383178,
+     "n": 120,
+     "pass_diff_vs_always_best": -0.016666667,
+     "pass_diff_vs_always_best_ci95": [
+      -0.058333333,
+      0.025
+     ],
+     "pass_diff_vs_always_opus": -0.016666667,
+     "pass_diff_vs_always_opus_ci95": [
+      -0.058333333,
+      0.025
+     ],
+     "pass_rate": 0.9,
+     "pass_rate_wilson95": [
+      0.833318,
+      0.941866
+     ],
+     "passed": 108,
+     "total_cost_usd": 0.04598139
+    },
+    "always-gpt-5.6-sol": {
+     "cost_ratio_vs_always_best": 0.314735844,
+     "cost_ratio_vs_always_best_ci95": [
+      0.263671361,
+      0.391128522
+     ],
+     "cost_ratio_vs_always_opus": 0.314735844,
+     "cost_ratio_vs_always_opus_ci95": [
+      0.263671361,
+      0.391128522
+     ],
+     "kind": "single",
+     "mean_cost_per_task_usd": 0.00265181,
+     "n": 120,
+     "pass_diff_vs_always_best": -0.008333333,
+     "pass_diff_vs_always_best_ci95": [
+      -0.041666667,
+      0.025
+     ],
+     "pass_diff_vs_always_opus": -0.008333333,
+     "pass_diff_vs_always_opus_ci95": [
+      -0.041666667,
+      0.025
+     ],
+     "pass_rate": 0.908333333,
+     "pass_rate_wilson95": [
+      0.843292,
+      0.948043
+     ],
+     "passed": 109,
+     "total_cost_usd": 0.3182172
+    },
+    "always-kimi-k3": {
+     "cost_ratio_vs_always_best": 0.565380205,
+     "cost_ratio_vs_always_best_ci95": [
+      0.457925859,
+      0.725080435
+     ],
+     "cost_ratio_vs_always_opus": 0.565380205,
+     "cost_ratio_vs_always_opus_ci95": [
+      0.457925859,
+      0.725080435
+     ],
+     "kind": "single",
+     "mean_cost_per_task_usd": 0.004763617,
+     "n": 120,
+     "pass_diff_vs_always_best": -0.075,
+     "pass_diff_vs_always_best_ci95": [
+      -0.133333333,
+      -0.016666667
+     ],
+     "pass_diff_vs_always_opus": -0.075,
+     "pass_diff_vs_always_opus_ci95": [
+      -0.133333333,
+      -0.016666667
+     ],
+     "pass_rate": 0.841666667,
+     "pass_rate_wilson95": [
+      0.765907,
+      0.89623
+     ],
+     "passed": 101,
+     "total_cost_usd": 0.571633989
+    },
+    "oracle": {
+     "cost_ratio_vs_always_best": 0.076301622,
+     "cost_ratio_vs_always_best_ci95": [
+      0.044283188,
+      0.129733296
+     ],
+     "cost_ratio_vs_always_opus": 0.076301622,
+     "cost_ratio_vs_always_opus_ci95": [
+      0.044283188,
+      0.129733296
+     ],
+     "kind": "oracle",
+     "mean_cost_per_task_usd": 0.00064288,
+     "n": 120,
+     "pass_diff_vs_always_best": 0.033333333,
+     "pass_diff_vs_always_best_ci95": [
+      0.008333333,
+      0.066666667
+     ],
+     "pass_diff_vs_always_opus": 0.033333333,
+     "pass_diff_vs_always_opus_ci95": [
+      0.008333333,
+      0.066666667
+     ],
+     "pass_rate": 0.95,
+     "pass_rate_wilson95": [
+      0.895197,
+      0.976886
+     ],
+     "passed": 114,
+     "total_cost_usd": 0.077145609
+    },
+    "router-prior-t0": {
+     "classifier": "prior",
+     "cost_ratio_vs_always_best": 0.314735844,
+     "cost_ratio_vs_always_best_ci95": [
+      0.263671361,
+      0.391128522
+     ],
+     "cost_ratio_vs_always_opus": 0.314735844,
+     "cost_ratio_vs_always_opus_ci95": [
+      0.263671361,
+      0.391128522
+     ],
+     "kind": "router",
+     "mean_cost_per_task_usd": 0.00265181,
+     "n": 120,
+     "pass_diff_vs_always_best": -0.008333333,
+     "pass_diff_vs_always_best_ci95": [
+      -0.041666667,
+      0.025
+     ],
+     "pass_diff_vs_always_opus": -0.008333333,
+     "pass_diff_vs_always_opus_ci95": [
+      -0.041666667,
+      0.025
+     ],
+     "pass_rate": 0.908333333,
+     "pass_rate_wilson95": [
+      0.843292,
+      0.948043
+     ],
+     "passed": 109,
+     "picks_by_model": {
+      "gpt-5.6-sol": 120
+     },
+     "total_cost_usd": 0.3182172,
+     "tradeoff": 0
+    },
+    "router-prior-t1": {
+     "classifier": "prior",
+     "cost_ratio_vs_always_best": 0.565380205,
+     "cost_ratio_vs_always_best_ci95": [
+      0.457925859,
+      0.725080435
+     ],
+     "cost_ratio_vs_always_opus": 0.565380205,
+     "cost_ratio_vs_always_opus_ci95": [
+      0.457925859,
+      0.725080435
+     ],
+     "kind": "router",
+     "mean_cost_per_task_usd": 0.004763617,
+     "n": 120,
+     "pass_diff_vs_always_best": -0.075,
+     "pass_diff_vs_always_best_ci95": [
+      -0.133333333,
+      -0.016666667
+     ],
+     "pass_diff_vs_always_opus": -0.075,
+     "pass_diff_vs_always_opus_ci95": [
+      -0.133333333,
+      -0.016666667
+     ],
+     "pass_rate": 0.841666667,
+     "pass_rate_wilson95": [
+      0.765907,
+      0.89623
+     ],
+     "passed": 101,
+     "picks_by_model": {
+      "kimi-k3": 120
+     },
+     "total_cost_usd": 0.571633989,
+     "tradeoff": 1
+    },
+    "router-prior-t10": {
+     "classifier": "prior",
+     "cost_ratio_vs_always_best": 0.076891397,
+     "cost_ratio_vs_always_best_ci95": [
+      0.061034005,
+      0.100933723
+     ],
+     "cost_ratio_vs_always_opus": 0.076891397,
+     "cost_ratio_vs_always_opus_ci95": [
+      0.061034005,
+      0.100933723
+     ],
+     "kind": "router",
+     "mean_cost_per_task_usd": 0.000647849,
+     "n": 120,
+     "pass_diff_vs_always_best": -0.166666667,
+     "pass_diff_vs_always_best_ci95": [
+      -0.241666667,
+      -0.1
+     ],
+     "pass_diff_vs_always_opus": -0.166666667,
+     "pass_diff_vs_always_opus_ci95": [
+      -0.241666667,
+      -0.1
+     ],
+     "pass_rate": 0.75,
+     "pass_rate_wilson95": [
+      0.665589,
+      0.818902
+     ],
+     "passed": 90,
+     "picks_by_model": {
+      "glm-5.3-flash": 120
+     },
+     "total_cost_usd": 0.077741908,
+     "tradeoff": 10
+    },
+    "router-prior-t2": {
+     "classifier": "prior",
+     "cost_ratio_vs_always_best": 0.076891397,
+     "cost_ratio_vs_always_best_ci95": [
+      0.061034005,
+      0.100933723
+     ],
+     "cost_ratio_vs_always_opus": 0.076891397,
+     "cost_ratio_vs_always_opus_ci95": [
+      0.061034005,
+      0.100933723
+     ],
+     "kind": "router",
+     "mean_cost_per_task_usd": 0.000647849,
+     "n": 120,
+     "pass_diff_vs_always_best": -0.166666667,
+     "pass_diff_vs_always_best_ci95": [
+      -0.241666667,
+      -0.1
+     ],
+     "pass_diff_vs_always_opus": -0.166666667,
+     "pass_diff_vs_always_opus_ci95": [
+      -0.241666667,
+      -0.1
+     ],
+     "pass_rate": 0.75,
+     "pass_rate_wilson95": [
+      0.665589,
+      0.818902
+     ],
+     "passed": 90,
+     "picks_by_model": {
+      "glm-5.3-flash": 120
+     },
+     "total_cost_usd": 0.077741908,
+     "tradeoff": 2
+    },
+    "router-prior-t3": {
+     "classifier": "prior",
+     "cost_ratio_vs_always_best": 0.076891397,
+     "cost_ratio_vs_always_best_ci95": [
+      0.061034005,
+      0.100933723
+     ],
+     "cost_ratio_vs_always_opus": 0.076891397,
+     "cost_ratio_vs_always_opus_ci95": [
+      0.061034005,
+      0.100933723
+     ],
+     "kind": "router",
+     "mean_cost_per_task_usd": 0.000647849,
+     "n": 120,
+     "pass_diff_vs_always_best": -0.166666667,
+     "pass_diff_vs_always_best_ci95": [
+      -0.241666667,
+      -0.1
+     ],
+     "pass_diff_vs_always_opus": -0.166666667,
+     "pass_diff_vs_always_opus_ci95": [
+      -0.241666667,
+      -0.1
+     ],
+     "pass_rate": 0.75,
+     "pass_rate_wilson95": [
+      0.665589,
+      0.818902
+     ],
+     "passed": 90,
+     "picks_by_model": {
+      "glm-5.3-flash": 120
+     },
+     "total_cost_usd": 0.077741908,
+     "tradeoff": 3
+    },
+    "router-prior-t4": {
+     "classifier": "prior",
+     "cost_ratio_vs_always_best": 0.076891397,
+     "cost_ratio_vs_always_best_ci95": [
+      0.061034005,
+      0.100933723
+     ],
+     "cost_ratio_vs_always_opus": 0.076891397,
+     "cost_ratio_vs_always_opus_ci95": [
+      0.061034005,
+      0.100933723
+     ],
+     "kind": "router",
+     "mean_cost_per_task_usd": 0.000647849,
+     "n": 120,
+     "pass_diff_vs_always_best": -0.166666667,
+     "pass_diff_vs_always_best_ci95": [
+      -0.241666667,
+      -0.1
+     ],
+     "pass_diff_vs_always_opus": -0.166666667,
+     "pass_diff_vs_always_opus_ci95": [
+      -0.241666667,
+      -0.1
+     ],
+     "pass_rate": 0.75,
+     "pass_rate_wilson95": [
+      0.665589,
+      0.818902
+     ],
+     "passed": 90,
+     "picks_by_model": {
+      "glm-5.3-flash": 120
+     },
+     "total_cost_usd": 0.077741908,
+     "tradeoff": 4
+    },
+    "router-prior-t5": {
+     "classifier": "prior",
+     "cost_ratio_vs_always_best": 0.076891397,
+     "cost_ratio_vs_always_best_ci95": [
+      0.061034005,
+      0.100933723
+     ],
+     "cost_ratio_vs_always_opus": 0.076891397,
+     "cost_ratio_vs_always_opus_ci95": [
+      0.061034005,
+      0.100933723
+     ],
+     "kind": "router",
+     "mean_cost_per_task_usd": 0.000647849,
+     "n": 120,
+     "pass_diff_vs_always_best": -0.166666667,
+     "pass_diff_vs_always_best_ci95": [
+      -0.241666667,
+      -0.1
+     ],
+     "pass_diff_vs_always_opus": -0.166666667,
+     "pass_diff_vs_always_opus_ci95": [
+      -0.241666667,
+      -0.1
+     ],
+     "pass_rate": 0.75,
+     "pass_rate_wilson95": [
+      0.665589,
+      0.818902
+     ],
+     "passed": 90,
+     "picks_by_model": {
+      "glm-5.3-flash": 120
+     },
+     "total_cost_usd": 0.077741908,
+     "tradeoff": 5
+    },
+    "router-prior-t6": {
+     "classifier": "prior",
+     "cost_ratio_vs_always_best": 0.076891397,
+     "cost_ratio_vs_always_best_ci95": [
+      0.061034005,
+      0.100933723
+     ],
+     "cost_ratio_vs_always_opus": 0.076891397,
+     "cost_ratio_vs_always_opus_ci95": [
+      0.061034005,
+      0.100933723
+     ],
+     "kind": "router",
+     "mean_cost_per_task_usd": 0.000647849,
+     "n": 120,
+     "pass_diff_vs_always_best": -0.166666667,
+     "pass_diff_vs_always_best_ci95": [
+      -0.241666667,
+      -0.1
+     ],
+     "pass_diff_vs_always_opus": -0.166666667,
+     "pass_diff_vs_always_opus_ci95": [
+      -0.241666667,
+      -0.1
+     ],
+     "pass_rate": 0.75,
+     "pass_rate_wilson95": [
+      0.665589,
+      0.818902
+     ],
+     "passed": 90,
+     "picks_by_model": {
+      "glm-5.3-flash": 120
+     },
+     "total_cost_usd": 0.077741908,
+     "tradeoff": 6
+    },
+    "router-prior-t7": {
+     "classifier": "prior",
+     "cost_ratio_vs_always_best": 0.076891397,
+     "cost_ratio_vs_always_best_ci95": [
+      0.061034005,
+      0.100933723
+     ],
+     "cost_ratio_vs_always_opus": 0.076891397,
+     "cost_ratio_vs_always_opus_ci95": [
+      0.061034005,
+      0.100933723
+     ],
+     "kind": "router",
+     "mean_cost_per_task_usd": 0.000647849,
+     "n": 120,
+     "pass_diff_vs_always_best": -0.166666667,
+     "pass_diff_vs_always_best_ci95": [
+      -0.241666667,
+      -0.1
+     ],
+     "pass_diff_vs_always_opus": -0.166666667,
+     "pass_diff_vs_always_opus_ci95": [
+      -0.241666667,
+      -0.1
+     ],
+     "pass_rate": 0.75,
+     "pass_rate_wilson95": [
+      0.665589,
+      0.818902
+     ],
+     "passed": 90,
+     "picks_by_model": {
+      "glm-5.3-flash": 120
+     },
+     "total_cost_usd": 0.077741908,
+     "tradeoff": 7
+    },
+    "router-prior-t8": {
+     "classifier": "prior",
+     "cost_ratio_vs_always_best": 0.076891397,
+     "cost_ratio_vs_always_best_ci95": [
+      0.061034005,
+      0.100933723
+     ],
+     "cost_ratio_vs_always_opus": 0.076891397,
+     "cost_ratio_vs_always_opus_ci95": [
+      0.061034005,
+      0.100933723
+     ],
+     "kind": "router",
+     "mean_cost_per_task_usd": 0.000647849,
+     "n": 120,
+     "pass_diff_vs_always_best": -0.166666667,
+     "pass_diff_vs_always_best_ci95": [
+      -0.241666667,
+      -0.1
+     ],
+     "pass_diff_vs_always_opus": -0.166666667,
+     "pass_diff_vs_always_opus_ci95": [
+      -0.241666667,
+      -0.1
+     ],
+     "pass_rate": 0.75,
+     "pass_rate_wilson95": [
+      0.665589,
+      0.818902
+     ],
+     "passed": 90,
+     "picks_by_model": {
+      "glm-5.3-flash": 120
+     },
+     "total_cost_usd": 0.077741908,
+     "tradeoff": 8
+    },
+    "router-prior-t9": {
+     "classifier": "prior",
+     "cost_ratio_vs_always_best": 0.076891397,
+     "cost_ratio_vs_always_best_ci95": [
+      0.061034005,
+      0.100933723
+     ],
+     "cost_ratio_vs_always_opus": 0.076891397,
+     "cost_ratio_vs_always_opus_ci95": [
+      0.061034005,
+      0.100933723
+     ],
+     "kind": "router",
+     "mean_cost_per_task_usd": 0.000647849,
+     "n": 120,
+     "pass_diff_vs_always_best": -0.166666667,
+     "pass_diff_vs_always_best_ci95": [
+      -0.241666667,
+      -0.1
+     ],
+     "pass_diff_vs_always_opus": -0.166666667,
+     "pass_diff_vs_always_opus_ci95": [
+      -0.241666667,
+      -0.1
+     ],
+     "pass_rate": 0.75,
+     "pass_rate_wilson95": [
+      0.665589,
+      0.818902
+     ],
+     "passed": 90,
+     "picks_by_model": {
+      "glm-5.3-flash": 120
+     },
+     "total_cost_usd": 0.077741908,
+     "tradeoff": 9
+    },
+    "router-s1-t0": {
+     "classifier": "s1",
+     "cost_ratio_vs_always_best": 0.192629494,
+     "cost_ratio_vs_always_best_ci95": [
+      0.122502878,
+      0.287168789
+     ],
+     "cost_ratio_vs_always_opus": 0.192629494,
+     "cost_ratio_vs_always_opus_ci95": [
+      0.122502878,
+      0.287168789
+     ],
+     "kind": "router",
+     "mean_cost_per_task_usd": 0.001623002,
+     "n": 120,
+     "pass_diff_vs_always_best": -0.083333333,
+     "pass_diff_vs_always_best_ci95": [
+      -0.141666667,
+      -0.025
+     ],
+     "pass_diff_vs_always_opus": -0.083333333,
+     "pass_diff_vs_always_opus_ci95": [
+      -0.141666667,
+      -0.025
+     ],
+     "pass_rate": 0.833333333,
+     "pass_rate_wilson95": [
+      0.756547,
+      0.88944
+     ],
+     "passed": 100,
+     "picks_by_model": {
+      "deepseek-v4.1-flash": 33,
+      "glm-5.3-flash": 69,
+      "gpt-5.6-sol": 10,
+      "kimi-k3": 8
+     },
+     "total_cost_usd": 0.194760207,
+     "tradeoff": 0
+    },
+    "router-s1-t1": {
+     "classifier": "s1",
+     "cost_ratio_vs_always_best": 0.215126928,
+     "cost_ratio_vs_always_best_ci95": [
+      0.137359567,
+      0.328152342
+     ],
+     "cost_ratio_vs_always_opus": 0.215126928,
+     "cost_ratio_vs_always_opus_ci95": [
+      0.137359567,
+      0.328152342
+     ],
+     "kind": "router",
+     "mean_cost_per_task_usd": 0.001812554,
+     "n": 120,
+     "pass_diff_vs_always_best": -0.083333333,
+     "pass_diff_vs_always_best_ci95": [
+      -0.15,
+      -0.016666667
+     ],
+     "pass_diff_vs_always_opus": -0.083333333,
+     "pass_diff_vs_always_opus_ci95": [
+      -0.15,
+      -0.016666667
+     ],
+     "pass_rate": 0.833333333,
+     "pass_rate_wilson95": [
+      0.756547,
+      0.88944
+     ],
+     "passed": 100,
+     "picks_by_model": {
+      "deepseek-v4.1-flash": 34,
+      "glm-5.3-flash": 70,
+      "gpt-5.6-sol": 5,
+      "kimi-k3": 11
+     },
+     "total_cost_usd": 0.21750649,
+     "tradeoff": 1
+    },
+    "router-s1-t10": {
+     "classifier": "s1",
+     "cost_ratio_vs_always_best": 0.076891397,
+     "cost_ratio_vs_always_best_ci95": [
+      0.061034005,
+      0.100933723
+     ],
+     "cost_ratio_vs_always_opus": 0.076891397,
+     "cost_ratio_vs_always_opus_ci95": [
+      0.061034005,
+      0.100933723
+     ],
+     "kind": "router",
+     "mean_cost_per_task_usd": 0.000647849,
+     "n": 120,
+     "pass_diff_vs_always_best": -0.166666667,
+     "pass_diff_vs_always_best_ci95": [
+      -0.241666667,
+      -0.1
+     ],
+     "pass_diff_vs_always_opus": -0.166666667,
+     "pass_diff_vs_always_opus_ci95": [
+      -0.241666667,
+      -0.1
+     ],
+     "pass_rate": 0.75,
+     "pass_rate_wilson95": [
+      0.665589,
+      0.818902
+     ],
+     "passed": 90,
+     "picks_by_model": {
+      "glm-5.3-flash": 120
+     },
+     "total_cost_usd": 0.077741908,
+     "tradeoff": 10
+    },
+    "router-s1-t2": {
+     "classifier": "s1",
+     "cost_ratio_vs_always_best": 0.095032243,
+     "cost_ratio_vs_always_best_ci95": [
+      0.063061592,
+      0.139783535
+     ],
+     "cost_ratio_vs_always_opus": 0.095032243,
+     "cost_ratio_vs_always_opus_ci95": [
+      0.063061592,
+      0.139783535
+     ],
+     "kind": "router",
+     "mean_cost_per_task_usd": 0.000800695,
+     "n": 120,
+     "pass_diff_vs_always_best": -0.1,
+     "pass_diff_vs_always_best_ci95": [
+      -0.166666667,
+      -0.041666667
+     ],
+     "pass_diff_vs_always_opus": -0.1,
+     "pass_diff_vs_always_opus_ci95": [
+      -0.166666667,
+      -0.041666667
+     ],
+     "pass_rate": 0.816666667,
+     "pass_rate_wilson95": [
+      0.737991,
+      0.875697
+     ],
+     "passed": 98,
+     "picks_by_model": {
+      "deepseek-v4.1-flash": 35,
+      "glm-5.3-flash": 77,
+      "gpt-5.6-luna": 5,
+      "kimi-k3": 3
+     },
+     "total_cost_usd": 0.096083414,
+     "tradeoff": 2
+    },
+    "router-s1-t3": {
+     "classifier": "s1",
+     "cost_ratio_vs_always_best": 0.069082697,
+     "cost_ratio_vs_always_best_ci95": [
+      0.055563988,
+      0.090521198
+     ],
+     "cost_ratio_vs_always_opus": 0.069082697,
+     "cost_ratio_vs_always_opus_ci95": [
+      0.055563988,
+      0.090521198
+     ],
+     "kind": "router",
+     "mean_cost_per_task_usd": 0.000582057,
+     "n": 120,
+     "pass_diff_vs_always_best": -0.125,
+     "pass_diff_vs_always_best_ci95": [
+      -0.191666667,
+      -0.058333333
+     ],
+     "pass_diff_vs_always_opus": -0.125,
+     "pass_diff_vs_always_opus_ci95": [
+      -0.191666667,
+      -0.058333333
+     ],
+     "pass_rate": 0.791666667,
+     "pass_rate_wilson95": [
+      0.710523,
+      0.854716
+     ],
+     "passed": 95,
+     "picks_by_model": {
+      "deepseek-v4.1-flash": 16,
+      "glm-5.3-flash": 98,
+      "gpt-5.6-luna": 5,
+      "kimi-k3": 1
+     },
+     "total_cost_usd": 0.069846835,
+     "tradeoff": 3
+    },
+    "router-s1-t4": {
+     "classifier": "s1",
+     "cost_ratio_vs_always_best": 0.067256519,
+     "cost_ratio_vs_always_best_ci95": [
+      0.054466561,
+      0.087281977
+     ],
+     "cost_ratio_vs_always_opus": 0.067256519,
+     "cost_ratio_vs_always_opus_ci95": [
+      0.054466561,
+      0.087281977
+     ],
+     "kind": "router",
+     "mean_cost_per_task_usd": 0.00056667,
+     "n": 120,
+     "pass_diff_vs_always_best": -0.125,
+     "pass_diff_vs_always_best_ci95": [
+      -0.191666667,
+      -0.058333333
+     ],
+     "pass_diff_vs_always_opus": -0.125,
+     "pass_diff_vs_always_opus_ci95": [
+      -0.191666667,
+      -0.058333333
+     ],
+     "pass_rate": 0.791666667,
+     "pass_rate_wilson95": [
+      0.710523,
+      0.854716
+     ],
+     "passed": 95,
+     "picks_by_model": {
+      "deepseek-v4.1-flash": 16,
+      "glm-5.3-flash": 99,
+      "gpt-5.6-luna": 5
+     },
+     "total_cost_usd": 0.068000457,
+     "tradeoff": 4
+    },
+    "router-s1-t5": {
+     "classifier": "s1",
+     "cost_ratio_vs_always_best": 0.067298913,
+     "cost_ratio_vs_always_best_ci95": [
+      0.05448902,
+      0.087343116
+     ],
+     "cost_ratio_vs_always_opus": 0.067298913,
+     "cost_ratio_vs_always_opus_ci95": [
+      0.05448902,
+      0.087343116
+     ],
+     "kind": "router",
+     "mean_cost_per_task_usd": 0.000567028,
+     "n": 120,
+     "pass_diff_vs_always_best": -0.125,
+     "pass_diff_vs_always_best_ci95": [
+      -0.191666667,
+      -0.058333333
+     ],
+     "pass_diff_vs_always_opus": -0.125,
+     "pass_diff_vs_always_opus_ci95": [
+      -0.191666667,
+      -0.058333333
+     ],
+     "pass_rate": 0.791666667,
+     "pass_rate_wilson95": [
+      0.710523,
+      0.854716
+     ],
+     "passed": 95,
+     "picks_by_model": {
+      "deepseek-v4.1-flash": 15,
+      "glm-5.3-flash": 100,
+      "gpt-5.6-luna": 5
+     },
+     "total_cost_usd": 0.06804332,
+     "tradeoff": 5
+    },
+    "router-s1-t6": {
+     "classifier": "s1",
+     "cost_ratio_vs_always_best": 0.067298913,
+     "cost_ratio_vs_always_best_ci95": [
+      0.05448902,
+      0.087343116
+     ],
+     "cost_ratio_vs_always_opus": 0.067298913,
+     "cost_ratio_vs_always_opus_ci95": [
+      0.05448902,
+      0.087343116
+     ],
+     "kind": "router",
+     "mean_cost_per_task_usd": 0.000567028,
+     "n": 120,
+     "pass_diff_vs_always_best": -0.125,
+     "pass_diff_vs_always_best_ci95": [
+      -0.191666667,
+      -0.058333333
+     ],
+     "pass_diff_vs_always_opus": -0.125,
+     "pass_diff_vs_always_opus_ci95": [
+      -0.191666667,
+      -0.058333333
+     ],
+     "pass_rate": 0.791666667,
+     "pass_rate_wilson95": [
+      0.710523,
+      0.854716
+     ],
+     "passed": 95,
+     "picks_by_model": {
+      "deepseek-v4.1-flash": 15,
+      "glm-5.3-flash": 100,
+      "gpt-5.6-luna": 5
+     },
+     "total_cost_usd": 0.06804332,
+     "tradeoff": 6
+    },
+    "router-s1-t7": {
+     "classifier": "s1",
+     "cost_ratio_vs_always_best": 0.067298913,
+     "cost_ratio_vs_always_best_ci95": [
+      0.05448902,
+      0.087343116
+     ],
+     "cost_ratio_vs_always_opus": 0.067298913,
+     "cost_ratio_vs_always_opus_ci95": [
+      0.05448902,
+      0.087343116
+     ],
+     "kind": "router",
+     "mean_cost_per_task_usd": 0.000567028,
+     "n": 120,
+     "pass_diff_vs_always_best": -0.125,
+     "pass_diff_vs_always_best_ci95": [
+      -0.191666667,
+      -0.058333333
+     ],
+     "pass_diff_vs_always_opus": -0.125,
+     "pass_diff_vs_always_opus_ci95": [
+      -0.191666667,
+      -0.058333333
+     ],
+     "pass_rate": 0.791666667,
+     "pass_rate_wilson95": [
+      0.710523,
+      0.854716
+     ],
+     "passed": 95,
+     "picks_by_model": {
+      "deepseek-v4.1-flash": 15,
+      "glm-5.3-flash": 100,
+      "gpt-5.6-luna": 5
+     },
+     "total_cost_usd": 0.06804332,
+     "tradeoff": 7
+    },
+    "router-s1-t8": {
+     "classifier": "s1",
+     "cost_ratio_vs_always_best": 0.071652129,
+     "cost_ratio_vs_always_best_ci95": [
+      0.058427186,
+      0.091844188
+     ],
+     "cost_ratio_vs_always_opus": 0.071652129,
+     "cost_ratio_vs_always_opus_ci95": [
+      0.058427186,
+      0.091844188
+     ],
+     "kind": "router",
+     "mean_cost_per_task_usd": 0.000603706,
+     "n": 120,
+     "pass_diff_vs_always_best": -0.141666667,
+     "pass_diff_vs_always_best_ci95": [
+      -0.208333333,
+      -0.075
+     ],
+     "pass_diff_vs_always_opus": -0.141666667,
+     "pass_diff_vs_always_opus_ci95": [
+      -0.208333333,
+      -0.075
+     ],
+     "pass_rate": 0.775,
+     "pass_rate_wilson95": [
+      0.692431,
+      0.840508
+     ],
+     "passed": 93,
+     "picks_by_model": {
+      "deepseek-v4.1-flash": 16,
+      "glm-5.3-flash": 104
+     },
+     "total_cost_usd": 0.072444688,
+     "tradeoff": 8
+    },
+    "router-s1-t9": {
+     "classifier": "s1",
+     "cost_ratio_vs_always_best": 0.071408799,
+     "cost_ratio_vs_always_best_ci95": [
+      0.058109136,
+      0.091819677
+     ],
+     "cost_ratio_vs_always_opus": 0.071408799,
+     "cost_ratio_vs_always_opus_ci95": [
+      0.058109136,
+      0.091819677
+     ],
+     "kind": "router",
+     "mean_cost_per_task_usd": 0.000601656,
+     "n": 120,
+     "pass_diff_vs_always_best": -0.141666667,
+     "pass_diff_vs_always_best_ci95": [
+      -0.208333333,
+      -0.075
+     ],
+     "pass_diff_vs_always_opus": -0.141666667,
+     "pass_diff_vs_always_opus_ci95": [
+      -0.208333333,
+      -0.075
+     ],
+     "pass_rate": 0.775,
+     "pass_rate_wilson95": [
+      0.692431,
+      0.840508
+     ],
+     "passed": 93,
+     "picks_by_model": {
+      "deepseek-v4.1-flash": 14,
+      "glm-5.3-flash": 106
+     },
+     "total_cost_usd": 0.072198666,
+     "tradeoff": 9
+    }
+   },
+   "by_category": {
+    "coding": {
+     "always-best": {
+      "cost_usd": 0.3128292,
+      "pass_rate": 0.862068966
+     },
+     "always-cheapest": {
+      "cost_usd": 0.033358661,
+      "pass_rate": 0.793103448
+     },
+     "always-claude-opus-5": {
+      "cost_usd": 0.3128292,
+      "pass_rate": 0.862068966
+     },
+     "always-deepseek-v4.1-flash": {
+      "cost_usd": 0.033358661,
+      "pass_rate": 0.793103448
+     },
+     "always-glm-5.3-flash": {
+      "cost_usd": 0.032797019,
+      "pass_rate": 0.586206897
+     },
+     "always-gpt-5.6-luna": {
+      "cost_usd": 0.014755496,
+      "pass_rate": 0.931034483
+     },
+     "always-gpt-5.6-sol": {
+      "cost_usd": 0.0791311,
+      "pass_rate": 0.896551724
+     },
+     "always-kimi-k3": {
+      "cost_usd": 0.224962785,
+      "pass_rate": 0.75862069
+     },
+     "n": 29,
+     "oracle": {
+      "cost_usd": 0.014647932,
+      "pass_rate": 0.965517241
+     },
+     "router-prior-t0": {
+      "cost_usd": 0.0791311,
+      "pass_rate": 0.896551724
+     },
+     "router-prior-t1": {
+      "cost_usd": 0.224962785,
+      "pass_rate": 0.75862069
+     },
+     "router-prior-t10": {
+      "cost_usd": 0.032797019,
+      "pass_rate": 0.586206897
+     },
+     "router-prior-t2": {
+      "cost_usd": 0.032797019,
+      "pass_rate": 0.586206897
+     },
+     "router-prior-t3": {
+      "cost_usd": 0.032797019,
+      "pass_rate": 0.586206897
+     },
+     "router-prior-t4": {
+      "cost_usd": 0.032797019,
+      "pass_rate": 0.586206897
+     },
+     "router-prior-t5": {
+      "cost_usd": 0.032797019,
+      "pass_rate": 0.586206897
+     },
+     "router-prior-t6": {
+      "cost_usd": 0.032797019,
+      "pass_rate": 0.586206897
+     },
+     "router-prior-t7": {
+      "cost_usd": 0.032797019,
+      "pass_rate": 0.586206897
+     },
+     "router-prior-t8": {
+      "cost_usd": 0.032797019,
+      "pass_rate": 0.586206897
+     },
+     "router-prior-t9": {
+      "cost_usd": 0.032797019,
+      "pass_rate": 0.586206897
+     },
+     "router-s1-t0": {
+      "cost_usd": 0.08314792,
+      "pass_rate": 0.793103448
+     },
+     "router-s1-t1": {
+      "cost_usd": 0.082116026,
+      "pass_rate": 0.793103448
+     },
+     "router-s1-t10": {
+      "cost_usd": 0.032797019,
+      "pass_rate": 0.586206897
+     },
+     "router-s1-t2": {
+      "cost_usd": 0.025937871,
+      "pass_rate": 0.793103448
+     },
+     "router-s1-t3": {
+      "cost_usd": 0.025337682,
+      "pass_rate": 0.793103448
+     },
+     "router-s1-t4": {
+      "cost_usd": 0.023491304,
+      "pass_rate": 0.793103448
+     },
+     "router-s1-t5": {
+      "cost_usd": 0.023491304,
+      "pass_rate": 0.793103448
+     },
+     "router-s1-t6": {
+      "cost_usd": 0.023491304,
+      "pass_rate": 0.793103448
+     },
+     "router-s1-t7": {
+      "cost_usd": 0.023491304,
+      "pass_rate": 0.793103448
+     },
+     "router-s1-t8": {
+      "cost_usd": 0.027092885,
+      "pass_rate": 0.724137931
+     },
+     "router-s1-t9": {
+      "cost_usd": 0.027092885,
+      "pass_rate": 0.724137931
+     }
+    },
+    "everyday": {
+     "always-best": {
+      "cost_usd": 0.1000572,
+      "pass_rate": 0.971428571
+     },
+     "always-cheapest": {
+      "cost_usd": 0.005708634,
+      "pass_rate": 0.971428571
+     },
+     "always-claude-opus-5": {
+      "cost_usd": 0.1000572,
+      "pass_rate": 0.971428571
+     },
+     "always-deepseek-v4.1-flash": {
+      "cost_usd": 0.005708634,
+      "pass_rate": 0.971428571
+     },
+     "always-glm-5.3-flash": {
+      "cost_usd": 0.00549501,
+      "pass_rate": 0.857142857
+     },
+     "always-gpt-5.6-luna": {
+      "cost_usd": 0.003852408,
+      "pass_rate": 0.942857143
+     },
+     "always-gpt-5.6-sol": {
+      "cost_usd": 0.02231125,
+      "pass_rate": 0.971428571
+     },
+     "always-kimi-k3": {
+      "cost_usd": 0.045639697,
+      "pass_rate": 0.971428571
+     },
+     "n": 35,
+     "oracle": {
+      "cost_usd": 0.003493526,
+      "pass_rate": 0.971428571
+     },
+     "router-prior-t0": {
+      "cost_usd": 0.02231125,
+      "pass_rate": 0.971428571
+     },
+     "router-prior-t1": {
+      "cost_usd": 0.045639697,
+      "pass_rate": 0.971428571
+     },
+     "router-prior-t10": {
+      "cost_usd": 0.00549501,
+      "pass_rate": 0.857142857
+     },
+     "router-prior-t2": {
+      "cost_usd": 0.00549501,
+      "pass_rate": 0.857142857
+     },
+     "router-prior-t3": {
+      "cost_usd": 0.00549501,
+      "pass_rate": 0.857142857
+     },
+     "router-prior-t4": {
+      "cost_usd": 0.00549501,
+      "pass_rate": 0.857142857
+     },
+     "router-prior-t5": {
+      "cost_usd": 0.00549501,
+      "pass_rate": 0.857142857
+     },
+     "router-prior-t6": {
+      "cost_usd": 0.00549501,
+      "pass_rate": 0.857142857
+     },
+     "router-prior-t7": {
+      "cost_usd": 0.00549501,
+      "pass_rate": 0.857142857
+     },
+     "router-prior-t8": {
+      "cost_usd": 0.00549501,
+      "pass_rate": 0.857142857
+     },
+     "router-prior-t9": {
+      "cost_usd": 0.00549501,
+      "pass_rate": 0.857142857
+     },
+     "router-s1-t0": {
+      "cost_usd": 0.006059166,
+      "pass_rate": 0.971428571
+     },
+     "router-s1-t1": {
+      "cost_usd": 0.006059166,
+      "pass_rate": 0.971428571
+     },
+     "router-s1-t10": {
+      "cost_usd": 0.00549501,
+      "pass_rate": 0.857142857
+     },
+     "router-s1-t2": {
+      "cost_usd": 0.006056807,
+      "pass_rate": 0.971428571
+     },
+     "router-s1-t3": {
+      "cost_usd": 0.005434228,
+      "pass_rate": 0.857142857
+     },
+     "router-s1-t4": {
+      "cost_usd": 0.005434228,
+      "pass_rate": 0.857142857
+     },
+     "router-s1-t5": {
+      "cost_usd": 0.005434228,
+      "pass_rate": 0.857142857
+     },
+     "router-s1-t6": {
+      "cost_usd": 0.005434228,
+      "pass_rate": 0.857142857
+     },
+     "router-s1-t7": {
+      "cost_usd": 0.005434228,
+      "pass_rate": 0.857142857
+     },
+     "router-s1-t8": {
+      "cost_usd": 0.005434228,
+      "pass_rate": 0.857142857
+     },
+     "router-s1-t9": {
+      "cost_usd": 0.00549501,
+      "pass_rate": 0.857142857
+     }
+    },
+    "knowledge": {
+     "always-best": {
+      "cost_usd": 0.076998,
+      "pass_rate": 0.88
+     },
+     "always-cheapest": {
+      "cost_usd": 0.012034447,
+      "pass_rate": 0.76
+     },
+     "always-claude-opus-5": {
+      "cost_usd": 0.076998,
+      "pass_rate": 0.88
+     },
+     "always-deepseek-v4.1-flash": {
+      "cost_usd": 0.012034447,
+      "pass_rate": 0.76
+     },
+     "always-glm-5.3-flash": {
+      "cost_usd": 0.010016665,
+      "pass_rate": 0.8
+     },
+     "always-gpt-5.6-luna": {
+      "cost_usd": 0.00400771,
+      "pass_rate": 0.84
+     },
+     "always-gpt-5.6-sol": {
+      "cost_usd": 0.02736215,
+      "pass_rate": 0.8
+     },
+     "always-kimi-k3": {
+      "cost_usd": 0.069202501,
+      "pass_rate": 0.88
+     },
+     "n": 25,
+     "oracle": {
+      "cost_usd": 0.023866323,
+      "pass_rate": 0.92
+     },
+     "router-prior-t0": {
+      "cost_usd": 0.02736215,
+      "pass_rate": 0.8
+     },
+     "router-prior-t1": {
+      "cost_usd": 0.069202501,
+      "pass_rate": 0.88
+     },
+     "router-prior-t10": {
+      "cost_usd": 0.010016665,
+      "pass_rate": 0.8
+     },
+     "router-prior-t2": {
+      "cost_usd": 0.010016665,
+      "pass_rate": 0.8
+     },
+     "router-prior-t3": {
+      "cost_usd": 0.010016665,
+      "pass_rate": 0.8
+     },
+     "router-prior-t4": {
+      "cost_usd": 0.010016665,
+      "pass_rate": 0.8
+     },
+     "router-prior-t5": {
+      "cost_usd": 0.010016665,
+      "pass_rate": 0.8
+     },
+     "router-prior-t6": {
+      "cost_usd": 0.010016665,
+      "pass_rate": 0.8
+     },
+     "router-prior-t7": {
+      "cost_usd": 0.010016665,
+      "pass_rate": 0.8
+     },
+     "router-prior-t8": {
+      "cost_usd": 0.010016665,
+      "pass_rate": 0.8
+     },
+     "router-prior-t9": {
+      "cost_usd": 0.010016665,
+      "pass_rate": 0.8
+     },
+     "router-s1-t0": {
+      "cost_usd": 0.018478705,
+      "pass_rate": 0.76
+     },
+     "router-s1-t1": {
+      "cost_usd": 0.04251514,
+      "pass_rate": 0.8
+     },
+     "router-s1-t10": {
+      "cost_usd": 0.010016665,
+      "pass_rate": 0.8
+     },
+     "router-s1-t2": {
+      "cost_usd": 0.009946489,
+      "pass_rate": 0.8
+     },
+     "router-s1-t3": {
+      "cost_usd": 0.010056138,
+      "pass_rate": 0.8
+     },
+     "router-s1-t4": {
+      "cost_usd": 0.010056138,
+      "pass_rate": 0.8
+     },
+     "router-s1-t5": {
+      "cost_usd": 0.010099001,
+      "pass_rate": 0.8
+     },
+     "router-s1-t6": {
+      "cost_usd": 0.010099001,
+      "pass_rate": 0.8
+     },
+     "router-s1-t7": {
+      "cost_usd": 0.010099001,
+      "pass_rate": 0.8
+     },
+     "router-s1-t8": {
+      "cost_usd": 0.01015601,
+      "pass_rate": 0.8
+     },
+     "router-s1-t9": {
+      "cost_usd": 0.01015601,
+      "pass_rate": 0.8
+     }
+    },
+    "math": {
+     "always-best": {
+      "cost_usd": 0.5211768,
+      "pass_rate": 0.935483871
+     },
+     "always-cheapest": {
+      "cost_usd": 0.03221322,
+      "pass_rate": 0.677419355
+     },
+     "always-claude-opus-5": {
+      "cost_usd": 0.5211768,
+      "pass_rate": 0.935483871
+     },
+     "always-deepseek-v4.1-flash": {
+      "cost_usd": 0.03221322,
+      "pass_rate": 0.677419355
+     },
+     "always-glm-5.3-flash": {
+      "cost_usd": 0.029433214,
+      "pass_rate": 0.741935484
+     },
+     "always-gpt-5.6-luna": {
+      "cost_usd": 0.023365776,
+      "pass_rate": 0.870967742
+     },
+     "always-gpt-5.6-sol": {
+      "cost_usd": 0.1894127,
+      "pass_rate": 0.935483871
+     },
+     "always-kimi-k3": {
+      "cost_usd": 0.231829006,
+      "pass_rate": 0.741935484
+     },
+     "n": 31,
+     "oracle": {
+      "cost_usd": 0.035137828,
+      "pass_rate": 0.935483871
+     },
+     "router-prior-t0": {
+      "cost_usd": 0.1894127,
+      "pass_rate": 0.935483871
+     },
+     "router-prior-t1": {
+      "cost_usd": 0.231829006,
+      "pass_rate": 0.741935484
+     },
+     "router-prior-t10": {
+      "cost_usd": 0.029433214,
+      "pass_rate": 0.741935484
+     },
+     "router-prior-t2": {
+      "cost_usd": 0.029433214,
+      "pass_rate": 0.741935484
+     },
+     "router-prior-t3": {
+      "cost_usd": 0.029433214,
+      "pass_rate": 0.741935484
+     },
+     "router-prior-t4": {
+      "cost_usd": 0.029433214,
+      "pass_rate": 0.741935484
+     },
+     "router-prior-t5": {
+      "cost_usd": 0.029433214,
+      "pass_rate": 0.741935484
+     },
+     "router-prior-t6": {
+      "cost_usd": 0.029433214,
+      "pass_rate": 0.741935484
+     },
+     "router-prior-t7": {
+      "cost_usd": 0.029433214,
+      "pass_rate": 0.741935484
+     },
+     "router-prior-t8": {
+      "cost_usd": 0.029433214,
+      "pass_rate": 0.741935484
+     },
+     "router-prior-t9": {
+      "cost_usd": 0.029433214,
+      "pass_rate": 0.741935484
+     },
+     "router-s1-t0": {
+      "cost_usd": 0.087074416,
+      "pass_rate": 0.774193548
+     },
+     "router-s1-t1": {
+      "cost_usd": 0.086816158,
+      "pass_rate": 0.741935484
+     },
+     "router-s1-t10": {
+      "cost_usd": 0.029433214,
+      "pass_rate": 0.741935484
+     },
+     "router-s1-t2": {
+      "cost_usd": 0.054142247,
+      "pass_rate": 0.677419355
+     },
+     "router-s1-t3": {
+      "cost_usd": 0.029018787,
+      "pass_rate": 0.709677419
+     },
+     "router-s1-t4": {
+      "cost_usd": 0.029018787,
+      "pass_rate": 0.709677419
+     },
+     "router-s1-t5": {
+      "cost_usd": 0.029018787,
+      "pass_rate": 0.709677419
+     },
+     "router-s1-t6": {
+      "cost_usd": 0.029018787,
+      "pass_rate": 0.709677419
+     },
+     "router-s1-t7": {
+      "cost_usd": 0.029018787,
+      "pass_rate": 0.709677419
+     },
+     "router-s1-t8": {
+      "cost_usd": 0.029761565,
+      "pass_rate": 0.709677419
+     },
+     "router-s1-t9": {
+      "cost_usd": 0.029454761,
+      "pass_rate": 0.709677419
+     }
+    }
+   },
+   "by_difficulty": {
+    "easy": {
+     "always-best": {
+      "cost_usd": 0.0678096,
+      "pass_rate": 0.9375
+     },
+     "always-cheapest": {
+      "cost_usd": 0.00501329,
+      "pass_rate": 0.875
+     },
+     "always-claude-opus-5": {
+      "cost_usd": 0.0678096,
+      "pass_rate": 0.9375
+     },
+     "always-deepseek-v4.1-flash": {
+      "cost_usd": 0.00501329,
+      "pass_rate": 0.875
+     },
+     "always-glm-5.3-flash": {
+      "cost_usd": 0.006129406,
+      "pass_rate": 0.90625
+     },
+     "always-gpt-5.6-luna": {
+      "cost_usd": 0.003824597,
+      "pass_rate": 0.90625
+     },
+     "always-gpt-5.6-sol": {
+      "cost_usd": 0.01975915,
+      "pass_rate": 0.90625
+     },
+     "always-kimi-k3": {
+      "cost_usd": 0.052471518,
+      "pass_rate": 0.96875
+     },
+     "n": 32,
+     "oracle": {
+      "cost_usd": 0.021768223,
+      "pass_rate": 0.96875
+     },
+     "router-prior-t0": {
+      "cost_usd": 0.01975915,
+      "pass_rate": 0.90625
+     },
+     "router-prior-t1": {
+      "cost_usd": 0.052471518,
+      "pass_rate": 0.96875
+     },
+     "router-prior-t10": {
+      "cost_usd": 0.006129406,
+      "pass_rate": 0.90625
+     },
+     "router-prior-t2": {
+      "cost_usd": 0.006129406,
+      "pass_rate": 0.90625
+     },
+     "router-prior-t3": {
+      "cost_usd": 0.006129406,
+      "pass_rate": 0.90625
+     },
+     "router-prior-t4": {
+      "cost_usd": 0.006129406,
+      "pass_rate": 0.90625
+     },
+     "router-prior-t5": {
+      "cost_usd": 0.006129406,
+      "pass_rate": 0.90625
+     },
+     "router-prior-t6": {
+      "cost_usd": 0.006129406,
+      "pass_rate": 0.90625
+     },
+     "router-prior-t7": {
+      "cost_usd": 0.006129406,
+      "pass_rate": 0.90625
+     },
+     "router-prior-t8": {
+      "cost_usd": 0.006129406,
+      "pass_rate": 0.90625
+     },
+     "router-prior-t9": {
+      "cost_usd": 0.006129406,
+      "pass_rate": 0.90625
+     },
+     "router-s1-t0": {
+      "cost_usd": 0.007544338,
+      "pass_rate": 0.90625
+     },
+     "router-s1-t1": {
+      "cost_usd": 0.025138424,
+      "pass_rate": 0.9375
+     },
+     "router-s1-t10": {
+      "cost_usd": 0.006129406,
+      "pass_rate": 0.90625
+     },
+     "router-s1-t2": {
+      "cost_usd": 0.006719469,
+      "pass_rate": 0.90625
+     },
+     "router-s1-t3": {
+      "cost_usd": 0.006308024,
+      "pass_rate": 0.90625
+     },
+     "router-s1-t4": {
+      "cost_usd": 0.006308024,
+      "pass_rate": 0.90625
+     },
+     "router-s1-t5": {
+      "cost_usd": 0.006350887,
+      "pass_rate": 0.90625
+     },
+     "router-s1-t6": {
+      "cost_usd": 0.006350887,
+      "pass_rate": 0.90625
+     },
+     "router-s1-t7": {
+      "cost_usd": 0.006350887,
+      "pass_rate": 0.90625
+     },
+     "router-s1-t8": {
+      "cost_usd": 0.006350887,
+      "pass_rate": 0.90625
+     },
+     "router-s1-t9": {
+      "cost_usd": 0.006350887,
+      "pass_rate": 0.90625
+     }
+    },
+    "hard": {
+     "always-best": {
+      "cost_usd": 0.6251964,
+      "pass_rate": 0.901960784
+     },
+     "always-cheapest": {
+      "cost_usd": 0.048150065,
+      "pass_rate": 0.745098039
+     },
+     "always-claude-opus-5": {
+      "cost_usd": 0.6251964,
+      "pass_rate": 0.901960784
+     },
+     "always-deepseek-v4.1-flash": {
+      "cost_usd": 0.048150065,
+      "pass_rate": 0.745098039
+     },
+     "always-glm-5.3-flash": {
+      "cost_usd": 0.049309404,
+      "pass_rate": 0.62745098
+     },
+     "always-gpt-5.6-luna": {
+      "cost_usd": 0.028150549,
+      "pass_rate": 0.901960784
+     },
+     "always-gpt-5.6-sol": {
+      "cost_usd": 0.2210336,
+      "pass_rate": 0.921568627
+     },
+     "always-kimi-k3": {
+      "cost_usd": 0.349332412,
+      "pass_rate": 0.764705882
+     },
+     "n": 51,
+     "oracle": {
+      "cost_usd": 0.029261786,
+      "pass_rate": 0.921568627
+     },
+     "router-prior-t0": {
+      "cost_usd": 0.2210336,
+      "pass_rate": 0.921568627
+     },
+     "router-prior-t1": {
+      "cost_usd": 0.349332412,
+      "pass_rate": 0.764705882
+     },
+     "router-prior-t10": {
+      "cost_usd": 0.049309404,
+      "pass_rate": 0.62745098
+     },
+     "router-prior-t2": {
+      "cost_usd": 0.049309404,
+      "pass_rate": 0.62745098
+     },
+     "router-prior-t3": {
+      "cost_usd": 0.049309404,
+      "pass_rate": 0.62745098
+     },
+     "router-prior-t4": {
+      "cost_usd": 0.049309404,
+      "pass_rate": 0.62745098
+     },
+     "router-prior-t5": {
+      "cost_usd": 0.049309404,
+      "pass_rate": 0.62745098
+     },
+     "router-prior-t6": {
+      "cost_usd": 0.049309404,
+      "pass_rate": 0.62745098
+     },
+     "router-prior-t7": {
+      "cost_usd": 0.049309404,
+      "pass_rate": 0.62745098
+     },
+     "router-prior-t8": {
+      "cost_usd": 0.049309404,
+      "pass_rate": 0.62745098
+     },
+     "router-prior-t9": {
+      "cost_usd": 0.049309404,
+      "pass_rate": 0.62745098
+     },
+     "router-s1-t0": {
+      "cost_usd": 0.127062135,
+      "pass_rate": 0.784313725
+     },
+     "router-s1-t1": {
+      "cost_usd": 0.126761433,
+      "pass_rate": 0.764705882
+     },
+     "router-s1-t10": {
+      "cost_usd": 0.049309404,
+      "pass_rate": 0.62745098
+     },
+     "router-s1-t2": {
+      "cost_usd": 0.067505108,
+      "pass_rate": 0.745098039
+     },
+     "router-s1-t3": {
+      "cost_usd": 0.044192814,
+      "pass_rate": 0.705882353
+     },
+     "router-s1-t4": {
+      "cost_usd": 0.042346436,
+      "pass_rate": 0.705882353
+     },
+     "router-s1-t5": {
+      "cost_usd": 0.042346436,
+      "pass_rate": 0.705882353
+     },
+     "router-s1-t6": {
+      "cost_usd": 0.042346436,
+      "pass_rate": 0.705882353
+     },
+     "router-s1-t7": {
+      "cost_usd": 0.042346436,
+      "pass_rate": 0.705882353
+     },
+     "router-s1-t8": {
+      "cost_usd": 0.046018651,
+      "pass_rate": 0.666666667
+     },
+     "router-s1-t9": {
+      "cost_usd": 0.045772629,
+      "pass_rate": 0.666666667
+     }
+    },
+    "medium": {
+     "always-best": {
+      "cost_usd": 0.3180552,
+      "pass_rate": 0.918918919
+     },
+     "always-cheapest": {
+      "cost_usd": 0.030151607,
+      "pass_rate": 0.837837838
+     },
+     "always-claude-opus-5": {
+      "cost_usd": 0.3180552,
+      "pass_rate": 0.918918919
+     },
+     "always-deepseek-v4.1-flash": {
+      "cost_usd": 0.030151607,
+      "pass_rate": 0.837837838
+     },
+     "always-glm-5.3-flash": {
+      "cost_usd": 0.022303098,
+      "pass_rate": 0.783783784
+     },
+     "always-gpt-5.6-luna": {
+      "cost_usd": 0.014006244,
+      "pass_rate": 0.891891892
+     },
+     "always-gpt-5.6-sol": {
+      "cost_usd": 0.07742445,
+      "pass_rate": 0.891891892
+     },
+     "always-kimi-k3": {
+      "cost_usd": 0.169830059,
+      "pass_rate": 0.837837838
+     },
+     "n": 37,
+     "oracle": {
+      "cost_usd": 0.0261156,
+      "pass_rate": 0.972972973
+     },
+     "router-prior-t0": {
+      "cost_usd": 0.07742445,
+      "pass_rate": 0.891891892
+     },
+     "router-prior-t1": {
+      "cost_usd": 0.169830059,
+      "pass_rate": 0.837837838
+     },
+     "router-prior-t10": {
+      "cost_usd": 0.022303098,
+      "pass_rate": 0.783783784
+     },
+     "router-prior-t2": {
+      "cost_usd": 0.022303098,
+      "pass_rate": 0.783783784
+     },
+     "router-prior-t3": {
+      "cost_usd": 0.022303098,
+      "pass_rate": 0.783783784
+     },
+     "router-prior-t4": {
+      "cost_usd": 0.022303098,
+      "pass_rate": 0.783783784
+     },
+     "router-prior-t5": {
+      "cost_usd": 0.022303098,
+      "pass_rate": 0.783783784
+     },
+     "router-prior-t6": {
+      "cost_usd": 0.022303098,
+      "pass_rate": 0.783783784
+     },
+     "router-prior-t7": {
+      "cost_usd": 0.022303098,
+      "pass_rate": 0.783783784
+     },
+     "router-prior-t8": {
+      "cost_usd": 0.022303098,
+      "pass_rate": 0.783783784
+     },
+     "router-prior-t9": {
+      "cost_usd": 0.022303098,
+      "pass_rate": 0.783783784
+     },
+     "router-s1-t0": {
+      "cost_usd": 0.060153734,
+      "pass_rate": 0.837837838
+     },
+     "router-s1-t1": {
+      "cost_usd": 0.065606633,
+      "pass_rate": 0.837837838
+     },
+     "router-s1-t10": {
+      "cost_usd": 0.022303098,
+      "pass_rate": 0.783783784
+     },
+     "router-s1-t2": {
+      "cost_usd": 0.021858837,
+      "pass_rate": 0.837837838
+     },
+     "router-s1-t3": {
+      "cost_usd": 0.019345997,
+      "pass_rate": 0.810810811
+     },
+     "router-s1-t4": {
+      "cost_usd": 0.019345997,
+      "pass_rate": 0.810810811
+     },
+     "router-s1-t5": {
+      "cost_usd": 0.019345997,
+      "pass_rate": 0.810810811
+     },
+     "router-s1-t6": {
+      "cost_usd": 0.019345997,
+      "pass_rate": 0.810810811
+     },
+     "router-s1-t7": {
+      "cost_usd": 0.019345997,
+      "pass_rate": 0.810810811
+     },
+     "router-s1-t8": {
+      "cost_usd": 0.02007515,
+      "pass_rate": 0.810810811
+     },
+     "router-s1-t9": {
+      "cost_usd": 0.02007515,
+      "pass_rate": 0.810810811
+     }
+    }
+   },
+   "headline": {
+    "prior/equal_quality/vs_always_best": {
+     "cost_pct": 31.4735844,
+     "cost_pct_ci95": [
+      26.3671361,
+      39.1128522
+     ],
+     "pass_diff": -0.008333333,
+     "pass_diff_ci95": [
+      -0.041666667,
+      0.025
+     ],
+     "pass_rate": 0.908333333,
+     "picks_by_model": {
+      "gpt-5.6-sol": 120
+     },
+     "tradeoff": 0
+    },
+    "prior/equal_quality/vs_always_opus": {
+     "cost_pct": 31.4735844,
+     "cost_pct_ci95": [
+      26.3671361,
+      39.1128522
+     ],
+     "pass_diff": -0.008333333,
+     "pass_diff_ci95": [
+      -0.041666667,
+      0.025
+     ],
+     "pass_rate": 0.908333333,
+     "picks_by_model": {
+      "gpt-5.6-sol": 120
+     },
+     "tradeoff": 0
+    },
+    "s1/equal_quality/vs_always_best": null,
+    "s1/equal_quality/vs_always_opus": null
+   },
+   "s1_vs_prior": {
+    "0": {
+     "ci95": [
+      -0.133333333,
+      -0.025
+     ],
+     "cost_ratio_ci95": [
+      0.38819838,
+      0.906892783
+     ],
+     "cost_ratio_s1_over_prior": 0.612035449,
+     "pass_diff_s1_minus_prior": -0.075
+    },
+    "1": {
+     "ci95": [
+      -0.066666667,
+      0.041666667
+     ],
+     "cost_ratio_ci95": [
+      0.25483604,
+      0.519082991
+     ],
+     "cost_ratio_s1_over_prior": 0.380499575,
+     "pass_diff_s1_minus_prior": -0.008333333
+    },
+    "10": {
+     "ci95": [
+      0.0,
+      0.0
+     ],
+     "cost_ratio_ci95": [
+      1.0,
+      1.0
+     ],
+     "cost_ratio_s1_over_prior": 1.0,
+     "pass_diff_s1_minus_prior": 0.0
+    },
+    "2": {
+     "ci95": [
+      0.016666667,
+      0.125
+     ],
+     "cost_ratio_ci95": [
+      0.835627086,
+      1.936210072
+     ],
+     "cost_ratio_s1_over_prior": 1.235928169,
+     "pass_diff_s1_minus_prior": 0.066666667
+    },
+    "3": {
+     "ci95": [
+      0.0,
+      0.083333333
+     ],
+     "cost_ratio_ci95": [
+      0.799978356,
+      1.005049467
+     ],
+     "cost_ratio_s1_over_prior": 0.898445083,
+     "pass_diff_s1_minus_prior": 0.041666667
+    },
+    "4": {
+     "ci95": [
+      0.0,
+      0.083333333
+     ],
+     "cost_ratio_ci95": [
+      0.788499199,
+      0.957088714
+     ],
+     "cost_ratio_s1_over_prior": 0.874694984,
+     "pass_diff_s1_minus_prior": 0.041666667
+    },
+    "5": {
+     "ci95": [
+      0.0,
+      0.083333333
+     ],
+     "cost_ratio_ci95": [
+      0.789029552,
+      0.957704228
+     ],
+     "cost_ratio_s1_over_prior": 0.875246334,
+     "pass_diff_s1_minus_prior": 0.041666667
+    },
+    "6": {
+     "ci95": [
+      0.0,
+      0.083333333
+     ],
+     "cost_ratio_ci95": [
+      0.789029552,
+      0.957704228
+     ],
+     "cost_ratio_s1_over_prior": 0.875246334,
+     "pass_diff_s1_minus_prior": 0.041666667
+    },
+    "7": {
+     "ci95": [
+      0.0,
+      0.083333333
+     ],
+     "cost_ratio_ci95": [
+      0.789029552,
+      0.957704228
+     ],
+     "cost_ratio_s1_over_prior": 0.875246334,
+     "pass_diff_s1_minus_prior": 0.041666667
+    },
+    "8": {
+     "ci95": [
+      -0.008333333,
+      0.066666667
+     ],
+     "cost_ratio_ci95": [
+      0.856363117,
+      0.992870219
+     ],
+     "cost_ratio_s1_over_prior": 0.931861461,
+     "pass_diff_s1_minus_prior": 0.025
+    },
+    "9": {
+     "ci95": [
+      -0.008333333,
+      0.066666667
+     ],
+     "cost_ratio_ci95": [
+      0.855116435,
+      0.989122332
+     ],
+     "cost_ratio_s1_over_prior": 0.928696862,
+     "pass_diff_s1_minus_prior": 0.025
+    }
+   }
+  }
+ },
+ "bootstrap": {
+  "draws": 10000,
+  "method": "paired, resampling tasks, percentile 95% CI",
+  "seed": 20261018
+ },
+ "finish_reasons": {
+  "claude-opus-5": {
+   "length": 2,
+   "stop": 118
+  },
+  "deepseek-v4.1-flash": {
+   "length": 15,
+   "stop": 105
+  },
+  "glm-5.3-flash": {
+   "length": 16,
+   "stop": 104
+  },
+  "gpt-5.6-luna": {
+   "stop": 120
+  },
+  "gpt-5.6-sol": {
+   "stop": 120
+  },
+  "kimi-k3": {
+   "length": 13,
+   "stop": 107
+  }
+ },
+ "models": [
+  "claude-opus-5",
+  "gpt-5.6-sol",
+  "gpt-5.6-luna",
+  "kimi-k3",
+  "glm-5.3-flash",
+  "deepseek-v4.1-flash"
+ ],
+ "n_tasks": 120,
+ "primary_basis": "median",
+ "single_model_pass_by_category": {
+  "claude-opus-5": {
+   "coding": 25,
+   "everyday": 34,
+   "knowledge": 22,
+   "math": 29
+  },
+  "deepseek-v4.1-flash": {
+   "coding": 23,
+   "everyday": 34,
+   "knowledge": 19,
+   "math": 21
+  },
+  "glm-5.3-flash": {
+   "coding": 17,
+   "everyday": 30,
+   "knowledge": 20,
+   "math": 23
+  },
+  "gpt-5.6-luna": {
+   "coding": 27,
+   "everyday": 33,
+   "knowledge": 21,
+   "math": 27
+  },
+  "gpt-5.6-sol": {
+   "coding": 26,
+   "everyday": 34,
+   "knowledge": 20,
+   "math": 29
+  },
+  "kimi-k3": {
+   "coding": 22,
+   "everyday": 34,
+   "knowledge": 22,
+   "math": 23
+  }
+ },
+ "single_model_pass_by_difficulty": {
+  "claude-opus-5": {
+   "easy": 30,
+   "hard": 46,
+   "medium": 34
+  },
+  "deepseek-v4.1-flash": {
+   "easy": 28,
+   "hard": 38,
+   "medium": 31
+  },
+  "glm-5.3-flash": {
+   "easy": 29,
+   "hard": 32,
+   "medium": 29
+  },
+  "gpt-5.6-luna": {
+   "easy": 29,
+   "hard": 46,
+   "medium": 33
+  },
+  "gpt-5.6-sol": {
+   "easy": 29,
+   "hard": 47,
+   "medium": 33
+  },
+  "kimi-k3": {
+   "easy": 31,
+   "hard": 39,
+   "medium": 31
+  }
+ },
+ "tasks_failed_by_all_models": [
+  "coding-mbpp-74",
+  "knowledge-mmlupro-6904",
+  "knowledge-mmlupro-5081",
+  "everyday-11-invoice-json",
+  "math-aime_2026-15",
+  "math-cmimc_2025-7"
+ ],
+ "tasks_passed_by_all_models": 81,
+ "tasks_per_difficulty": {
+  "easy": 32,
+  "hard": 51,
+  "medium": 37
+ }
+}

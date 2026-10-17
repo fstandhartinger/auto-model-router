@@ -1,0 +1,426 @@
+{
+ "max_tokens_in_request": 16000,
+ "models": {
+  "claude-opus-5": {
+   "capability": {
+    "agentic": 64.1,
+    "coding": 74.3,
+    "design": 74.3,
+    "general": 67.2,
+    "knowledge": 67.2,
+    "long_context": 82.0,
+    "math": 67.2,
+    "summarisation": 72.13,
+    "tool_use": 67.2
+   },
+   "max_output_tokens": 32000,
+   "task_tokens": 28977.35678529392
+  },
+  "dsv4.1-flash": {
+   "capability": {
+    "general": 59.25,
+    "knowledge": 59.25,
+    "long_context": 84.0,
+    "math": 59.25,
+    "summarisation": 67.5,
+    "tool_use": 59.25
+   },
+   "max_output_tokens": 32000,
+   "task_tokens": 88573.99849468909
+  },
+  "glm-5.3-flash": {
+   "capability": {
+    "agentic": 60.67,
+    "coding": 71.5,
+    "design": 71.5,
+    "general": 62.7,
+    "knowledge": 62.7,
+    "long_context": 80.0,
+    "math": 62.7,
+    "summarisation": 68.47,
+    "tool_use": 62.7
+   },
+   "max_output_tokens": 32000,
+   "task_tokens": 68673.15205651642
+  },
+  "gpt-5.6-luna": {
+   "capability": {
+    "agentic": 42.0,
+    "coding": 50.7,
+    "design": 50.7,
+    "general": 37.5,
+    "knowledge": 37.5,
+    "long_context": 75.0,
+    "math": 37.5,
+    "summarisation": 50.0,
+    "tool_use": 37.5
+   },
+   "max_output_tokens": 32000,
+   "task_tokens": 4486.322966984059
+  },
+  "gpt-5.6-sol": {
+   "capability": {
+    "agentic": 61.6,
+    "coding": 76.3,
+    "design": 42.62,
+    "general": 58.8,
+    "knowledge": 58.8,
+    "long_context": 80.33,
+    "math": 58.8,
+    "summarisation": 65.98,
+    "tool_use": 80.99
+   },
+   "max_output_tokens": 32000,
+   "task_tokens": 7874.032575591853
+  },
+  "kimi-k3": {
+   "capability": {
+    "agentic": 61.21,
+    "coding": 76.2,
+    "design": 74.75,
+    "general": 65.4,
+    "knowledge": 65.4,
+    "long_context": 88.67,
+    "math": 65.4,
+    "summarisation": 73.16,
+    "tool_use": 65.4
+   },
+   "max_output_tokens": 32000,
+   "task_tokens": 48455.23210144532
+  }
+ },
+ "note": "router build of waves 1-2 (demo-catalog.json, success.measured.json) with the success models above; picks in router-plan.csv are the record",
+ "s1_classification_per_task": {
+  "coding-lcb6-atcoder-abc387_f": {
+   "category": "math",
+   "difficulty": 0.55491,
+   "s1_category": "math"
+  },
+  "coding-lcb6-atcoder-abc388_b": {
+   "category": "coding",
+   "difficulty": 0.55193,
+   "s1_category": "coding"
+  },
+  "coding-lcb6-atcoder-abc396_c": {
+   "category": "math",
+   "difficulty": 0.51512,
+   "s1_category": "math"
+  },
+  "coding-lcb6-atcoder-abc400_b": {
+   "category": "coding",
+   "difficulty": 0.38897,
+   "s1_category": "coding"
+  },
+  "coding-lcb6-atcoder-arc192_e": {
+   "category": "math",
+   "difficulty": 0.77252,
+   "s1_category": "math"
+  },
+  "coding-lcb6-atcoder-arc194_a": {
+   "category": "math",
+   "difficulty": 0.54602,
+   "s1_category": "math"
+  },
+  "coding-lcb6-atcoder-arc196_b": {
+   "category": "coding",
+   "difficulty": 0.74747,
+   "s1_category": "coding"
+  },
+  "coding-lcb6-leetcode-3701": {
+   "category": "general",
+   "difficulty": 0.35329,
+   "s1_category": "general"
+  },
+  "coding-lcb6-leetcode-3771": {
+   "category": "coding",
+   "difficulty": 0.4537,
+   "s1_category": "coding"
+  },
+  "coding-lcb6-leetcode-3777": {
+   "category": "math",
+   "difficulty": 0.54091,
+   "s1_category": "math"
+  },
+  "coding-lcb6-leetcode-3778": {
+   "category": "coding",
+   "difficulty": 0.46595,
+   "s1_category": "coding"
+  },
+  "coding-lcb6-leetcode-3783": {
+   "category": "coding",
+   "difficulty": 0.54867,
+   "s1_category": "coding"
+  },
+  "coding-lcb6-leetcode-3794": {
+   "category": "coding",
+   "difficulty": 0.72267,
+   "s1_category": "coding"
+  },
+  "coding-lcb6-leetcode-3801": {
+   "category": "coding",
+   "difficulty": 0.31508,
+   "s1_category": "coding"
+  },
+  "everyday3-01-unit_chain": {
+   "category": "math",
+   "difficulty": 0.0755,
+   "s1_category": "math"
+  },
+  "everyday3-02-string_ops": {
+   "category": "coding",
+   "difficulty": 0.19069,
+   "s1_category": "coding"
+  },
+  "everyday3-03-nth_weekday": {
+   "category": "general",
+   "difficulty": 0.11164,
+   "s1_category": "general"
+  },
+  "everyday3-04-nth_weekday": {
+   "category": "general",
+   "difficulty": 0.07356,
+   "s1_category": "general"
+  },
+  "everyday3-05-rooms": {
+   "category": "math",
+   "difficulty": 0.24745,
+   "s1_category": "math"
+  },
+  "everyday3-06-rooms": {
+   "category": "math",
+   "difficulty": 0.24614,
+   "s1_category": "math"
+  },
+  "everyday3-07-string_ops": {
+   "category": "coding",
+   "difficulty": 0.2283,
+   "s1_category": "coding"
+  },
+  "everyday3-08-string_ops": {
+   "category": "coding",
+   "difficulty": 0.23654,
+   "s1_category": "coding"
+  },
+  "everyday3-09-deps": {
+   "category": "math",
+   "difficulty": 0.24734,
+   "s1_category": "math"
+  },
+  "everyday3-10-table": {
+   "category": "math",
+   "difficulty": 0.15937,
+   "s1_category": "math"
+  },
+  "everyday3-11-table": {
+   "category": "math",
+   "difficulty": 0.25877,
+   "s1_category": "math"
+  },
+  "everyday3-12-table": {
+   "category": "math",
+   "difficulty": 0.25121,
+   "s1_category": "math"
+  },
+  "everyday3-13-bizdays": {
+   "category": "math",
+   "difficulty": 0.13242,
+   "s1_category": "math"
+  },
+  "everyday3-14-bizdays": {
+   "category": "math",
+   "difficulty": 0.13325,
+   "s1_category": "math"
+  },
+  "everyday3-15-json_group": {
+   "category": "math",
+   "difficulty": 0.39693,
+   "s1_category": "math"
+  },
+  "everyday3-16-json_group": {
+   "category": "math",
+   "difficulty": 0.40434,
+   "s1_category": "math"
+  },
+  "everyday3-17-tz_flight": {
+   "category": "general",
+   "difficulty": 0.20103,
+   "s1_category": "general"
+  },
+  "everyday3-18-tz_flight": {
+   "category": "general",
+   "difficulty": 0.19426,
+   "s1_category": "general"
+  },
+  "everyday3-19-graph": {
+   "category": "knowledge",
+   "difficulty": 0.26567,
+   "s1_category": "knowledge"
+  },
+  "everyday3-20-dedupe": {
+   "category": "general",
+   "difficulty": 0.28052,
+   "s1_category": "general"
+  },
+  "knowledge-mmlupro-10181": {
+   "category": "math",
+   "difficulty": 0.49611,
+   "s1_category": "math"
+  },
+  "knowledge-mmlupro-2401": {
+   "category": "knowledge",
+   "difficulty": 0.56222,
+   "s1_category": "knowledge"
+  },
+  "knowledge-mmlupro-4679": {
+   "category": "general",
+   "difficulty": 0.56284,
+   "s1_category": "general"
+  },
+  "knowledge-mmlupro-4940": {
+   "category": "general",
+   "difficulty": 0.53037,
+   "s1_category": "general"
+  },
+  "knowledge-mmlupro-6753": {
+   "category": "general",
+   "difficulty": 0.48517,
+   "s1_category": "general"
+  },
+  "knowledge-mmlupro-8085": {
+   "category": "math",
+   "difficulty": 0.23856,
+   "s1_category": "math"
+  },
+  "knowledge-mmlupro-8738": {
+   "category": "coding",
+   "difficulty": 0.29865,
+   "s1_category": "coding"
+  },
+  "knowledge-mmlupro-9020": {
+   "category": "math",
+   "difficulty": 0.16445,
+   "s1_category": "math"
+  },
+  "knowledge-mmlupro-9842": {
+   "category": "math",
+   "difficulty": 0.4088,
+   "s1_category": "math"
+  },
+  "knowledge-mmlupro-9948": {
+   "category": "math",
+   "difficulty": 0.24592,
+   "s1_category": "math"
+  },
+  "math-aime_2026-10": {
+   "category": "coding",
+   "difficulty": 0.48665,
+   "s1_category": "coding"
+  },
+  "math-aime_2026-12": {
+   "category": "math",
+   "difficulty": 0.65857,
+   "s1_category": "math"
+  },
+  "math-aime_2026-14": {
+   "category": "math",
+   "difficulty": 0.3671,
+   "s1_category": "math"
+  },
+  "math-aime_2026-3": {
+   "category": "math",
+   "difficulty": 0.55516,
+   "s1_category": "math"
+  },
+  "math-aime_2026-9": {
+   "category": "coding",
+   "difficulty": 0.4906,
+   "s1_category": "coding"
+  },
+  "math-brumo_2025-13": {
+   "category": "math",
+   "difficulty": 0.73981,
+   "s1_category": "math"
+  },
+  "math-brumo_2025-9": {
+   "category": "math",
+   "difficulty": 0.13285,
+   "s1_category": "math"
+  },
+  "math-cmimc_2025-13": {
+   "category": "math",
+   "difficulty": 0.41384,
+   "s1_category": "math"
+  },
+  "math-cmimc_2025-26": {
+   "category": "math",
+   "difficulty": 0.64632,
+   "s1_category": "math"
+  },
+  "math-hmmt_feb_2026-12": {
+   "category": "coding",
+   "difficulty": 0.44973,
+   "s1_category": "coding"
+  },
+  "math-hmmt_feb_2026-13": {
+   "category": "math",
+   "difficulty": 0.28898,
+   "s1_category": "math"
+  },
+  "math-hmmt_feb_2026-33": {
+   "category": "math",
+   "difficulty": 0.48137,
+   "s1_category": "math"
+  },
+  "math-hmmt_nov_2025-13": {
+   "category": "math",
+   "difficulty": 0.48839,
+   "s1_category": "math"
+  },
+  "math-hmmt_nov_2025-15": {
+   "category": "coding",
+   "difficulty": 0.20301,
+   "s1_category": "coding"
+  },
+  "math-hmmt_nov_2025-2": {
+   "category": "coding",
+   "difficulty": 0.39536,
+   "s1_category": "coding"
+  },
+  "math-hmmt_nov_2025-5": {
+   "category": "coding",
+   "difficulty": 0.32755,
+   "s1_category": "coding"
+  }
+ },
+ "s1_files_sha256": {
+  "meta.json": "b6689ba21a44e0910cc2ae831c6ecf2bcc6f542b3fc5cd29d570e012865649c2",
+  "model.gq.onnx": "53a02107e46be7913f148037b63b4f4735a400f91221789b0aaefcde0ad8da80",
+  "tokenizer/tokenizer.json": "c01f8492531b2e569bd8d28ef1de1c66779275753c78cb497f7118762ae3230d"
+ },
+ "s1_revision": "572c5b6cdb53b77fbb26ed33568ebbc5b71c69c0",
+ "success_measured_rows": 168,
+ "success_v2_file_sha256": "45ac7db698fe44d46e4d8d40aaef459bed070ab9016a2b633329da7eea8ad065",
+ "success_v2_params": {
+  "ceiling": 0.995,
+  "floor": 0.02,
+  "length_penalty": 0.37305,
+  "measured_n": 6.0,
+  "measured_prior_n": 48.0,
+  "offset": -246.6918,
+  "per_category": {
+   "coding": [
+    -254.8989,
+    413.6123,
+    84.0728
+   ],
+   "math": [
+    -301.873,
+    426.0301,
+    84.0728
+   ]
+  },
+  "scale": 84.0728,
+  "slope": 441.0851,
+  "smooth_ceiling": true
+ }
+}
