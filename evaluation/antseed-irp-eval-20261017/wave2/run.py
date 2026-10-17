@@ -6,7 +6,7 @@ max_tokens 16000, task-major dispatch in the registered order (run-order.json), 
 
 Default reasoning settings, one call per (task, model); transport errors (connection errors, timeouts, HTTP 502/503/504)
 are retried at most twice, nothing else is. Truncated (finish_reason=length), empty and errored answers fail.
-Spending stops dispatching new calls at USD 7.5 (max of OpenRouter's `usage.cost` and the list-price estimate, see OR_LIST);
+Spending stops dispatching new calls at USD 7.5 (raised to 9.2 for the resume, amendment A1) (max of OpenRouter's `usage.cost` and the list-price estimate, see OR_LIST);
 hard cap for the wave is USD 10. If the guard stops the run, the analysis uses only the tasks for which all six models
 answered (pre-registered in analysis-plan.md). ANSWERS.jsonl (the answer texts) stays local; RESULTS.csv is the public record.
 Re-running resumes: finished (task, model) pairs are skipped.
@@ -27,7 +27,7 @@ import grade_w2 as grade  # noqa: E402
 
 URL = "https://openrouter.ai/api/v1/chat/completions"
 MAX_TOKENS = 16000
-STOP_AT_USD = 7.5
+STOP_AT_USD = 9.2
 WORKERS = 6
 FIELDS = ["task", "model", "passed", "prompt_tokens", "completion_tokens", "cached_tokens", "cost_antseed",
           "cost_antseed_median", "cost_openrouter_list", "cost_openrouter_reported", "latency_s", "finish_reason"]

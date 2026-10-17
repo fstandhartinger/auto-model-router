@@ -12,8 +12,10 @@ sys.path.insert(0, str(HERE.parent))
 import grade as g1  # noqa: E402  (also puts the repo root on sys.path)
 from experiments import graders, sandbox  # noqa: E402
 
+# "from builtins import *" last: `from math import *` would otherwise shadow the builtin pow() (3-argument pow broke every answer to
+# coding-lcb6-leetcode-3739; found after registration, see README amendment A2)
 IMPORTS = ("from typing import *\nfrom collections import *\nfrom itertools import *\nfrom functools import *\nfrom heapq import *\n"
-           "from bisect import *\nfrom math import *\nimport math, sys, re, string, heapq, bisect, itertools, functools, collections\n")
+           "from bisect import *\nfrom math import *\nfrom builtins import *\nimport math, sys, re, string, heapq, bisect, itertools, functools, collections\n")
 
 STDIO_CHECK = '''import io, json, sys
 TESTS = json.loads(%r)

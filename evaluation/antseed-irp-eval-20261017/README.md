@@ -1,5 +1,7 @@
 # AntSeed router evaluation, 17 Oct 2026 (60 public tasks, 6 models)
 
+> **Wave 2 (harder tasks, 60 new tasks, pre-registered, 16,000-token limit, median-seller prices as the headline basis) is in [`wave2/README.md`](wave2/README.md).** Wave 1 below had a ceiling effect (51-55 of 60 for every model); on wave 2 no router setting matched always-Opus quality, see there. Post-hoc pooled 120-task view: `wave2/pooled-summary.md`.
+
 **Question.** On a fixed public prompt set, how much does routing with `auto_router.irp.rank()` save versus always using
 the best model, at equal quality, and what does it cost versus always-cheapest? Prices are what an AntSeed buyer pays
 today (snapshot of 17 Oct 2026, 10:27 UTC).

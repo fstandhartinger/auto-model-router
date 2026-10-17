@@ -1,4 +1,22 @@
 {
+ "amendments": {
+  "grade_w2.py": {
+   "final_sha256": "d6b969b632e584e5f2cfc8d8bc7457233a08bf3e7d00c519ae298eb13c9ef6ee",
+   "registered_sha256": "1fce5773a2c6c89b590c9927665525439ccddb0553ee63364bdd115fc04400fa",
+   "why": "A2: `from builtins import *` added after `from math import *` in the class-style preamble (math.pow shadowed the builtin pow and made all six answers to coding-lcb6-leetcode-3739 raise TypeError); all stored answers regraded, only those six grades changed (0->1); pre-fix grades in results-before-A2.csv."
+  },
+  "make_manifest.py": {
+   "final_sha256": "8caf865f6ecaea90456f04205e9d80151da97159bae4a57a41185f049b41d56d",
+   "registered_sha256": "7ebf6f7e1458238fe602216eb3415da1280911d1437aa8a9471c59dea3df3cbb",
+   "why": "bookkeeping only: the AMENDED and OUTPUTS lists were extended after the run; no input, grade or output logic touched."
+  },
+  "run.py": {
+   "final_sha256": "7798b934ae3a8f4473baaa11204655a6ff90642b5518b8bab5bb0bd4b7d96861",
+   "registered_sha256": "f9bddbfcdd0fef256bd532fa3928a729c4381c9b6d2f8a68798dd2fd64beac10",
+   "why": "A1 (operational): spend-guard stop raised from USD 7.5 to 9.2 for the resume after the run stopped with 33 of 360 pairs missing; order, prompts and grading unchanged."
+  }
+ },
+ "completed_at": "2026-10-17T11:44:38+00:00",
  "files_sha256": {
   "analysis-plan.md": "9252b9753c779f483a3eb8d7295906cbf4d8bd0694d11a0e288f5d02b2f84f21",
   "build_prices.py": "bbfd9deb3f68c418d1fc192700e60b998cffb4995decb6094fa3f0a768d3fab6",
@@ -25,9 +43,26 @@
   "gpt-5.6-sol",
   "kimi-k3"
  ],
+ "openrouter_credits_after": {
+  "total_credits": 578.9112268,
+  "total_usage": 517.462548287
+ },
  "openrouter_credits_before": {
   "total_credits": 578.9112268,
   "total_usage": 509.528709362
+ },
+ "outputs_sha256": {
+  "analysis.json": "5a5f3515109aeda31e0142fa585e3486a4f683577841537414dca8e01539c9e1",
+  "chart-pooled.png": "6185b8bb60641db0fb4d49bb00d1d62f27d684702bab0636daed3d4c1a074a3f",
+  "chart-wave2-cheapest.png": "a48de24f3e9da78ce9c829aa2489dba2c6b63396e5ba37b73eef9d9bdc636ff9",
+  "chart-wave2-list.png": "29a491c66709df8656407cd58d07354544a91adc047d9ad8a25e63fa7807e23d",
+  "chart-wave2.png": "6df3c06a42aa2b2d4c5171253a5452d38858d2a3848102f6977f1f8d8a42af75",
+  "pooled-analysis.json": "c793d5c5dcffdbb97df113bab5d969695dbe2bb2b0957f31f168fc4f8fc26e05",
+  "pooled-summary.md": "f178b0b61581a34808bf81f79fbcc002a3e3211438a5ccd94334a8fd6334c894",
+  "results-before-A2.csv": "7a931f9368724a20cb2089dd3b448c06de0c5459b3fc50325b905718e8ed0fac",
+  "results.csv": "84424f6c465fd96f23e98df791d168848c2ef197c11c6f4b6ee201d7b186bac9",
+  "router-picks.csv": "e8feedb15d3c823de6038080daf3b432e6f4e5f243d2a0199a865f86ccc0670e",
+  "summary.md": "bc62f8c541e30b2ef0b5fd3997296b59412e6810fb2f23b46f4ced300aae114c"
  },
  "registered_at": "2026-10-17T11:00:45+00:00",
  "sources": {
@@ -35,6 +70,7 @@
   "auto-router-demo_commit": "f3fdee1031852b733477e9cffa69256ce861d127",
   "wave1": "../manifest.json (same models, router build, AntSeed snapshot)"
  },
+ "spend_usd_credits_delta": 7.934,
  "study": "antseed-irp-eval-20261017/wave2",
  "task_count": 60,
  "tasks_full_sha256 (not committed; rebuilt by build_tasks.py)": "6a282ff498d39387838bced0d9e0172551e5f9b38f69f7187d71e3f7e20913e2"
