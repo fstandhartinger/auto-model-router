@@ -1,0 +1,60 @@
+{
+ "fitted_on": {
+  "dataset": "evaluation/success-v2-calibration/dataset.csv",
+  "dataset_sha256": "596afc34369ec9f8240ab4b02102fa52ff5c5c7b7aaea0f4f2a1f0fe3753eace",
+  "in_sample_logloss_curve": 0.3676,
+  "measured_prior_n_grid_logloss": {
+   "1000000000.0": 0.3676,
+   "12.0": 0.37222,
+   "24.0": 0.36884,
+   "3.0": 0.39373,
+   "48.0": 0.36775,
+   "6.0": 0.38006
+  },
+  "n": 720,
+  "note": "720 graded (task, model) outcomes of waves 1+2; see evaluation/antseed-irp-eval-20261017/calib/README.md",
+  "waves": [
+   1,
+   2
+  ]
+ },
+ "params": {
+  "ceiling": 0.995,
+  "floor": 0.02,
+  "length_penalty": 0.37305,
+  "measured_n": 6.0,
+  "measured_prior_n": 48.0,
+  "offset": -246.6918,
+  "per_category": {
+   "coding": [
+    -254.8989,
+    413.6123,
+    84.0728
+   ],
+   "math": [
+    -301.873,
+    426.0301,
+    84.0728
+   ]
+  },
+  "scale": 84.0728,
+  "slope": 441.0851,
+  "smooth_ceiling": true
+ },
+ "theta": {
+  "a": [
+   3.6479311342385405,
+   3.745550319353257,
+   4.304281985275682
+  ],
+  "ceiling": 0.9950000000000001,
+  "g": [
+   5.246466339346815,
+   4.919692082042586,
+   5.067394629236593
+  ],
+  "kappa": 0.11894453370913016,
+  "lam": 0.3730545534847168
+ },
+ "version": "success-v2"
+}

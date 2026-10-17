@@ -48,14 +48,22 @@ def _finite(value: float) -> float | None:
 def success_model_from_config(policy: dict) -> SuccessModel:
     """Logistic curve parameters and an optional measured success table.
 
-    ``policy.success``: {offset, slope, scale, table: path}. The table is JSON
+    ``policy.success``: {offset, slope, scale, table: path}, or {version: 2, params: path?, table: path}
+    for the recalibrated model (``economics.success_v2``; measured cells then shrink toward the curve
+    instead of replacing it). The table is JSON
     ``[[model, category, bucket, p], ...]`` as written by experiments/calibrate.py.
     Measured rates beat benchmark-derived curves by a wide margin (see EXPERIMENTS.md).
     """
     import json
     conf = policy.get("success") or {}
-    model = SuccessModel(**{k: conf[k] for k in ("offset", "slope", "scale", "evidence_discount")
-                            if k in conf})
+    if conf.get("version") == 2:
+        from .economics import success_v2
+        model = success_v2(path=conf.get("params"))
+        if "evidence_discount" in conf:
+            model.evidence_discount = conf["evidence_discount"]
+    else:
+        model = SuccessModel(**{k: conf[k] for k in ("offset", "slope", "scale", "evidence_discount")
+                                if k in conf})
     table = conf.get("table")
     if table:
         with open(os.path.expanduser(table)) as fh:
