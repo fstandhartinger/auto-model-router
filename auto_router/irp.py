@@ -292,7 +292,7 @@ def rank(router, body: Any) -> dict:
         output *= request.get("n", 1)
         usage["output_tokens"] = output
         cost = _cost(prices, input_tokens, cache, output)
-        quality = router.success.p(model, req.category, req.difficulty)
+        quality = router.success.p(model, req.category, req.difficulty, max_tokens=budget)
         entry = {"candidate_id": candidate["id"], "expected_quality": max(0.0, min(1.0, quality)),
                  "expected_cost_usd": cost, "expected_usage": usage}
         # Only explicitly documented support; never infer effort support from a model name.
