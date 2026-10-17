@@ -1,0 +1,37 @@
+{
+ "files_sha256": {
+  "analysis-plan.md": "2c70b36a6175d9bd4c80619786df5dfdba77e1170353ca5c5b9f3c1538b1c6ee",
+  "build_prices.py": "cc975130d4afd29d7fe04ffc51dbce0f8252f97cd0f07776758d80248889d1ee",
+  "build_tasks.py": "5ff660ec13fa9b8ed1f5af84d51e52540937551bbc9b76429bb6af790b2ed065",
+  "check_disjoint.py": "26b81eda036b70d97497cd7be83625da9c3ff30f2603366980d663e54025b1ff",
+  "demo-catalog.json": "22ae2236b353d2bf97d35504c509c5c259da9d1957fdf4389f74e286f312f8fb",
+  "grade.py": "ea2c247ec3fa1130d9c329c42df6a0b9ba108a51bf4bbdb594a242b0ece83988",
+  "prices.json": "7f0f0c8123bfcf1e49344fbe531a969e6a1ceb83d73e3e8877a429eac9b7f1b5",
+  "reproduce.py": "d6b9ce2540a6826c47bdd966c08e1e9890cfbcc5030aba248b7fd39818e7a496",
+  "router-catalog.json": "10f1d2ea5605dc375010da532253efac52330e65c197a41da44a15afe07b0f46",
+  "router-plan.csv": "5bbc24a3514c5fd60e5fb9c00aef515318f27fdce472fb0ec7c2e7eb48b654ed",
+  "router_plan.py": "be23b2e8708212035dae3c266768bde65c3f91cbc183fb56d94680f821575e11",
+  "run.py": "6d1e20d03e9d65f5125e8aaa68c4ac10b69c8840a92c35c4c2fcf4c413e9fa57",
+  "success.measured.json": "37fd8d1e9d66da9ee6dffd18913e2d7b13669676bad1689f7ddef6d41671e449",
+  "tasks-public.jsonl": "133b4d1950ab4526dfb7f46c1673f647566d4cde76a129d71b6b5ae1c82dbdbf",
+  "validate_graders.py": "d56fb9cdb5b88fbf430f0f7c1008b9521a447e21cf8e7dffd5c6da2b8d9b5de7"
+ },
+ "models": [
+  "claude-opus-5",
+  "deepseek-v4.1-flash",
+  "glm-5.3-flash",
+  "gpt-5.6-luna",
+  "gpt-5.6-sol",
+  "kimi-k3"
+ ],
+ "openrouter_credits_before_usd_remaining": 71.0421963,
+ "registered_at": "2026-10-17T10:40:35+00:00",
+ "sources": {
+  "antseed_snapshot": "evidence/antseed-models-text-20261017.json taken 2026-10-17 10:27Z, sha256 in prices.json",
+  "auto-model-router_commit": "973d60c5eb959de1243e6e355145f67f4803fa22",
+  "auto-router-demo_commit": "f3fdee1031852b733477e9cffa69256ce861d127",
+  "s1_model": "decisionmodels/s1-llm-auto-router (revision and file digests in router-catalog.json)"
+ },
+ "study": "antseed-irp-eval-20261017",
+ "task_count": 60
+}
