@@ -11,6 +11,9 @@ HERE = Path(__file__).resolve().parent
 FROZEN = ["tasks-public.jsonl", "prices.json", "router-plan.csv", "router-catalog.json", "success.measured.json",
           "demo-catalog.json", "analysis-plan.md", "build_tasks.py", "build_prices.py", "router_plan.py", "run.py",
           "grade.py", "validate_graders.py", "reproduce.py", "check_disjoint.py"]
+#: files that may differ from their registered hash, with the reason (also described in README "Amendments")
+AMENDED = {"reproduce.py": "A1: after the first look at results.csv added statistics against always-Opus, the list of tasks no model passed, "
+                           "the per-category summary table and 5-decimal cost formatting. No grade, key, price or router pick changed."}
 OUTPUTS = ["results.csv", "router-picks.csv", "analysis.json", "summary.md", "chart-cost-vs-quality.png"]
 sha = lambda n: hashlib.sha256((HERE / n).read_bytes()).hexdigest()
 
@@ -27,8 +30,13 @@ if __name__ == "__main__":
              "task_count": 60, "models": list(json.load(open(HERE / "prices.json"))["models"]),
              "files_sha256": {n: sha(n) for n in FROZEN}}
     else:
+        amended = {}
         for n, h in m["files_sha256"].items():
-            assert sha(n) == h, f"frozen file changed after registration: {n}"
+            if sha(n) != h:
+                assert n in AMENDED, f"frozen file changed after registration: {n}"
+                amended[n] = {"registered_sha256": h, "final_sha256": sha(n), "why": AMENDED[n]}
+        if amended:
+            m["amendments"] = amended
         m["outputs_sha256"] = {n: sha(n) for n in OUTPUTS if (HERE / n).exists()}
         m["completed_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
     path.write_text(json.dumps(m, indent=1, sort_keys=True) + "\n")

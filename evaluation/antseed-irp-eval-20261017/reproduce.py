@@ -89,6 +89,7 @@ def analyse():
                                               "picks": [plan[(i, clf, basis, t)] for i in ids]}
         bp, bc = vec(arms["always-best"]["picks"])
         best_total = bc.sum()
+        op, oc = vec(arms["always-claude-opus-5"]["picks"])
         table = {}
         for name, a in arms.items():
             p, c = vec(a["picks"])
@@ -100,26 +101,38 @@ def analyse():
                      "cost_ratio_ci95": [r6(np.percentile(cr, 2.5)), r6(np.percentile(cr, 97.5))],
                      "pass_diff_vs_always_best": r6(p.mean() - bp.mean()),
                      "pass_diff_ci95": [r6(np.percentile(dp, 2.5)), r6(np.percentile(dp, 97.5))]}
+            # added after the first look at the results (see README "Amendments"): same statistics against always-Opus
+            dpo = p[draws].mean(axis=1) - op[draws].mean(axis=1)
+            cro = c[draws].sum(axis=1) / oc[draws].sum(axis=1)
+            entry.update({"cost_ratio_vs_always_opus": r6(c.sum() / oc.sum()),
+                          "cost_ratio_vs_always_opus_ci95": [r6(np.percentile(cro, 2.5)), r6(np.percentile(cro, 97.5))],
+                          "pass_diff_vs_always_opus": r6(p.mean() - op.mean()),
+                          "pass_diff_vs_always_opus_ci95": [r6(np.percentile(dpo, 2.5)), r6(np.percentile(dpo, 97.5))]})
             if a["kind"] == "router":
                 entry["classifier"], entry["tradeoff"] = a["classifier"], a["tradeoff"]
                 entry["picks_by_model"] = {m: a["picks"].count(m) for m in MODELS if a["picks"].count(m)}
             table[name] = entry
-        # headline: cheapest router setting per classifier meeting each criterion
+        # headline: cheapest router setting per classifier meeting each criterion, against each reference arm
         head = {}
-        for clf in ("s1", "prior"):
-            sets = [table[f"router-{clf}-t{t}"] for t in range(11)]
-            crit = {"not_significantly_worse_than_always_best": lambda e: e["pass_diff_ci95"][1] >= 0,
-                    "point_estimate_at_least_always_best": lambda e: e["pass_diff_vs_always_best"] >= 0,
-                    f"noninferior_within_{int(MARGIN * 100)}_points": lambda e: e["pass_diff_ci95"][0] >= -MARGIN}
-            for cname, f in crit.items():
-                ok = [e for e in sets if f(e)]
-                if ok:
-                    e = min(ok, key=lambda e: (e["total_cost_usd"], e["tradeoff"]))
-                    head[f"{clf}/{cname}"] = {"tradeoff": e["tradeoff"], "pass_rate": e["pass_rate"], "pass_diff": e["pass_diff_vs_always_best"],
-                                              "pass_diff_ci95": e["pass_diff_ci95"], "cost_pct_of_always_best": r6(100 * e["cost_ratio_vs_always_best"]),
-                                              "cost_pct_ci95": [r6(100 * x) for x in e["cost_ratio_ci95"]]}
-                else:
-                    head[f"{clf}/{cname}"] = None
+        for ref, sfx in (("always_best", ""), ("always_opus", "_opus")):
+            dk, ck, rk = f"pass_diff_vs_{ref}", f"pass_diff_vs_{ref}_ci95" if sfx else "pass_diff_ci95", f"cost_ratio_vs_{ref}"
+            ckr = f"cost_ratio_vs_{ref}_ci95" if sfx else "cost_ratio_ci95"
+            dk = dk if sfx else "pass_diff_vs_always_best"
+            for clf in ("s1", "prior"):
+                sets = [table[f"router-{clf}-t{t}"] for t in range(11)]
+                crit = {"not_significantly_worse": lambda e: e[ck][1] >= 0,
+                        "point_estimate_at_least": lambda e: e[dk] >= 0,
+                        f"noninferior_within_{int(MARGIN * 100)}_points": lambda e: e[ck][0] >= -MARGIN}
+                for cname, f in crit.items():
+                    ok = [e for e in sets if f(e)]
+                    key = f"{clf}/{cname}/vs_{ref}"
+                    if ok:
+                        e = min(ok, key=lambda e: (e["total_cost_usd"], e["tradeoff"]))
+                        head[key] = {"tradeoff": e["tradeoff"], "pass_rate": e["pass_rate"], "pass_diff": e[dk], "pass_diff_ci95": e[ck],
+                                     "cost_pct": r6(100 * e[rk]), "cost_pct_ci95": [r6(100 * x) for x in e[ckr]],
+                                     "picks_by_model": e["picks_by_model"]}
+                    else:
+                        head[key] = None
         # s1 vs prior per tradeoff (paired)
         svp = {}
         for t in range(11):
@@ -136,13 +149,13 @@ def analyse():
                 idx = [k for k, x in enumerate(key) if x == g]
                 res_[g] = {"n": len(idx)}
                 for name, a in arms.items():
-                    if a["kind"] == "router" and a["classifier"] != "s1":
-                        continue
                     p, c = vec(a["picks"])
                     res_[g][name] = {"pass_rate": r6(p[idx].mean()), "cost_usd": r6(c[idx].sum())}
             return res_
         out["bases"][basis] = {"arms": table, "headline": head, "s1_vs_prior": svp,
                                "by_category": split(cat), "by_difficulty": split(dif)}
+    out["tasks_failed_by_all_models"] = [i for i in ids if not any(res[(i, m)]["passed"] for m in MODELS)]
+    out["tasks_passed_by_all_models"] = sum(1 for i in ids if all(res[(i, m)]["passed"] for m in MODELS))
     out["single_model_pass_by_category"] = {m: {g: sum(res[(i, m)]["passed"] for i, c_ in zip(ids, cat) if c_ == g) for g in sorted(set(cat))} for m in MODELS}
     return out, ids, res, plan, prices
 
@@ -160,13 +173,40 @@ def picks_csv(out, ids, res, plan):
 
 
 def summary_md(out):
-    b = out["bases"]["cheapest"]
+    return ("### Cheapest-seller prices (primary)\n\n" + table_md(out, "cheapest") + "\n### Median-seller prices (sensitivity)\n\n"
+            + table_md(out, "median") + "\n### Per category (pass rate / total cost, cheapest-seller prices)\n\n" + category_md(out)
+            + "\n### Against always-Opus, cheapest-seller prices\n\n" + opus_md(out, "cheapest"))
+
+
+def category_md(out):
+    by = out["bases"]["cheapest"]["by_category"]
+    cats = list(by)
+    L = ["| Arm | " + " | ".join(f"{c} (n={by[c]['n']})" for c in cats) + " |", "|---|" + "---|" * len(cats)]
+    names = [f"always-{m}" for m in MODELS] + ["oracle"] + [f"router-s1-t{t}" for t in (0, 2, 5, 8, 10)] + [f"router-prior-t{t}" for t in (0, 2, 8)]
+    for nm in names:
+        L.append(f"| {nm} | " + " | ".join(f"{100 * by[c][nm]['pass_rate']:.0f}% / ${by[c][nm]['cost_usd']:.5f}" for c in cats) + " |")
+    return "\n".join(L) + "\n"
+
+
+def opus_md(out, basis):
+    b = out["bases"][basis]
+    L = ["| Arm | Pass rate | Total cost | Cost vs always-Opus (95% CI) | Pass diff vs Opus (95% CI) |", "|---|---|---|---|---|"]
+    names = ["always-claude-opus-5", "always-best", "always-cheapest", "oracle"] + [f"router-s1-t{t}" for t in range(11)] + [f"router-prior-t{t}" for t in range(11)]
+    for nm in names:
+        e = b["arms"][nm]
+        L.append(f"| {nm} | {100 * e['pass_rate']:.1f}% | ${e['total_cost_usd']:.5f} | {100 * e['cost_ratio_vs_always_opus']:.1f}% ({100 * e['cost_ratio_vs_always_opus_ci95'][0]:.1f}-{100 * e['cost_ratio_vs_always_opus_ci95'][1]:.1f}) | "
+                 f"{100 * e['pass_diff_vs_always_opus']:+.1f} pts ({100 * e['pass_diff_vs_always_opus_ci95'][0]:+.1f} to {100 * e['pass_diff_vs_always_opus_ci95'][1]:+.1f}) |")
+    return "\n".join(L) + "\n"
+
+
+def table_md(out, basis):
+    b = out["bases"][basis]
     L = ["| Arm | Passed | Pass rate (Wilson 95%) | Total cost | vs always-best | Pass diff vs best (95% CI) |", "|---|---|---|---|---|---|"]
     names = [f"always-{m}" for m in MODELS] + ["always-best", "always-cheapest", "oracle"] + [f"router-s1-t{t}" for t in range(11)] + [f"router-prior-t{t}" for t in range(11)]
     for nm in names:
         e = b["arms"][nm]
         L.append(f"| {nm} | {e['passed']}/{e['n']} | {100 * e['pass_rate']:.1f}% ({100 * e['pass_rate_wilson95'][0]:.0f}-{100 * e['pass_rate_wilson95'][1]:.0f}) | "
-                 f"${e['total_cost_usd']:.4f} | {100 * e['cost_ratio_vs_always_best']:.1f}% | {100 * e['pass_diff_vs_always_best']:+.1f} pts ({100 * e['pass_diff_ci95'][0]:+.1f} to {100 * e['pass_diff_ci95'][1]:+.1f}) |")
+                 f"${e['total_cost_usd']:.5f} | {100 * e['cost_ratio_vs_always_best']:.1f}% | {100 * e['pass_diff_vs_always_best']:+.1f} pts ({100 * e['pass_diff_ci95'][0]:+.1f} to {100 * e['pass_diff_ci95'][1]:+.1f}) |")
     return "\n".join(L) + "\n"
 
 

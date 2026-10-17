@@ -1,4 +1,12 @@
 {
+ "amendments": {
+  "reproduce.py": {
+   "final_sha256": "2b82295a98ce4bba88148303c2ef78b2aeeb22423aa0cb317ee24b71433347fb",
+   "registered_sha256": "d6b9ce2540a6826c47bdd966c08e1e9890cfbcc5030aba248b7fd39818e7a496",
+   "why": "A1: after the first look at results.csv added statistics against always-Opus, the list of tasks no model passed, the per-category summary table and 5-decimal cost formatting. No grade, key, price or router pick changed."
+  }
+ },
+ "completed_at": "2026-10-17T10:50:51+00:00",
  "files_sha256": {
   "analysis-plan.md": "2c70b36a6175d9bd4c80619786df5dfdba77e1170353ca5c5b9f3c1538b1c6ee",
   "build_prices.py": "cc975130d4afd29d7fe04ffc51dbce0f8252f97cd0f07776758d80248889d1ee",
@@ -25,6 +33,13 @@
   "kimi-k3"
  ],
  "openrouter_credits_before_usd_remaining": 71.0421963,
+ "outputs_sha256": {
+  "analysis.json": "3f076a8d281d381c2beb0cce1fb5c900742053c3058f56653bf152bf648276d2",
+  "chart-cost-vs-quality.png": "864c43aabe983f08ae19db200828fadff390522e5d57c0e512415e667ba4d32a",
+  "results.csv": "938fad30bdec01b688d3405450e50e353cbceda6a4213efd05489d696dafc2c3",
+  "router-picks.csv": "bb618cd5b9d866ebb0a807cfd7bd8e9be411958307ae409c2ec0e72184f2514d",
+  "summary.md": "58b10aae8404c62c458e8bbcce3b7ee7a2077afe82650e56d6e7a3cf69034256"
+ },
  "registered_at": "2026-10-17T10:40:35+00:00",
  "sources": {
   "antseed_snapshot": "evidence/antseed-models-text-20261017.json taken 2026-10-17 10:27Z, sha256 in prices.json",
