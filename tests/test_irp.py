@@ -206,3 +206,128 @@ def test_large_integers_and_nesting_are_400(router):
         assert client_for(router).post('/v1/routing/rank',json=b).status_code==400
     for raw in ('{"request":'+ '1'*4400 +'}', '['*1200+'0'+']'*1200):
         assert client_for(router).post('/v1/routing/rank',content=raw).status_code==400
+
+
+# --- aliases and the budgeted classifier (job antseed-router-v2) ---------------------------------
+import threading
+import time as _time
+
+from auto_router import jev
+from auto_router.irp import BudgetedClassifier, model_index
+
+
+def aliased_router(aliases):
+    models = [ModelInfo('small', 'a', 'test/small', Prices(1, 2), capability={'general': 40, 'coding': 40}),
+              ModelInfo('large', 'b', 'test/large', Prices(3, 8), capability={'general': 70, 'coding': 90})]
+    config = RouterConfig({}, Catalog(models), policy={'classifier': {'backend': 'heuristic'}},
+                          raw={'models': [{'name': 'large', 'irp_aliases': aliases}]})
+    r = Router(config)
+    r.classifier = None
+    return r
+
+
+def test_aliases_resolve_to_the_same_model_and_are_listed(router):
+    r = aliased_router(['e2ee-large', 'large-odd', 'test/small', 7, ''])
+    index = model_index(r.config)
+    assert index['e2ee-large'][0].name == 'large' and index['large-odd'][0].name == 'large'
+    assert index['test/small'][0].name == 'small'  # an alias never shadows another model's primary id
+    ids = {m['id'] for m in supported(r.config)['data']}
+    assert {'test/small', 'test/large', 'e2ee-large', 'large-odd'} <= ids
+    data = rank(r, body([candidate('x', 'e2ee-large'), candidate('y', 'test/small')]))
+    assert {e['candidate_id'] for e in data['ranked']} == {'x', 'y'}
+
+
+def test_models_extra_is_merged_into_the_models_answer(router):
+    app = FastAPI()
+    app.include_router(endpoints(lambda: router, None, lambda: {'catalog_models': 3}))
+    extra = TestClient(app).get('/v1/routing/models').json()['extra']['system1models.ai']
+    assert extra['catalog_models'] == 3 and extra['mode'] == 'suggest-only'
+
+
+def cls(category='coding', difficulty=0.9, **kw):
+    base = dict(category=category, category_probs={category: 1.0}, category_confidence=0.9, difficulty=difficulty,
+                difficulty_confidence=0.8, needs_tools=0.0, needs_vision=0.0, needs_long_context=0.0,
+                follow_up=0.0, stakes=0.5, latency_s=0.0, model='s1')
+    base.update(kw)
+    return jev.Classification(**base)
+
+
+def budgeted(router, fn, **kw):
+    router.classifier = BudgetedClassifier(fn, 's1-test@abc', **kw)
+    return router
+
+
+def basis(router, **req):
+    return rank(router, body(**req))['extra']['system1models.ai']
+
+
+def test_budgeted_classifier_reports_what_it_used(router):
+    extra = basis(budgeted(router, lambda t, c: cls('coding', 0.9)))
+    assert extra['classifier'] == 's1-test@abc' and extra['category'] == 'coding' and extra['difficulty'] > 0.5
+    # the classified difficulty moves the success estimate relative to the prior
+    easy = rank(budgeted(router, lambda t, c: cls('coding', 0.0)), body())['ranked']
+    hard = rank(budgeted(router, lambda t, c: cls('coding', 1.0)), body())['ranked']
+    q = lambda ranked, cid: next(e for e in ranked if e['candidate_id'] == cid)['expected_quality']
+    assert q(easy, 'a') > q(hard, 'a')
+
+
+@pytest.mark.parametrize('name,fn,reason', [
+    ('error', lambda t, c: 1 / 0, 'error'),
+    ('failed', lambda t, c: jev.FALLBACK, 'error'),
+    ('malformed', lambda t, c: cls(difficulty=float('nan')), 'malformed'),
+    ('malformed-type', lambda t, c: 'not a classification', 'malformed'),
+])
+def test_budgeted_classifier_falls_back_on_bad_answers(router, name, fn, reason):
+    extra = basis(budgeted(router, fn))
+    assert extra['classifier'] == f'local conservative prior (fallback: {reason})' and 'category' not in extra
+
+
+def test_budgeted_classifier_times_out_and_still_ranks(router):
+    release = threading.Event()
+    budgeted(router, lambda t, c: (release.wait(5), cls())[1], timeout_s=0.05)
+    started = _time.perf_counter()
+    data = rank(router, body())
+    release.set()
+    assert _time.perf_counter() - started < 1.0 and len(data['ranked']) == 2
+    assert data['extra']['system1models.ai']['classifier'] == 'local conservative prior (fallback: timeout)'
+
+
+def test_budgeted_classifier_caps_concurrency_and_recovers(router):
+    release = threading.Event()
+    running = []
+    def slow(t, c):
+        running.append(1)
+        release.wait(5)
+        return cls()
+    bc = BudgetedClassifier(slow, 's1-test@abc', timeout_s=0.05, concurrency=2)
+    assert [bc.classify('x', '').basis.endswith('(fallback: timeout)') for _ in range(2)] == [True, True]
+    assert bc.classify('x', '').basis == 'local conservative prior (fallback: busy)'  # pool full, no third call
+    assert len(running) <= 2
+    release.set()
+    for _ in range(100):
+        if bc.classify('x', '').classification is not None:
+            break
+        _time.sleep(0.02)
+    else:
+        raise AssertionError('slots were never released')
+
+
+def test_validation_precedes_classification(router):
+    calls = []
+    budgeted(router, lambda t, c: calls.append(1) or cls())
+    app = FastAPI(); app.include_router(endpoints(lambda: router)); client = TestClient(app)
+    assert client.post('/v1/routing/rank', json={'request': {'messages': []}, 'routing': {'candidates': []}}).status_code == 400
+    assert client.post('/v1/routing/rank', json={'request': {'messages': 5}, 'routing': {}}).status_code == 400
+    assert client.post('/v1/routing/rank', content='{').status_code == 400
+    assert calls == []  # malformed requests never consume a classifier call
+    assert client.post('/v1/routing/rank', json=body()).status_code == 200 and calls == [1]
+
+
+def test_tradeoff_stays_monotonic_with_classifier(router):
+    budgeted(router, lambda t, c: cls('coding', 0.7))
+    cands = [candidate('a', 'test/small'), candidate('b', 'test/large', 3)]
+    costs = []
+    for t in range(11):
+        b = body(cands); b['routing']['cost_quality_tradeoff'] = t
+        costs.append(rank(router, b)['ranked'][0]['expected_cost_usd'])
+    assert costs == sorted(costs, reverse=True)

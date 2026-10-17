@@ -9,9 +9,12 @@ from __future__ import annotations
 
 import json
 import math
+import threading
 import time
 import uuid
-from typing import Any
+from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
+from typing import Any, Callable
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
@@ -146,17 +149,92 @@ def model_id(model, raw: dict | None = None) -> str:
 
 
 def model_index(config) -> dict:
+    """Every id a caller may name -> (model, raw entry).
+
+    A model's primary id comes first; ``irp_aliases`` in its config entry are extra ids that resolve to
+    the *same* model (spellings a marketplace uses for it). An alias never shadows a primary id or an
+    alias another model already claimed.
+    """
     entries = {e["name"]: e for e in config.raw.get("models", [])}
     result = {}
-    for model in sorted(config.catalog.all(), key=lambda m: m.name):
-        raw = entries.get(model.name, {})
+    ordered = [(model, entries.get(model.name, {})) for model in sorted(config.catalog.all(), key=lambda m: m.name)]
+    for model, raw in ordered:
         result.setdefault(model_id(model, raw), (model, raw))
+    for model, raw in ordered:
+        aliases = raw.get("irp_aliases") or []
+        for alias in aliases if isinstance(aliases, list) else []:
+            if isinstance(alias, str) and 1 <= len(alias) <= 128:
+                result.setdefault(alias, (model, raw))
     return result
 
 
-def supported(config) -> dict:
+def supported(config, extra: dict | None = None) -> dict:
     return {"object": "list", "data": [{"id": mid, "object": "model"} for mid in model_index(config)],
-            "extra": {NAMESPACE: {"mode": "suggest-only", "protocol": "0.3.0-draft"}}}
+            "extra": {NAMESPACE: {"mode": "suggest-only", "protocol": "0.3.0-draft", **(extra or {})}}}
+
+
+@dataclass
+class Classified:
+    """What one budgeted classification produced and which basis the ranking can truthfully claim."""
+
+    classification: Any
+    basis: str
+
+
+class BudgetedClassifier:
+    """Runs a classifier under a wall-clock budget and a concurrency cap; never raises.
+
+    ``classifier(request, context)`` must return a ``jev.Classification``. At most ``concurrency``
+    calls are in flight: a call that outlives its budget keeps its slot until it really finishes, so
+    a slow model cannot pile up CPU work. Whenever the answer cannot be used (budget exceeded, full
+    pool, exception, malformed or failed result) ``classify`` returns ``classification=None`` and a
+    basis that names the reason, and the ranking proceeds on the conservative prior.
+    """
+
+    def __init__(self, classifier: Callable[[str, str], Any], label: str, timeout_s: float = 0.8,
+                 concurrency: int = 3, loaded: Callable[[], bool] | None = None):
+        self.classifier = classifier
+        self.label = label
+        self.timeout_s = max(0.01, float(timeout_s))
+        self.concurrency = max(1, int(concurrency))
+        self._loaded = loaded
+        self._slots = threading.BoundedSemaphore(self.concurrency)
+        self._pool = ThreadPoolExecutor(max_workers=self.concurrency, thread_name_prefix="irp-classify")
+
+    def status(self) -> str:
+        loaded = True if self._loaded is None else bool(self._loaded())
+        return f"{self.label} ({'loaded' if loaded else 'loading'}; budget {int(self.timeout_s * 1000)} ms, " \
+               f"concurrency {self.concurrency})"
+
+    def _fallback(self, reason: str) -> Classified:
+        return Classified(None, f"local conservative prior (fallback: {reason})")
+
+    def classify(self, request: str, context: str) -> Classified:
+        if not self._slots.acquire(blocking=False):
+            return self._fallback("busy")
+        try:
+            future = self._pool.submit(self.classifier, request, context)
+        except Exception:  # noqa: BLE001 - e.g. interpreter shutdown
+            self._slots.release()
+            return self._fallback("error")
+        future.add_done_callback(lambda _f: self._slots.release())
+        try:
+            result = future.result(timeout=self.timeout_s)
+        except FutureTimeout:
+            return self._fallback("timeout")
+        except Exception:  # noqa: BLE001 - a classifier bug must never fail a ranking
+            return self._fallback("error")
+        if getattr(result, "failed", False):
+            return self._fallback("error")
+        try:
+            valid = (isinstance(result.category, str) and result.category
+                     and all(math.isfinite(float(getattr(result, f))) for f in
+                             ("difficulty", "stakes", "needs_tools", "needs_vision", "needs_long_context", "follow_up")))
+        except (AttributeError, TypeError, ValueError):
+            valid = False
+        if not valid:
+            return self._fallback("malformed")
+        return Classified(result, self.label)
 
 
 def _cost(prices: dict, input_tokens: int, cache: int, output: int) -> float:
@@ -186,8 +264,18 @@ def rank(router, body: Any) -> dict:
             bound = min(found[0].max_output_tokens, budget if budget is not None else found[0].max_output_tokens)
             _cost(candidate["pricing"], max(prompt, cache), cache, bound * request.get("n", 1))
     from .router import last_user_text
-    cls = router.classifier(last_user_text(messages), router._summary(messages, request.get("tools"))) if router.classifier else None
+    text, summary = last_user_text(messages), router._summary(messages, request.get("tools"))
+    classifier = getattr(router, "classifier", None)
+    if isinstance(classifier, BudgetedClassifier):
+        outcome = classifier.classify(text, summary)
+        cls, basis = outcome.classification, outcome.basis
+    else:
+        cls = classifier(text, summary) if classifier else None
+        basis = "configured" if cls is not None else "local conservative prior"
     req = router._turn_request(cls, prompt, budget, time.time(), bool(request.get("tools")), messages)
+    # State the classified turn only when a classifier really answered; the prior has no such fields.
+    classified = {"category": req.category, "difficulty": round(req.difficulty, 4)} \
+        if isinstance(classifier, BudgetedClassifier) and cls is not None else {}
     ranked = []
     for candidate in candidates:
         found = index.get(candidate["model"])
@@ -221,15 +309,16 @@ def rank(router, body: Any) -> dict:
             "router": {"id": NAMESPACE + "/auto-model-router", "version": VERSION}, "ranked": ranked,
             "extra": {NAMESPACE: {"quality_basis": "configured success model; advisory predictions",
                                     "usage_basis": "character token estimate and configured output appetite",
-                                    "classifier": "configured" if cls is not None else "local conservative prior",
+                                    "classifier": basis, **classified,
                                     "router_fee_usd": 0, "mode": "suggest-only"}}}
 
 
-def endpoints(get_router, guard=None) -> APIRouter:
+def endpoints(get_router, guard=None, models_extra: Callable[[], dict] | None = None) -> APIRouter:
     """Hosts retain their own auth/payment/limit policy through an optional guard.
 
     The guard runs before any classification, accepts Request, and raises Problem
-    for existing payment (402) or temporary availability/limits (503) decisions.
+    for existing payment (402) or temporary availability/limits (503) decisions. ``models_extra`` may add host status fields
+    (catalog age, classifier state) to the models answer.
     """
     routes = APIRouter()
 
@@ -237,7 +326,7 @@ def endpoints(get_router, guard=None) -> APIRouter:
     async def models():
         try:
             router = get_router()
-            return supported(router.config)
+            return supported(router.config, models_extra() if models_extra else None)
         except Problem as exc:
             return exc.response()
         except Exception:

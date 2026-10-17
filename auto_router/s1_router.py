@@ -144,6 +144,11 @@ class LocalS1Classifier:
                                                          providers=["CPUExecutionProvider"])
         return self._session, self._tokenizer
 
+    @property
+    def loaded(self) -> bool:
+        """True once the ONNX session exists (a first call before that pays the load time)."""
+        return self._session is not None
+
     def warm(self) -> bool:
         """Load the model now (and run one request) so the first real turn is not the slow one."""
         return not self("warm-up request").failed
