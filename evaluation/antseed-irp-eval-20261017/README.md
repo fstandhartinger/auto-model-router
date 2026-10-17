@@ -1,5 +1,10 @@
 # AntSeed router evaluation, 17 Oct 2026 (60 public tasks, 6 models)
 
+> **Summary of all three waves (17 Oct 2026).** Wave 1 (this file): too easy, every model passed 51-55 of 60, so no trade-off could be shown (s1 router at tradeoff 2: 1.9 % of Opus's cost at 53/60 vs 54/60 at cheapest-seller prices, no saving versus the already-cheap best model).
+> Wave 2 ([`wave2/README.md`](wave2/README.md), 60 harder tasks, median-seller prices): no router setting reached always-Opus quality (56/60); router-s1 at tradeoff 0 passed 48/60 at 20 % of Opus's cost, always-Sol 55/60 at 28 %.
+> Diagnosis: the success model saturated; refit as **success model v2** on waves 1+2 (library PR #10, `evaluation/success-v2-calibration/`). Wave 3 ([`wave3/README.md`](wave3/README.md), 60 fresh tasks, pre-registered): router v2 at tradeoff 0 passed 57/60 vs 47/60 for the router served today (+16.7 points, 95 % CI +8.3 to +26.7)
+> at 24 % of always-Opus's cost (Opus 56/60); but no router setting met the registered "equal quality to Opus" rule (v2 at tradeoff 0 is just always-GPT-5.6-Sol: +1.7 points, CI -6.7 to +10.0), the cheap settings (about 4 % of Opus's cost) pass 82 % of tasks, and the s1 classifier adds nothing to v2.
+
 > **Wave 2 (harder tasks, 60 new tasks, pre-registered, 16,000-token limit, median-seller prices as the headline basis) is in [`wave2/README.md`](wave2/README.md).** Wave 1 below had a ceiling effect (51-55 of 60 for every model); on wave 2 no router setting matched always-Opus quality, see there. Post-hoc pooled 120-task view: `wave2/pooled-summary.md`.
 
 **Question.** On a fixed public prompt set, how much does routing with `auto_router.irp.rank()` save versus always using

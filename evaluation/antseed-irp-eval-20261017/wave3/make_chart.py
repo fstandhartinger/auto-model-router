@@ -42,7 +42,7 @@ x, y = pt("oracle")
 ax.scatter(x, y, marker="*", s=900, color="#58a6ff", zorder=5, label="oracle (cheapest passing model per task)")
 ax.set_xscale("log")
 lo = min(v[1] for v in list(pts.values()) + [pt("oracle")] + [pt(f"router-{c}-t{t}") for t in range(11) for c in ("v1-s1", "v2-s1")])
-ax.set_ylim(max(0, lo - 6), 100)
+ax.set_ylim(max(0, lo - 6), 102)
 ax.set_xlabel("Cost per 1,000 tasks (USD, log scale)", color=FG, fontsize=28)
 ax.set_ylabel(f"Pass rate on {n} tasks (%)", color=FG, fontsize=28)
 price = {"median": "median AntSeed seller", "cheapest": "cheapest AntSeed seller", "list": "OpenRouter list price"}[basis]

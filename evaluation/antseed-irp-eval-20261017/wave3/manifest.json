@@ -1,4 +1,5 @@
 {
+ "completed_at": "2026-10-17T12:57:54+00:00",
  "files_sha256": {
   "analysis-plan.md": "fb5ba83858f0d3a260326912e8396ad46b3111b88526b1529ad9cbec384e7856",
   "build_prices.py": "bbfd9deb3f68c418d1fc192700e60b998cffb4995decb6094fa3f0a768d3fab6",
@@ -28,6 +29,17 @@
  "openrouter_credits_before": {
   "total_credits": 578.9112268,
   "total_usage": 517.621532418
+ },
+ "outputs_sha256": {
+  "analysis.json": "c26ddc3761ea79ba0cce8e42438c506a0f92b7a82ae63c8821a10a5d7c2ad041",
+  "chart-wave3-cheapest.png": "95782c66e8b51f3c49dad2c6f6c4b7df5d1a47528d2f42b76fd3615b0e397b98",
+  "chart-wave3-list.png": "bf1d7f29e0047e545da1d7cb4578a0d716dccb04a2281acbb58fc403d2520ff6",
+  "chart-wave3.png": "170764988e522819ec2b271110d504acbb5a42b2aa45e5b8a9f3d96f3fa29cff",
+  "credits-after.json": "801f8d2d25651802c2ec7ef44617872b4a6ffbd1d0c39ca4bd0506eaf71a3e08",
+  "credits-before.json": "41813faa4ade4e809eba8249377f3193fb5a0eb8ad7bfe9a8401b7e91400441b",
+  "results.csv": "85090c46f65076923c990b31348a8149e3960b545c40a2bc42253aa2578adc1d",
+  "router-picks.csv": "058e406b2d61f5a2778d4703811dc275241c23db1116ecf1d56f597687dd158e",
+  "summary.md": "86b77e1a2d3db4f2269a9264918009773e44b025a7712a37177cf8065487859b"
  },
  "registered_at": "2026-10-17T12:24:00+00:00",
  "sources": {
