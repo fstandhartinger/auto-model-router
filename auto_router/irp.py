@@ -12,7 +12,7 @@ import math
 import threading
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from typing import Any, Callable
 
@@ -227,12 +227,17 @@ class BudgetedClassifier:
         if getattr(result, "failed", False):
             return self._fallback("error")
         try:
-            valid = (isinstance(result.category, str) and result.category
-                     and all(math.isfinite(float(getattr(result, f))) for f in
-                             ("difficulty", "stakes", "needs_tools", "needs_vision", "needs_long_context", "follow_up")))
-        except (AttributeError, TypeError, ValueError):
-            valid = False
-        if not valid:
+            if not isinstance(result.category, str) or not result.category:
+                return self._fallback("malformed")
+            values = {f: float(getattr(result, f)) for f in
+                      ("difficulty", "difficulty_confidence", "stakes", "needs_tools",
+                       "needs_vision", "needs_long_context", "follow_up")}
+            if not all(math.isfinite(v) and 0.0 <= v <= 1.0 for v in values.values()):
+                return self._fallback("malformed")
+            # Return the converted values, never the unchecked originals. Copy rather
+            # than mutate a classifier-owned result (which may be shared across calls).
+            result = replace(result, **values)
+        except (AttributeError, TypeError, ValueError, OverflowError):
             return self._fallback("malformed")
         return Classified(result, self.label)
 

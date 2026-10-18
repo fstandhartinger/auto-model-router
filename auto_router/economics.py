@@ -152,6 +152,7 @@ class SuccessModel:
 
     def p(self, model: ModelInfo, category: str, difficulty: float,
           max_tokens: int | None = None) -> float:
+        """Final probability; bucketed measured cells can break curve monotonicity."""
         value = self.curve(model, category, difficulty, max_tokens)
         key = (model.measurement_key, category, self.bucket(difficulty))
         if key in self.measured:
@@ -172,20 +173,28 @@ class SuccessModel:
 
 
 def success_v2(measured: dict[tuple[str, str, str], float] | None = None,
-               path: "str | os.PathLike[str] | None" = None) -> SuccessModel:
+               path: "str | os.PathLike[str] | None" = None, *,
+               allow_external_params: bool = False) -> SuccessModel:
     """The recalibrated success model (``auto_router/data/success_v2.json``).
 
     Same functional form as v1 (logistic in capability minus a difficulty-dependent
     offset) with refitted parameters, a ceiling that keeps strong models apart, a
     token-budget (truncation) term, and measured cells combined with the curve by Beta
     shrinkage instead of replacing it. ``SuccessModel()`` is unchanged (v1).
+    Explicit paths resolve relative to the working directory and must stay inside
+    the package, including symlinks, unless ``allow_external_params=True``.
     """
     import json
     import os
     from pathlib import Path
 
     file = Path(path) if path else Path(__file__).parent / "data" / "success_v2.json"
-    raw = json.loads(file.read_text())
+    target = file.resolve() if path else file
+    if path and allow_external_params is not True:
+        if not target.is_relative_to(Path(__file__).resolve().parent):
+            raise ValueError("success v2 params must stay inside auto_router; "
+                             "trusted operators may set allow_external_params=true")
+    raw = json.loads(target.read_text())
     params = raw["params"]
     model = SuccessModel(
         offset=params["offset"], slope=params["slope"], scale=params["scale"],

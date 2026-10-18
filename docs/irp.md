@@ -35,3 +35,31 @@ The existing `/v1/chat/completions` library endpoint remains the legacy router A
 ## Conformance
 
 `tests/test_irp.py` covers server requirements in §2, §3, §4, §5.1, §5.2 and §8. Client MUSTs in §3.4/§5.3 and proxy MUSTs in §6 are outside this suggest-only server's scope. Required fields, candidate bounds/uniqueness, model identity, JSON shapes, finite prices, cache arithmetic, ignored fields/model/stream, 422 instead of an empty result, all problem types, supported reasoning efforts, statelessness and the monotonic preference rule are exercised. The shared ranking code never forwards candidate inference or updates proxy conversation state.
+
+## Success model guarantees and parameter trust
+
+For the packaged v2 parameters, `curve()` is monotone decreasing in difficulty
+(and increasing in capability with other inputs fixed). Final `p()` has **no
+monotonicity guarantee** when measured cells are present: selecting a different
+cell at difficulty 0.34 or 0.67 can introduce an upward jump despite Beta shrinkage.
+For example, the committed measured table for `claude-opus-5` / `knowledge`, with
+capability 60, task appetite 8000 and budget 16000, gives `p(0.339999)` about
+0.89347016 and `p(0.34)` about 0.90046972. This inherited bucket granularity is
+preserved; v1 and default v2 calculations are unchanged.
+
+An omitted `policy.success.params` uses the packaged JSON. Explicit `params`
+paths keep their existing working-directory-relative interpretation, but their
+resolved target (including symlinks) must lie inside the `auto_router` package.
+Absolute, relative and symlink escapes raise `ValueError` before the file is read.
+Trusted operators who deliberately need external parameter files can set
+`policy.success: {version: 2, params: /operator/model.json, allow_external_params: true}`
+(or call `success_v2(path=..., allow_external_params=True)`). Only the boolean
+`true` enables this file-read authority; do not derive it or parameter paths from
+untrusted requests. This boundary applies to v2 parameters; the separately
+configured measured `table` remains trusted operator configuration.
+
+The budgeted classifier copies successful classifications with finite float
+values in [0,1] for difficulty, difficulty confidence, stakes, tool/vision/context
+needs and follow-up. Convertible numeric strings are normalized; missing,
+non-convertible, overflowing, non-finite or out-of-domain fields use the
+`malformed` prior fallback. The original classifier result is not mutated.

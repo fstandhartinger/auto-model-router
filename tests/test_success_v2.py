@@ -1,4 +1,4 @@
-"""Success model v2: v1 stays the default; v2 is monotone, keeps strong models apart, shrinks measured cells, and charges truncation risk."""
+"""V2 curve guarantees, measured bucket limits, parameter trust and v1 compatibility."""
 import math
 
 import pytest
@@ -30,15 +30,15 @@ def test_v1_measured_cell_still_overrides_the_curve():
 
 
 @pytest.mark.parametrize("category", CATEGORIES)
-def test_v2_is_monotone_in_capability_and_difficulty(category):
+def test_v2_curve_is_monotone_in_capability_and_difficulty(category):
     s = success_v2()
     caps = [20, 30, 40, 50, 60, 70, 80, 90]
     for d in (0.0, 0.2, 0.5, 0.8, 1.0):
-        ps = [s.p(mk("m", c, 8000), category, d, 16000) for c in caps]
+        ps = [s.curve(mk("m", c, 8000), category, d, 16000) for c in caps]
         assert all(b > a for a, b in zip(ps, ps[1:])), (category, d, ps)
     m = mk("m", 60, 8000)
     ds = [i / 10 for i in range(11)]
-    ps = [s.p(m, category, d, 16000) for d in ds]
+    ps = [s.curve(m, category, d, 16000) for d in ds]
     assert all(b < a for a, b in zip(ps, ps[1:])), (category, ps)
     assert all(0.0 < p < 1.0 for p in ps)
 
@@ -122,3 +122,74 @@ def test_fit_script_predictions_match_the_library():
         m = mk("x", float(data["cap"][i]), tt)
         want = F.predict(th, data["cap"][i:i + 1], data["d"][i:i + 1], data["u"][i:i + 1], data["group"][i:i + 1])[0]
         assert s.curve(m, cats[int(data["group"][i])], float(data["d"][i]), mt) == pytest.approx(want, abs=1e-4)
+
+
+def test_curve_monotone_but_measured_probability_can_rise_at_bucket_boundary():
+    import json
+    from pathlib import Path
+    rows = json.loads((Path(__file__).resolve().parents[1] /
+                       'evaluation/antseed-irp-eval-20261017/success.measured.json').read_text())
+    s = success_v2(measured={(m, c, b): p for m, c, b, p in rows})
+    m = mk('claude-opus-5', 60, 8000)
+    ds = sorted({i / 1000 for i in range(1001)} | {0.34 - 1e-6, 0.67 - 1e-6})
+    curves = [s.curve(m, 'knowledge', d, 16000) for d in ds]
+    assert all(b <= a for a, b in zip(curves, curves[1:]))
+    before = s.p(m, 'knowledge', 0.34 - 1e-6, 16000)
+    after = s.p(m, 'knowledge', 0.34, 16000)
+    assert before == pytest.approx(0.8934701594828719, abs=1e-14)
+    assert after == pytest.approx(0.9004697196356551, abs=1e-14)
+    assert after > before  # documented bucket granularity; final p() is not monotone
+
+
+@pytest.mark.parametrize('kind', ['absolute', 'relative', 'symlink'])
+def test_params_path_cannot_escape_package(tmp_path, monkeypatch, kind):
+    import json
+    from pathlib import Path
+    import auto_router
+    from auto_router.router import success_model_from_config
+    root = Path(auto_router.__file__).resolve().parent
+    outside = tmp_path / 'external.json'
+    raw = json.loads((root / 'data/success_v2.json').read_text())
+    raw['params']['offset'] = 424242
+    outside.write_text(json.dumps(raw))
+    if kind == 'symlink':
+        path = root / '_test_external_params.json'
+        path.symlink_to(outside)
+    elif kind == 'relative':
+        monkeypatch.chdir(tmp_path)
+        path = Path('external.json')
+    else:
+        path = outside
+    try:
+        conf = {'success': {'version': 2, 'params': str(path)}}
+        with pytest.raises(ValueError, match='must stay inside auto_router'):
+            success_model_from_config(conf)
+        for false_opt_in in (False, 'true', 1):
+            conf['success']['allow_external_params'] = false_opt_in
+            with pytest.raises(ValueError, match='must stay inside auto_router'):
+                success_model_from_config(conf)
+        conf['success']['allow_external_params'] = True
+        assert success_model_from_config(conf).offset == 424242
+    finally:
+        if kind == 'symlink':
+            path.unlink()
+
+
+def test_packaged_default_and_explicit_in_package_paths(monkeypatch):
+    from pathlib import Path
+    import auto_router
+    from auto_router.router import success_model_from_config
+    root = Path(auto_router.__file__).resolve().parent
+    default = success_v2()
+    monkeypatch.chdir(root.parent)
+    for path in (root / 'data/success_v2.json', Path('auto_router/data/success_v2.json')):
+        loaded = success_model_from_config({'success': {'version': 2, 'params': str(path)}})
+        assert loaded.fit_info['file'] == str(path)  # preserve original provenance spelling
+        loaded.fit_info = default.fit_info
+        assert loaded == default
+    link = root / '_test_internal_params.json'
+    link.symlink_to(root / 'data/success_v2.json')
+    try:
+        assert success_v2(path=link).offset == default.offset
+    finally:
+        link.unlink()

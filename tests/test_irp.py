@@ -331,3 +331,62 @@ def test_tradeoff_stays_monotonic_with_classifier(router):
         b = body(cands); b['routing']['cost_quality_tradeoff'] = t
         costs.append(rank(router, b)['ranked'][0]['expected_cost_usd'])
     assert costs == sorted(costs, reverse=True)
+
+
+@pytest.mark.parametrize('field', [
+    'difficulty', 'difficulty_confidence', 'stakes', 'needs_tools',
+    'needs_vision', 'needs_long_context', 'follow_up',
+])
+@pytest.mark.parametrize('value', [-2.0, 1.01, 10**400, float('nan'), float('inf'),
+                                   float('-inf'), None, 'invalid'])
+def test_budgeted_classifier_rejects_unusable_numeric_fields(router, field, value):
+    budgeted(router, lambda *_: cls(**{field: value}))
+    try:
+        outcome = router.classifier.classify('x', '')
+        assert outcome.classification is None
+        assert outcome.basis.endswith('(fallback: malformed)')
+        app = FastAPI()
+        app.include_router(endpoints(lambda: router))
+        response = TestClient(app).post('/v1/routing/rank', json=body())
+        assert response.status_code == 200
+        assert len(response.json()['ranked']) == 2
+        assert response.json()['extra']['system1models.ai']['classifier'] == outcome.basis
+    finally:
+        router.classifier._pool.shutdown()
+
+
+def test_budgeted_classifier_rejects_missing_confidence(router):
+    result = cls()
+    del result.difficulty_confidence
+    budgeted(router, lambda *_: result)
+    try:
+        assert basis(router)['classifier'].endswith('(fallback: malformed)')
+    finally:
+        router.classifier._pool.shutdown()
+
+
+def test_budgeted_classifier_normalizes_numeric_strings_without_mutating_result(router):
+    fields = ('difficulty', 'difficulty_confidence', 'stakes', 'needs_tools',
+              'needs_vision', 'needs_long_context', 'follow_up')
+    result = cls(**{field: '0.7' for field in fields})
+    budgeted(router, lambda *_: result)
+    try:
+        outcome = router.classifier.classify('x', '')
+        assert outcome.basis == 's1-test@abc'
+        assert all(type(getattr(outcome.classification, field)) is float for field in fields)
+        assert all(getattr(outcome.classification, field) == 0.7 for field in fields)
+        assert all(getattr(result, field) == '0.7' for field in fields)
+        actual = rank(router, body())
+        router.classifier.classifier = lambda *_: cls(**{field: 0.7 for field in fields})
+        expected = rank(router, body())
+        assert actual['ranked'] == expected['ranked']
+        assert actual['extra'] == expected['extra']
+    finally:
+        router.classifier._pool.shutdown()
+
+
+@pytest.mark.parametrize('stakes,expected', [(-2.0, 0.05), (2.0, 20.0)])
+def test_turn_request_clamps_stakes_index(router, stakes, expected):
+    request = router._turn_request(cls(stakes=stakes), 10, 100, 0, False,
+                                   [{'role': 'user', 'content': 'hello'}])
+    assert request.stakes_usd == expected

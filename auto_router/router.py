@@ -58,7 +58,8 @@ def success_model_from_config(policy: dict) -> SuccessModel:
     conf = policy.get("success") or {}
     if conf.get("version") == 2:
         from .economics import success_v2
-        model = success_v2(path=conf.get("params"))
+        model = success_v2(path=conf.get("params"),
+                           allow_external_params=conf.get("allow_external_params") is True)
         if "evidence_discount" in conf:
             model.evidence_discount = conf["evidence_discount"]
     else:
@@ -716,7 +717,7 @@ class Router:
                                prompt_tokens=prompt_tokens, output_tokens=max_tokens or 1500, now=now,
                                needs_tools=has_tools, stakes_usd=STAKES_USD[2], difficulty_confidence=0.0,
                                request_chars=request_chars, stated_max_tokens=explicit_budget(max_tokens))
-        stakes_idx = min(len(STAKES_USD) - 1, int(round(cls.stakes * (len(STAKES_USD) - 1))))
+        stakes_idx = max(0, min(len(STAKES_USD) - 1, int(round(cls.stakes * (len(STAKES_USD) - 1)))))
         agentic = has_tools and cls.needs_tools > 0.5
         difficulty = max(0.0, min(1.0, (cls.difficulty - self.jev_offset) / self.jev_scale))
         return TurnRequest(
