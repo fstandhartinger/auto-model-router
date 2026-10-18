@@ -141,13 +141,23 @@ def test_curve_monotone_but_measured_probability_can_rise_at_bucket_boundary():
     assert after > before  # documented bucket granularity; final p() is not monotone
 
 
+def temporary_params_package(tmp_path, monkeypatch):
+    from pathlib import Path
+    import auto_router.economics as economics
+    root = tmp_path / 'auto_router'
+    (root / 'data').mkdir(parents=True)
+    source = Path(economics.__file__).resolve().parent / 'data/success_v2.json'
+    (root / 'data/success_v2.json').write_bytes(source.read_bytes())
+    monkeypatch.setattr(economics, '__file__', str(root / 'economics.py'))
+    return root
+
+
 @pytest.mark.parametrize('kind', ['absolute', 'relative', 'symlink'])
 def test_params_path_cannot_escape_package(tmp_path, monkeypatch, kind):
     import json
     from pathlib import Path
-    import auto_router
     from auto_router.router import success_model_from_config
-    root = Path(auto_router.__file__).resolve().parent
+    root = temporary_params_package(tmp_path, monkeypatch)
     outside = tmp_path / 'external.json'
     raw = json.loads((root / 'data/success_v2.json').read_text())
     raw['params']['offset'] = 424242
@@ -175,11 +185,10 @@ def test_params_path_cannot_escape_package(tmp_path, monkeypatch, kind):
             path.unlink()
 
 
-def test_packaged_default_and_explicit_in_package_paths(monkeypatch):
+def test_packaged_default_and_explicit_in_package_paths(tmp_path, monkeypatch):
     from pathlib import Path
-    import auto_router
     from auto_router.router import success_model_from_config
-    root = Path(auto_router.__file__).resolve().parent
+    root = temporary_params_package(tmp_path, monkeypatch)
     default = success_v2()
     monkeypatch.chdir(root.parent)
     for path in (root / 'data/success_v2.json', Path('auto_router/data/success_v2.json')):

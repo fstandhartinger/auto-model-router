@@ -402,3 +402,40 @@ def test_budgeted_classifier_rejects_partial_dataclass_without_failed(router):
         assert basis(router)['classifier'].endswith('(fallback: malformed)')
     finally:
         router.classifier._pool.shutdown()
+
+
+@pytest.mark.parametrize('failure_field', ['plain', 'init_false', 'classvar'])
+def test_budgeted_classifier_canonicalizes_subclasses_without_constructor_requirements(router, failure_field):
+    from dataclasses import dataclass, field, fields
+    from typing import ClassVar
+
+    @dataclass
+    class NonInitFailure(jev.Classification):
+        failed: bool = field(default=False, init=False)
+
+    @dataclass
+    class ClassVarFailure(jev.Classification):
+        failed: ClassVar[bool] = False
+
+    kind = {'plain': jev.Classification, 'init_false': NonInitFailure,
+            'classvar': ClassVarFailure}[failure_field]
+    original = cls(raw={'retained': True}, source_name='local-test', input_tokens=17,
+                   output_tokens=3, latency_s=0.125)
+    result = kind(**{f.name: getattr(original, f.name) for f in fields(jev.Classification)
+                     if f.name != 'failed'})
+    before = dict(vars(result))
+    budgeted(router, lambda *_: result)
+    try:
+        outcome = router.classifier.classify('x', '')
+        assert outcome.basis == 's1-test@abc'
+        assert type(outcome.classification) is jev.Classification
+        assert outcome.classification is not result
+        assert outcome.classification == original
+        actual = rank(router, body())
+        router.classifier.classifier = lambda *_: original
+        expected = rank(router, body())
+        assert actual['ranked'] == expected['ranked']
+        assert actual['extra'] == expected['extra']
+        assert vars(result) == before
+    finally:
+        router.classifier._pool.shutdown()

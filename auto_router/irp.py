@@ -12,7 +12,7 @@ import math
 import threading
 import time
 import uuid
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, fields
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from typing import Any, Callable
 
@@ -225,7 +225,7 @@ class BudgetedClassifier:
         except Exception:  # noqa: BLE001 - a classifier bug must never fail a ranking
             return self._fallback("error")
         try:
-            if getattr(result, "failed", False):
+            if result.failed:
                 return self._fallback("error")
             if not isinstance(result.category, str) or not result.category:
                 return self._fallback("malformed")
@@ -236,7 +236,11 @@ class BudgetedClassifier:
                 return self._fallback("malformed")
             # Return the converted values, never the unchecked originals. Copy rather
             # than mutate a classifier-owned result (which may be shared across calls).
-            result = replace(result, failed=False, **values)
+            # Construct the base type: subclass fields need not be constructor kwargs.
+            from .jev import Classification
+            metadata = {f.name: getattr(result, f.name) for f in fields(Classification)
+                        if f.name not in values and f.name != "failed"}
+            result = Classification(**metadata, **values, failed=False)
         except (AttributeError, TypeError, ValueError, OverflowError):
             return self._fallback("malformed")
         return Classified(result, self.label)
