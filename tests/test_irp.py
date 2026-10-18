@@ -390,3 +390,15 @@ def test_turn_request_clamps_stakes_index(router, stakes, expected):
     request = router._turn_request(cls(stakes=stakes), 10, 100, 0, False,
                                    [{'role': 'user', 'content': 'hello'}])
     assert request.stakes_usd == expected
+
+
+def test_budgeted_classifier_rejects_partial_dataclass_without_failed(router):
+    from dataclasses import make_dataclass
+    fields = ('category', 'difficulty', 'difficulty_confidence', 'stakes', 'needs_tools',
+              'needs_vision', 'needs_long_context', 'follow_up')
+    partial = make_dataclass('Partial', fields)('coding', *([0.5] * 7))
+    budgeted(router, lambda *_: partial)
+    try:
+        assert basis(router)['classifier'].endswith('(fallback: malformed)')
+    finally:
+        router.classifier._pool.shutdown()

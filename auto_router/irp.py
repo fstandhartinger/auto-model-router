@@ -224,9 +224,9 @@ class BudgetedClassifier:
             return self._fallback("timeout")
         except Exception:  # noqa: BLE001 - a classifier bug must never fail a ranking
             return self._fallback("error")
-        if getattr(result, "failed", False):
-            return self._fallback("error")
         try:
+            if getattr(result, "failed", False):
+                return self._fallback("error")
             if not isinstance(result.category, str) or not result.category:
                 return self._fallback("malformed")
             values = {f: float(getattr(result, f)) for f in
@@ -236,7 +236,7 @@ class BudgetedClassifier:
                 return self._fallback("malformed")
             # Return the converted values, never the unchecked originals. Copy rather
             # than mutate a classifier-owned result (which may be shared across calls).
-            result = replace(result, **values)
+            result = replace(result, failed=False, **values)
         except (AttributeError, TypeError, ValueError, OverflowError):
             return self._fallback("malformed")
         return Classified(result, self.label)
