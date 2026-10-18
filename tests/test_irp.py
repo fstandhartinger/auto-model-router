@@ -439,3 +439,63 @@ def test_budgeted_classifier_canonicalizes_subclasses_without_constructor_requir
         assert vars(result) == before
     finally:
         router.classifier._pool.shutdown()
+
+
+@pytest.mark.parametrize('failure', ['descriptor', 'truth'])
+def test_budgeted_classifier_inspection_exception_still_ranks(router, failure):
+    class RaisingFlag(jev.Classification):
+        @property
+        def failed(self):
+            raise RuntimeError('broken classifier result descriptor')
+
+        @failed.setter
+        def failed(self, value):
+            pass
+
+    class RaisingTruth:
+        def __bool__(self):
+            raise RuntimeError('broken classifier result truth conversion')
+
+    result = RaisingFlag(**vars(cls())) if failure == 'descriptor' else cls(failed=RaisingTruth())
+    budgeted(router, lambda *_: result)
+    wrapper = router.classifier
+    try:
+        outcome = router.classifier.classify('x', '')
+        assert outcome.classification is None
+        assert outcome.basis == 'local conservative prior (fallback: error)'
+        response = client_for(router).post('/v1/routing/rank', json=body())
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data['ranked']) == 2
+        assert data['extra']['system1models.ai']['classifier'] == outcome.basis
+        router.classifier = None
+        assert data['ranked'] == rank(router, body())['ranked']
+    finally:
+        # Keep the wrapper even after switching the router to its prior.
+        wrapper._pool.shutdown()
+
+
+def test_budgeted_classifier_unhashable_category_still_ranks(router):
+    class UnhashableCategory(str):
+        __hash__ = None
+
+    result = cls()
+    result.category = UnhashableCategory('coding')
+    budgeted(router, lambda *_: result)
+    try:
+        outcome = router.classifier.classify('x', '')
+        assert outcome.basis == 's1-test@abc'
+        assert type(outcome.classification.category) is str
+        assert outcome.classification.category == 'coding'
+        assert type(result.category) is UnhashableCategory
+        response = client_for(router).post('/v1/routing/rank', json=body())
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data['ranked']) == 2
+        assert data['extra']['system1models.ai']['classifier'] == 's1-test@abc'
+        router.classifier.classifier = lambda *_: cls()
+        expected = rank(router, body())
+        assert data['ranked'] == expected['ranked']
+        assert data['extra'] == expected['extra']
+    finally:
+        router.classifier._pool.shutdown()

@@ -240,9 +240,13 @@ class BudgetedClassifier:
             from .jev import Classification
             metadata = {f.name: getattr(result, f.name) for f in fields(Classification)
                         if f.name not in values and f.name != "failed"}
+            # Strip category subclasses so downstream set/dict lookups are safe.
+            metadata["category"] = str.__str__(metadata["category"])
             result = Classification(**metadata, **values, failed=False)
         except (AttributeError, TypeError, ValueError, OverflowError):
             return self._fallback("malformed")
+        except Exception:  # noqa: BLE001 - result accessors can also be classifier bugs
+            return self._fallback("error")
         return Classified(result, self.label)
 
 
