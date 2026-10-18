@@ -344,8 +344,23 @@ def report(out_dir: Path) -> dict:
 
     small = [c for c, e in categories.items()
              if min((a["n"] for a in e.values()), default=0) < 10]
-    free_arms = sorted({a for e in categories.values() for a, v in e.items()
-                        if v["metered_cost_usd"] is None})
+    free_arms = []
+    mixed_arms = []
+    for arm in sorted(arms):
+        cells = {c: e[arm] for c, e in categories.items() if arm in e}
+        metered_cells = [c for c, v in cells.items()
+                         if v["metered_cost_usd"] is not None and v["metered_calls"] > 0]
+        free_cells = [c for c in cells if c not in metered_cells]
+        if cells and not metered_cells:
+            free_arms.append(arm)
+        elif metered_cells and free_cells:
+            mixed_arms.append({
+                "arm": arm,
+                "metered_cost_usd_total": round(sum(cells[c]["metered_cost_usd"]
+                                                    for c in metered_cells), 6),
+                "metered_cells": metered_cells,
+                "free_cells": free_cells,
+            })
     out = {
         "preregistration_sha256": prereg["task_file_sha256"],
         "registered_at": prereg["registered_at"],
@@ -360,6 +375,7 @@ def report(out_dir: Path) -> dict:
         "labels_present": sorted({r.get("label", "live") for r in rows}),
         "arms": arms,
         "arms_with_no_measurable_cost": free_arms,
+        "arms_with_partially_measured_cost": mixed_arms,
         "claims_not_made": ANALYSIS_PLAN["claims_not_made"],
     }
     (out_dir / "report.json").write_text(json.dumps(out, indent=1))
@@ -394,6 +410,11 @@ def format_report(data: dict) -> str:
         lines += ["", "No cash comparison is possible for: "
                   + ", ".join(data["arms_with_no_measurable_cost"])
                   + " (every route used was free or unpriced)."]
+    for mixed in data.get("arms_with_partially_measured_cost", []):
+        lines += ["", f"Mixed cash measurement for: {mixed['arm']} "
+                  f"(metered total ${mixed['metered_cost_usd_total']:.6f}; "
+                  f"metered cells: {', '.join(mixed['metered_cells'])}; "
+                  f"free or unpriced cells: {', '.join(mixed['free_cells'])})."]
     lines += ["", "Not claimed:"] + [f"  - {c}" for c in data["claims_not_made"]]
     return "\n".join(lines)
 
