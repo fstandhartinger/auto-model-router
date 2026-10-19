@@ -10,6 +10,12 @@ opencode, Cursor, OpenClaw, Hermes Agent or GitHub Copilot can hand bounded
 sub-tasks to cheaper routed workers. The
 vendor documentation and its stated limits are linked in [`TERMS.md`](TERMS.md).
 
+Home: [`reaxlabs/auto-model-router`](https://github.com/reaxlabs/auto-model-router) is the REAX Labs
+organisation's home of this project. For now it is an exact mirror of
+[`fstandhartinger/auto-model-router`](https://github.com/fstandhartinger/auto-model-router), synced every
+15 minutes (branches and tags); open issues and pull requests against `fstandhartinger/auto-model-router`
+until this note says otherwise.
+
 Status: experimental. A paired first-choice API study on 40 public-safe tasks was measured
 29 Sep 2026; full method, confidence intervals and category results are in
 [`EXPERIMENTS.md`](EXPERIMENTS.md).
